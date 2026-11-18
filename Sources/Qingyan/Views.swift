@@ -860,6 +860,20 @@ struct MainView: View {
             : micOffline ? tr("Locked microphone not connected") : tr("Tap to start, tap again to stop")
         let subline: String = micOffline ? tr("“%@” offline, no input", controller.boundMicrophoneLabel)
             : settings.sendsRemotely ? tr("Types at the cursor on the focused Mac") : tr("Types the result at the cursor")
+        // Worked out one by one: as one expression the button's styling is too much for the type checker.
+        let hovered = recordButtonHovered
+        let symbol: String = recording ? "stop.fill" : (micOffline ? "mic.slash.fill" : "mic.fill")
+        let tint: Color = recording ? Color.red : (micOffline ? Color.orange : Palette.ink)
+        let fill: Color
+        if recording { fill = Color.red.opacity(hovered ? 0.24 : 0.18) }
+        else if micOffline { fill = Color.orange.opacity(hovered ? 0.22 : 0.15) }
+        else { fill = Color.primary.opacity(hovered ? 0.21 : 0.14) }
+        let rim: Color = recording ? Color.red.opacity(0.35) : (micOffline ? Color.orange.opacity(0.4) : Palette.line)
+        let buttonHelp: String = recording ? tr("Stop recording")
+            : (micOffline ? tr("The locked microphone is not connected. Click for details.") : tr("Start recording"))
+        let stripTint: Color = micOffline ? Color.orange : Palette.accent
+        let stripRim: Color = micOffline ? Color.orange.opacity(0.32) : Palette.line
+        let headlineTint: Color = micOffline && !recording ? Color.orange : Palette.ink
         return HStack(spacing: 9) {
             Text(settings.shortcutLabel)
                 .font(.system(size: settings.shortcutLabel == "fn" ? 15 : 10, weight: .medium, design: .rounded))
@@ -869,36 +883,31 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(headline)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(micOffline && !recording ? Color.orange : Palette.ink)
+                    .foregroundStyle(headlineTint)
                 Text(subline)
                     .font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
             }
             Spacer(minLength: 2)
             Button { controller.toggle() } label: {
-                Image(systemName: recording ? "stop.fill" : micOffline ? "mic.slash.fill" : "mic.fill")
+                Image(systemName: symbol)
                     .font(.system(size: 13, weight: .semibold))
                     .contentTransition(.symbolEffect(.replace))
-                    .foregroundStyle(recording ? Color.red : micOffline ? Color.orange : Palette.ink)
+                    .foregroundStyle(tint)
                     .frame(width: 36, height: 36)
-                    .background(
-                        recording ? Color.red.opacity(recordButtonHovered ? 0.24 : 0.18)
-                                  : micOffline ? Color.orange.opacity(recordButtonHovered ? 0.22 : 0.15)
-                                  : Color.primary.opacity(recordButtonHovered ? 0.21 : 0.14),
-                        in: Circle()
-                    )
-                    .overlay(Circle().stroke(recording ? Color.red.opacity(0.35) : micOffline ? Color.orange.opacity(0.4) : Palette.line, lineWidth: 1))
+                    .background(fill, in: Circle())
+                    .overlay(Circle().stroke(rim, lineWidth: 1))
                     .overlay { if recording && !Motion.reduced { RecordingRing() } }
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .onHover { recordButtonHovered = $0 }
             .disabled(processing).opacity(processing ? 0.35 : 1)
-            .help(recording ? tr("Stop recording") : micOffline ? tr("The locked microphone is not connected. Click for details.") : tr("Start recording"))
+            .help(buttonHelp)
             .accessibilityLabel(recording ? tr("Stop recording") : tr("Start recording"))
         }
         .padding(10)
-        .background((micOffline ? Color.orange : Palette.accent).opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(micOffline ? Color.orange.opacity(0.32) : Palette.line, lineWidth: 1))
+        .background(stripTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(stripRim, lineWidth: 1))
         .animation(Motion.standard, value: controller.phase)
         .animation(Motion.standard, value: micOffline)
     }

@@ -25,8 +25,16 @@ public enum Localization {
         return state.active
     }
 
+    /// Posted after `use` changes the language, for words that were kept as text and must be
+    /// made again.
+    public static let didChange = Notification.Name("local.hopo.qingyan.language")
+
     public static func use(_ language: Language) {
-        state.lock.lock(); state.active = language; state.lock.unlock()
+        state.lock.lock()
+        let changed = state.active != language
+        state.active = language
+        state.lock.unlock()
+        if changed { NotificationCenter.default.post(name: didChange, object: nil) }
     }
 
     /// The language a setting stands for. "system" is Simplified Chinese when the first of the

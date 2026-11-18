@@ -13,6 +13,14 @@ import QingyanCore
 final class Updater: ObservableObject {
     /// One line for the settings: what is installed, what is going on, or what is in the way.
     @Published private(set) var status = ""
+    /// How `status` was made, so that a change of language can make it again.
+    private var statusWords: (key: String, arguments: [CVarArg]) = ("", [])
+    private var languageObserver: NSObjectProtocol?
+
+    private func say(_ key: String, _ arguments: CVarArg...) {
+        statusWords = (key, arguments)
+        status = arguments.isEmpty ? tr(key) : String(format: tr(key), arguments: arguments)
+    }
     @Published private(set) var working = false
 
     private let settings: SettingsStore
@@ -28,7 +36,14 @@ final class Updater: ObservableObject {
 
     init(settings: SettingsStore) {
         self.settings = settings
-        status = tr("Version %@", version)
+        say("Version %@", version)
+        languageObserver = NotificationCenter.default.addObserver(forName: Localization.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let words = self.statusWords
+                self.status = words.arguments.isEmpty ? tr(words.key) : String(format: tr(words.key), arguments: words.arguments)
+            }
+        }
     }
 
     /// Whether this copy can be replaced at all: only the one in Applications is.
@@ -38,9 +53,9 @@ final class Updater: ObservableObject {
 
     func start() {
         guard !settings.preview else { return }
-        guard replaceable else { status = tr("Version %@ · Not in Applications, so automatic updates are off", version); return }
+        guard replaceable else { say("Version %@ · Not in Applications, so automatic updates are off", version); return }
         if let last = UserDefaults.standard.string(forKey: "updatedTo"), last == version {
-            status = tr("Updated to %@", version)
+            say("Updated to %@", version)
         }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -58,7 +73,7 @@ final class Updater: ObservableObject {
     func check(manual: Bool = false) {
         guard replaceable, !working else { return }
         working = true; lastCheck = Date()
-        if manual { status = tr("Checking for updates…") }
+        if manual { say("Checking for updates…") }
         Task { @MainActor in
             defer { working = false }
             do {
@@ -68,15 +83,15 @@ final class Updater: ObservableObject {
                 guard let build = UpdateFeed.build(in: (try? JSONSerialization.jsonObject(with: data)) as Any) else {
                     throw VoiceError(tr("The list of versions could not be read. The update was canceled."))
                 }
-                guard build.number > number else { status = tr("Up to date (%@)", version); return }
-                status = tr("Downloading %@…", build.version)
+                guard build.number > number else { say("Up to date (%@)", version); return }
+                say("Downloading %@…", build.version)
                 let app = try await fetch(build)
                 ready = (build, app)
-                status = tr("%@ is ready and will install when input is idle", build.version)
+                say("%@ is ready and will install when input is idle", build.version)
                 installIfIdle()
             } catch {
                 let reason = error is VoiceError ? error.localizedDescription : tr("Could not check for updates. Check the network connection.")
-                status = tr("Version %@ · %@", version, reason)
+                say("Version %@ · %@", version, reason)
             }
         }
     }
@@ -137,7 +152,7 @@ final class Updater: ObservableObject {
         } catch {
             self.ready = nil
             let reason = error is VoiceError ? error.localizedDescription : tr("Could not replace input in Applications.")
-            status = tr("Version %@ · %@", version, reason)
+            say("Version %@ · %@", version, reason)
             return
         }
         UserDefaults.standard.set(ready.build.version, forKey: "updatedTo")

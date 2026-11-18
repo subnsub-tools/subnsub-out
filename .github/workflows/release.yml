@@ -103,6 +103,11 @@ jobs:
           # would be refused by them, so it is not released.
           REQUIREMENT='identifier "local.hopo.qingyan" and certificate root = H"5f3964801c4df9f728472f64717dbc410f4e00d8"'
           codesign --verify --strict -R="$REQUIREMENT" build/input.app
+          # A run of an older commit (a rerun) must not publish it as the newest build.
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::main has moved on to $head; this run of $GITHUB_SHA publishes nothing"; exit 0
+          fi
           version="0.1.$INPUT_BUILD"
           zip="$RUNNER_TEMP/input-$version.zip"
           ditto -c -k --keepParent build/input.app "$zip"

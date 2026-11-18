@@ -443,10 +443,12 @@ final class SettingsStore: ObservableObject {
     init(preview: Bool = false) {
         self.preview = preview
         defaults = preview ? UserDefaults(suiteName: "local.hopo.qingyan.preview")! : .standard
-        preferences = preview ? Preferences() : defaults.data(forKey: "preferences").flatMap {
+        let loaded = preview ? Preferences() : defaults.data(forKey: "preferences").flatMap {
             try? JSONDecoder().decode(Preferences.self, from: $0)
         } ?? Preferences()
-        Localization.use(Localization.resolve(preferences.language))
+        preferences = loaded
+        // From the decoded value: self cannot be read before every stored property is set.
+        Localization.use(Localization.resolve(loaded.language))
         history = preview ? [] : defaults.data(forKey: "history").flatMap {
             try? JSONDecoder().decode([HistoryEntry].self, from: $0)
         } ?? []
