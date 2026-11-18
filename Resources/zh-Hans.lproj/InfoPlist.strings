@@ -1,0 +1,3 @@
+/* The permission prompts in Simplified Chinese. */
+"NSMicrophoneUsageDescription" = "input 仅在你按下快捷键后录音，将声音发送至你选择的识别平台转成文字；按结束或 Esc 后停止。";
+"NSLocalNetworkUsageDescription" = "input 在两台 Mac 之间传递识别出的文字：一台说话，另一台粘贴。只在你开启「多台 Mac」后使用。";

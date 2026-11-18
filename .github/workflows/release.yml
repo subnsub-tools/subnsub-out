@@ -1,0 +1,120 @@
+# Checks, builds, signs and releases input on every push to main.
+#
+# The app is signed with the self-signed certificate "input signing (SUB&SUB)", whose private
+# key is the secret INPUT_SIGNING_P12 (base64 of the .p12) with INPUT_SIGNING_P12_PASSWORD.
+# Every release must carry that identity: macOS ties the app's permissions (Accessibility,
+# Microphone, Keychain) to it, and an installed copy refuses an update signed by any other.
+# Without the secret (a fork) a run checks and builds the code with an ad-hoc signature and
+# publishes nothing.
+#
+# Builds are assets of one standing release, "builds": input-0.1.<build>.zip and latest.json
+# (version, file, size, sha256), the zip uploaded first and latest.json last, the ten newest zips
+# kept. Its tag was made once by a maintainer; the repository lets no workflow create or move tags.
+# The update feed (https://dashboard.subnsub.com/api/input/latest.json) serves from it. The
+# build number is one more than the larger of the newest build here and the build the feed names
+# now, so it only grows.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write       # the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Checks
+        run: swift run QingyanChecks
+
+      - name: Build number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          released=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '[.assets[].name | capture("^input-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0' 2>/dev/null || echo 0)
+          served=$(curl -fsS --max-time 20 https://dashboard.subnsub.com/api/input/latest.json \
+            | python3 -c 'import json, sys; print(int(json.load(sys.stdin)["version"].rsplit(".", 1)[1]))') \
+            || { echo "::error::the update feed could not be read, so the next build number is unknown"; exit 1; }
+          build=$(( (released > served ? released : served) + 1 ))
+          echo "INPUT_BUILD=$build" >> "$GITHUB_ENV"
+          echo "Build $build (newest here $released, feed $served)"
+
+      - name: Signing identity
+        env:
+          P12: ${{ secrets.INPUT_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.INPUT_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$P12" ]; then
+            echo "::notice::INPUT_SIGNING_P12 is not set: building with an ad-hoc signature, nothing is published"
+            echo "SIGNING_IDENTITY=-" >> "$GITHUB_ENV"; exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/input-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # codesign finds an identity only in a keychain that is on the search list.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/^ *"//; s/"$//')
+          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk '/[0-9A-F]{40}/{print $2; exit}')"
+          [ -n "$IDENTITY" ] || { echo "::error::the imported certificate holds no signing identity"; exit 1; }
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          bash build.sh
+          codesign --verify --strict --verbose=2 build/input.app
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/input.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
+
+      - name: Release
+        if: env.SIGNING_IDENTITY != '-' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The requirement every installed copy holds an update to. A build that does not meet it
+          # would be refused by them, so it is not released.
+          REQUIREMENT='identifier "local.hopo.qingyan" and certificate root = H"5f3964801c4df9f728472f64717dbc410f4e00d8"'
+          codesign --verify --strict -R="$REQUIREMENT" build/input.app
+          version="0.1.$INPUT_BUILD"
+          zip="$RUNNER_TEMP/input-$version.zip"
+          ditto -c -k --keepParent build/input.app "$zip"
+          size=$(stat -f%z "$zip")
+          sum=$(shasum -a 256 "$zip" | cut -d' ' -f1)
+          printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "input-$version.zip" "$size" "$sum" > "$RUNNER_TEMP/latest.json"
+          # The zip first, then the manifest that names it, so the file it names is always there.
+          gh release upload builds "$zip" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload builds "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit builds --repo "$GITHUB_REPOSITORY" --title "input builds" \
+            --notes "The newest is input $version, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate. Installed copies of input update to it by themselves; latest.json names it."
+          # The ten newest zips stay.
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
+            --jq '[.assets[] | select(.name | test("^input-0\\.1\\.[0-9]+\\.zip$")) | {id, n: (.name | capture("0\\.1\\.(?<n>[0-9]+)").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id' |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
