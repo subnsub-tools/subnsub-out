@@ -10,6 +10,8 @@
 # Builds are assets of one standing release, "builds": input-0.1.<build>.zip and latest.json
 # (version, file, size, sha256), the zip uploaded first and latest.json last, the ten newest zips
 # kept. Its tag was made once by a maintainer; the repository lets no workflow create or move tags.
+# Each zip also gets a build provenance attestation (GitHub's, recorded in the public Sigstore
+# log), so that anyone can check which run of this workflow, from which commit, built it.
 # The update feed (https://dashboard.subnsub.com/api/input/latest.json) serves from it. The
 # build number is one more than the larger of the newest build here and the build the feed names
 # now, so it only grows.
@@ -33,6 +35,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write       # the release
+      id-token: write       # the attestation's signing certificate (Sigstore)
+      attestations: write   # storing the attestation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,7 +97,16 @@ jobs:
           codesign --verify --strict --verbose=2 build/input.app
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/input.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
 
-      - name: Release
+      - name: Forget the signing identity
+        # Nothing after the build signs, so no later step (the attestation action included) gets
+        # a keychain that holds the key.
+        if: always()
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/input-signing.keychain-db"
+          if [ -f "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN"; fi
+
+      - name: Package
+        id: package
         if: env.SIGNING_IDENTITY != '-' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,7 +119,8 @@ jobs:
           # A run of an older commit (a rerun) must not publish it as the newest build.
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::notice::main has moved on to $head; this run of $GITHUB_SHA publishes nothing"; exit 0
+            echo "::notice::main has moved on to $head; this run of $GITHUB_SHA publishes nothing"
+            echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           version="0.1.$INPUT_BUILD"
           zip="$RUNNER_TEMP/input-$version.zip"
@@ -114,11 +128,29 @@ jobs:
           size=$(stat -f%z "$zip")
           sum=$(shasum -a 256 "$zip" | cut -d' ' -f1)
           printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "input-$version.zip" "$size" "$sum" > "$RUNNER_TEMP/latest.json"
+          { echo "publish=true"; echo "version=$version"; echo "zip=$zip"; } >> "$GITHUB_OUTPUT"
+
+      - name: Attest
+        # A provenance attestation for the zip, signed by GitHub: anyone can check that it was built
+        # by this workflow from this commit with `gh attestation verify <zip> --repo <this repository>`.
+        if: steps.package.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.zip }}
+
+      - name: Release
+        if: steps.package.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          set -euo pipefail
           # The zip first, then the manifest that names it, so the file it names is always there.
-          gh release upload builds "$zip" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload builds "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
           gh release upload builds "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit builds --repo "$GITHUB_REPOSITORY" --title "input builds" \
-            --notes "The newest is input $version, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate. Installed copies of input update to it by themselves; latest.json names it."
+            --notes "The newest is input $VERSION, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate. Installed copies of input update to it by themselves; latest.json names it. Each zip has a build provenance attestation: gh attestation verify input-$VERSION.zip --repo $GITHUB_REPOSITORY"
           # The ten newest zips stay.
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
             --jq '[.assets[] | select(.name | test("^input-0\\.1\\.[0-9]+\\.zip$")) | {id, n: (.name | capture("0\\.1\\.(?<n>[0-9]+)").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id' |
