@@ -3,11 +3,12 @@ import CryptoKit
 import Security
 import QingyanCore
 
-/// Keeps the installed app at the newest build published on our site.
+/// Keeps the installed app at the newest build: from the public repository's releases on GitHub,
+/// or from our site when GitHub cannot be reached (see `UpdateFeed`).
 ///
 /// A build is taken only when it is signed by the same identity as the app that is running: the
 /// downloaded bundle must satisfy this app's own designated requirement. So nothing but our own
-/// builds can replace the app, whatever the site or the network says — and macOS keeps
+/// builds can replace the app, whatever GitHub, the site or the network says — and macOS keeps
 /// the permissions it gave, because to it the new build is the same app.
 @MainActor
 final class Updater: ObservableObject {
@@ -77,23 +78,68 @@ final class Updater: ObservableObject {
         Task { @MainActor in
             defer { working = false }
             do {
-                let (data, response) = try await URLSession.shared.data(for: UpdateFeed.request(UpdateFeed.latest))
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                guard code == 200 else { throw UpdateFeed.problem(status: code) }
-                guard let build = UpdateFeed.build(in: (try? JSONSerialization.jsonObject(with: data)) as Any) else {
-                    throw VoiceError(tr("The list of versions could not be read. The update was canceled."))
+                // The time GitHub is out of reach is kept per attempt, not per request: a manifest
+                // that loads followed by a package that never does is still no answer.
+                do {
+                    try await update(from: .github)
+                    githubDownSince = UpdateFeed.githubDownSince(afterAway: false, was: githubDownSince)
+                } catch let away as Away {
+                    // GitHub gave no answer: the site, if it may be asked yet.
+                    let since = UpdateFeed.githubDownSince(afterAway: true, was: githubDownSince)
+                    githubDownSince = since
+                    guard UpdateFeed.asksSite(manual: manual, githubDownSince: since) else { throw away }
+                    try await update(from: .site)
+                } catch {
+                    githubDownSince = UpdateFeed.githubDownSince(afterAway: false, was: githubDownSince)
+                    throw error
                 }
-                guard build.number > number else { say("Up to date (%@)", version); return }
-                say("Downloading %@…", build.version)
-                let app = try await fetch(build)
-                ready = (build, app)
-                say("%@ is ready and will install when input is idle", build.version)
-                installIfIdle()
             } catch {
-                let reason = error is VoiceError ? error.localizedDescription : tr("Could not check for updates. Check the network connection.")
+                let shown = (error as? Away)?.reason ?? error
+                let reason = shown is VoiceError ? shown.localizedDescription : tr("Could not check for updates. Check the network connection.")
                 say("Version %@ · %@", version, reason)
             }
         }
+    }
+
+    /// A failure that says nothing about what is published (see `UpdateFeed.away`).
+    private struct Away: Error { let reason: Error }
+
+    /// Since when GitHub has given no answer; cleared by an attempt it answered. Kept, so that a
+    /// restart does not start the grace again.
+    private var githubDownSince: Date? {
+        get { UserDefaults.standard.object(forKey: "updateGitHubDownSince") as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: "updateGitHubDownSince") }
+    }
+
+    private let githubRedirects = GitHubRedirects()
+
+    /// One request to a source: for GitHub, redirects only to its download hosts. No answer, or
+    /// the host's own trouble, is `Away`.
+    private func ask<Value>(_ source: UpdateFeed.Source, _ send: (URLSessionTaskDelegate?) async throws -> (Value, URLResponse)) async throws -> Value {
+        let value: Value, response: URLResponse
+        do { (value, response) = try await send(source == .github ? githubRedirects : nil) }
+        catch { throw UpdateFeed.away(error) ? Away(reason: error) : error }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if UpdateFeed.away(status: code) { throw Away(reason: UpdateFeed.problem(status: code)) }
+        guard code == 200 else { throw UpdateFeed.problem(status: code) }
+        return value
+    }
+
+    /// Reads one source's manifest and, when it names a newer build, fetches that build from the
+    /// same source and keeps it ready.
+    private func update(from source: UpdateFeed.Source) async throws {
+        let data: Data = try await ask(source) { delegate in
+            try await URLSession.shared.data(for: UpdateFeed.request(source.latest), delegate: delegate)
+        }
+        guard let build = UpdateFeed.build(in: (try? JSONSerialization.jsonObject(with: data)) as Any, from: source) else {
+            throw VoiceError(tr("The list of versions could not be read. The update was canceled."))
+        }
+        guard build.number > number else { say("Up to date (%@)", version); return }
+        say("Downloading %@…", build.version)
+        let app = try await fetch(build)
+        ready = (build, app)
+        say("%@ is ready and will install when input is idle", build.version)
+        installIfIdle()
     }
 
     /// Downloads the build, unpacks it beside the history, and proves it is ours before it is kept.
@@ -105,9 +151,9 @@ final class Updater: ObservableObject {
         try files.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
-        let (temporary, response) = try await session.download(for: UpdateFeed.request(build.asset, file: true))
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw UpdateFeed.problem(status: code) }
+        let temporary: URL = try await ask(build.source) { delegate in
+            try await session.download(for: UpdateFeed.request(build.asset, file: true), delegate: delegate)
+        }
         let zip = folder.appendingPathComponent("input.zip")
         try files.moveItem(at: temporary, to: zip)
         let bytes = try Data(contentsOf: zip, options: .mappedIfSafe)
@@ -184,5 +230,14 @@ final class Updater: ObservableObject {
                 done.resume(returning: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
+    }
+}
+
+/// Follows GitHub's redirect of a release file to where it is stored, and no other: a redirect
+/// that is not followed is the answer (see `UpdateFeed.followsRedirect`).
+private final class GitHubRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        UpdateFeed.followsRedirect(to: request.url) ? request : nil
     }
 }

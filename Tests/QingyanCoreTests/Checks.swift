@@ -96,7 +96,7 @@ struct Checks {
             ("Knock: every nonce round-trips, noise and broken patterns are ignored", knock),
             ("Spoken editing: two-step requests, field text as data, markers, smallest changed span", revision),
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
-            ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential", updates),
+            ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
             ("Microphone binding: a bound device is used only while connected and never falls back; unbound follows the system", microphoneBinding),
             ("Localization: the language setting, words from a table, formats, English where the table has no word", localization)
@@ -1211,20 +1211,62 @@ struct Checks {
         func manifest(_ version: Any = "0.1.12", file: Any? = nil, size: Any = 1_209_759, sha256: Any = sha) -> [String: Any] {
             ["version": version, "file": file ?? "input-\(version).zip", "size": size, "sha256": sha256]
         }
-        let found = UpdateFeed.build(in: manifest(sha256: sha.uppercased()))
+        let found = UpdateFeed.build(in: manifest(sha256: sha.uppercased()), from: .site)
         try check(found?.number == 12 && found?.version == "0.1.12" && found?.size == 1_209_759 && found?.digest == sha, "the announced build, its checksum in lower case")
-        try check(found?.asset.absoluteString == "https://dashboard.subnsub.com/api/input/input-0.1.12.zip"
-                  && UpdateFeed.latest.absoluteString == "https://dashboard.subnsub.com/api/input/latest.json", "the zip lies beside the manifest, under the name its version gives it")
+        try check(found?.asset.absoluteString == "https://dashboard.subnsub.com/api/input/input-0.1.12.zip" && found?.source == .site
+                  && UpdateFeed.Source.site.latest.absoluteString == "https://dashboard.subnsub.com/api/input/latest.json", "the zip lies beside the manifest, under the name its version gives it")
+        let fromGitHub = UpdateFeed.build(in: manifest(), from: .github)
+        try check(fromGitHub?.asset.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/download/builds/input-0.1.12.zip"
+                  && fromGitHub?.source == .github
+                  && UpdateFeed.Source.github.latest.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/download/builds/latest.json",
+                  "a manifest from GitHub names a zip on GitHub")
+        try check(UpdateFeed.Source.allCases.first == .github, "GitHub is asked first")
         for (bad, why) in [(manifest(file: "https://evil.example/input-0.1.12.zip"), "a file elsewhere"), (manifest(file: "../input-0.1.12.zip"), "a path"),
                            (manifest(file: "input-0.1.13.zip"), "another version's file"), (manifest("0.1.x"), "no version"), (manifest("../0.1.12"), "a version with a path in it"),
                            (manifest(12), "a version that is not text"), (manifest(size: 0), "no size"), (manifest(size: UpdateFeed.largest + 1), "an absurd size"),
                            (manifest(size: "1209759"), "a size that is not a number"), (manifest(sha256: "abc"), "a short checksum"),
                            (manifest(sha256: String(repeating: "zz", count: 32)), "a checksum that is not hex"), (manifest(sha256: String(repeating: "\u{FF41}\u{FF42}", count: 32)), "a checksum in wide letters")] {
-            try check(UpdateFeed.build(in: bad) == nil, "not a build: \(why)")
+            try check(UpdateFeed.build(in: bad, from: .site) == nil && UpdateFeed.build(in: bad, from: .github) == nil, "not a build: \(why)")
         }
-        try check(UpdateFeed.build(in: ["message": "Not Found"]) == nil && UpdateFeed.build(in: [manifest()]) == nil && UpdateFeed.build(in: NSNull()) == nil, "an answer that is not a manifest holds no build")
+        try check(UpdateFeed.build(in: ["message": "Not Found"], from: .github) == nil && UpdateFeed.build(in: [manifest()], from: .site) == nil
+                  && UpdateFeed.build(in: NSNull(), from: .site) == nil, "an answer that is not a manifest holds no build")
 
-        let asked = UpdateFeed.request(UpdateFeed.latest)
+        // Which failures move an update on from GitHub to the site: no answer, or the host's own trouble.
+        for code in [URLError.Code.timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .notConnectedToInternet,
+                     .networkConnectionLost, .secureConnectionFailed] {
+            try check(UpdateFeed.away(URLError(code)), "no answer: \(code.rawValue)")
+        }
+        try check(!UpdateFeed.away(URLError(.cancelled)) && !UpdateFeed.away(VoiceError("no")), "a cancelled check or an answer that was read is not")
+        try check([500, 502, 503, 429].allSatisfy(UpdateFeed.away(status:)) && ![200, 302, 403, 404, 410].contains(where: UpdateFeed.away(status:)),
+                  "a host's trouble is no answer; a refusal or a missing build is one")
+        let now = Date()
+        try check(UpdateFeed.asksSite(manual: true, githubDownSince: nil, now: now)
+                  && UpdateFeed.asksSite(manual: true, githubDownSince: now, now: now), "a check by hand asks the site as soon as GitHub gives no answer")
+        try check(!UpdateFeed.asksSite(manual: false, githubDownSince: nil, now: now)
+                  && !UpdateFeed.asksSite(manual: false, githubDownSince: now.addingTimeInterval(-3600), now: now)
+                  && UpdateFeed.asksSite(manual: false, githubDownSince: now.addingTimeInterval(-UpdateFeed.githubGrace), now: now),
+                  "the automatic check asks the site only once GitHub has been out of reach for the grace")
+        // Every automatic check, six hours apart, gets the manifest from GitHub but never the package:
+        // each attempt is no answer, so the time out of reach runs on and the third asks the site.
+        var down: Date? = nil
+        var sitesAsked: [Bool] = []
+        for step in 0..<3 {
+            let at = now.addingTimeInterval(Double(step) * UpdateFeed.githubGrace)
+            down = UpdateFeed.githubDownSince(afterAway: true, was: down, now: at)
+            sitesAsked.append(UpdateFeed.asksSite(manual: false, githubDownSince: down, now: at))
+        }
+        try check(sitesAsked == [false, true, true] && down == now, "a package that never arrives from GitHub still counts as GitHub out of reach")
+        try check(UpdateFeed.githubDownSince(afterAway: false, was: now, now: now) == nil, "an attempt GitHub answered ends it")
+        for good in ["https://github.com/x", "https://release-assets.githubusercontent.com/github-production-release-asset/1/2", "https://objects.githubusercontent.com/a"] {
+            try check(UpdateFeed.followsRedirect(to: URL(string: good)), "GitHub's download host: \(good)")
+        }
+        for bad in ["http://release-assets.githubusercontent.com/a", "https://evil.example/input.zip", "https://github.com.evil.example/a",
+                    "https://evilgithub.com/a", "file:///tmp/input.zip"] {
+            try check(!UpdateFeed.followsRedirect(to: URL(string: bad)), "not followed: \(bad)")
+        }
+        try check(!UpdateFeed.followsRedirect(to: nil), "nowhere is not followed")
+
+        let asked = UpdateFeed.request(UpdateFeed.Source.github.latest)
         try check(asked.value(forHTTPHeaderField: "Authorization") == nil && asked.cachePolicy == .reloadIgnoringLocalCacheData
                   && asked.value(forHTTPHeaderField: "User-Agent") == "input-updater", "asked afresh, as itself, with no credential")
         try check(UpdateFeed.request(found!.asset, file: true).timeoutInterval > asked.timeoutInterval, "the file is given longer than the manifest")
