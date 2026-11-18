@@ -58,7 +58,8 @@ jobs:
           set -euo pipefail
           released=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '[.assets[].name | capture("^input-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0' 2>/dev/null || echo 0)
-          served=$(curl -fsS --max-time 20 https://dashboard.subnsub.com/api/input/latest.json \
+          # Retried: a runner's resolver sometimes misses a name for a moment.
+          served=$(curl -fsS --max-time 20 --retry 5 --retry-delay 5 --retry-all-errors https://dashboard.subnsub.com/api/input/latest.json \
             | python3 -c 'import json, sys; print(int(json.load(sys.stdin)["version"].rsplit(".", 1)[1]))') \
             || { echo "::error::the update feed could not be read, so the next build number is unknown"; exit 1; }
           build=$(( (released > served ? released : served) + 1 ))
