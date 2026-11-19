@@ -506,5 +506,22 @@
  "leave empty if none is needed": "无需认证可留空",
  "the target app": "目标应用",
  "“%@” asks to pair with this Mac": "「%@」请求与此 Mac 配对",
- "“%@” offline, no input": "「%@」离线，维持无输入"
+ "“%@” offline, no input": "「%@」离线，维持无输入",
+ "Typing %ld / %ld": "正在逐键输入 %ld / %ld",
+ "Typed": "已输入",
+ "Typed %ld characters": "已逐键输入 %ld 个字符",
+ "Type the Clipboard": "逐键输入剪贴板",
+ "Type the Clipboard (⌃⌥V)": "逐键输入剪贴板（⌃⌥V）",
+ "Type the clipboard into the field in front, key by key": "把剪贴板内容逐键输入到当前输入框",
+ "The clipboard holds no text.": "剪贴板里没有文字。",
+ "The clipboard text is too long to type: %ld characters (maximum %ld).": "剪贴板文字过长，无法逐键输入：共 %ld 个字符，上限 %ld 个。",
+ "Click the field you want to type into first.": "请先点击目标输入框。",
+ "Release the keys to start typing.": "请松开按键以开始逐键输入。",
+ "A remote desktop receives only keys, and this text has characters that no key can type, such as Chinese or emoji. Nothing was typed.": "远程桌面只接收按键，而这段文字包含无法用按键输入的字符（如中文或表情符号），因此没有输入任何内容。",
+ "Typing stopped after %ld of %ld characters: another window came to the front.": "输入 %ld / %ld 个字符后已停止：另一个窗口切换至前台。",
+ "Control + Option + V types the clipboard's text into the field in front, key by key, where pasting is refused: password fields, forms that block paste, remote desktops and consoles. Line breaks are typed as Return. Esc or the capsule's Cancel button stops it. Nothing typed is kept.": "按 Control + Option + V，将剪贴板中的文字逐键输入到当前输入框，适用于无法粘贴的场景：密码框、禁止粘贴的表单、远程桌面和控制台。换行会输入为回车。按 Esc 或浮条上的「取消」按钮可停止输入。输入的内容不会保存。",
+  "Typing did not start: another window came to the front.": "未开始输入：另一个窗口切换至前台。",
+  "Could not select a keyboard layout to type with. Select ABC or another keyboard layout, then try again.": "无法选择用于输入的键盘布局。请选择 ABC 或其他键盘布局后重试。",
+  "Typing stopped after %ld of %ld characters: a click or key press occurred.": "输入 %ld / %ld 个字符后已停止：期间有点击或按键。",
+  "Typing stopped after %ld of %ld characters: the input source changed.": "输入 %ld / %ld 个字符后已停止：输入法已切换。"
 }

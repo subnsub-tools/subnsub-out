@@ -72,6 +72,14 @@ final class GlobalShortcut {
     var onCancel: (() -> Bool)?
     /// A complete knock arrived, typed by another Mac through a remote-desktop session.
     var onKnock: ((Int) -> Void)?
+    /// Control + Option + V: type the clipboard key by key.
+    var onTypeClipboard: (() -> Void)?
+    /// How many keys and clicks of the user's have come in (not this app's own): Type the Clipboard
+    /// stops when one comes in between, since it may have moved the focus.
+    private(set) var userInputs = 0
+    /// After Control + Option + V, the V is swallowed until it is released, so that its repeats do not
+    /// reach the field once Control and Option are up.
+    private var swallowingV = false
     private var knock = KnockDecoder()
     /// True once the user has typed or clicked. Cleared right after this app pastes, so while it is
     /// still false the cursor has to be sitting exactly behind the pasted text.
@@ -99,7 +107,7 @@ final class GlobalShortcut {
             }
             return
         }
-        let mask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
+        let mask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.rightMouseDown.rawValue)
             | (1 << CGEventType.otherMouseDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, context in
@@ -142,10 +150,19 @@ final class GlobalShortcut {
         if event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return Unmanaged.passUnretained(event) }
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
             touched = true
+            userInputs &+= 1
             return Unmanaged.passUnretained(event)
         }
-        if type == .keyDown { touched = true }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
+        if type == .keyUp {
+            if code == 9, swallowingV { swallowingV = false; return nil }
+            return Unmanaged.passUnretained(event)
+        }
+        if type == .keyDown {
+            if code == 9, swallowingV { return nil }
+            touched = true
+            userInputs &+= 1
+        }
         let flags = event.flags
         if type == .flagsChanged, let step = KnockKeys.step(code: code, flags: flags) {
             if let nonce = knock.feed(step, at: ProcessInfo.processInfo.systemUptime) { onKnock?(nonce) }
@@ -153,6 +170,10 @@ final class GlobalShortcut {
         if type == .keyDown {
             gesture.otherKeyPressed()
             if code == 53, onCancel?() == true { return nil }
+            if code == 9, flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand), !flags.contains(.maskShift) {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { swallowingV = true; onTypeClipboard?() }
+                return nil
+            }
             if choice == "control-option-space", code == 49,
                flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand),
                !flags.contains(.maskShift) {

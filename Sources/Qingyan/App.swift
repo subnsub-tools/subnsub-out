@@ -198,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if controller.phase == .recording { item(menu, tr("Stop Recording"), #selector(stopRecording)) }
         if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording)) }
         if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording)) }
+        if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard)) }
         let modes = NSMenu()
         for mode in WritingMode.allCases {
             let entry = NSMenuItem(title: mode.title, action: #selector(changeMode(_:)), keyEquivalent: "")
@@ -222,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc private func openMain() { showWindow() }
     @objc private func openSettings() { settings.reveal(.general) }
     @objc private func startRecording() { controller.toggle() }
+    @objc private func typeClipboard() { controller.typeClipboard(from: .menu) }
     @objc private func stopRecording() { controller.finish() }
     @objc private func cancelRecording() { controller.cancel() }
     @objc private func copyResult() { controller.copyResult() }

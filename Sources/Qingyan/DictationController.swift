@@ -102,8 +102,8 @@ final class DictationController: ObservableObject {
     private var boundWasPresent: Bool?
     /// What the status capsule names while processing, and once done. Each is set together with
     /// `message`, so the capsule never has to read the message's words.
-    enum CapsuleStep { case recognizing, polishing, editing, sending }
-    enum CapsuleResult { case inserted, onClipboard, savedToHistory }
+    enum CapsuleStep { case recognizing, polishing, editing, sending, typing }
+    enum CapsuleResult { case inserted, onClipboard, savedToHistory, typed }
     var capsuleStep = CapsuleStep.recognizing
     var capsuleResult = CapsuleResult.inserted
     var presentOverlay: (() -> Void)?
@@ -166,12 +166,14 @@ final class DictationController: ObservableObject {
             case .polishing: return tr("Polishing")
             case .editing: return tr("Editing")
             case .sending: return tr("Sending")
+            case .typing: return tr("Typing %ld / %ld", typedCount, typingTotal)
             }
         case .done:
             switch capsuleResult {
             case .inserted: return tr("Inserted")
             case .onClipboard: return tr("On the clipboard · ⌘V")
             case .savedToHistory: return tr("Saved to History")
+            case .typed: return tr("Typed")
             }
         case .error:
             return message.isEmpty ? tr("Not finished") : message
@@ -192,6 +194,13 @@ final class DictationController: ObservableObject {
             return true
         }
         shortcut.onKnock = { [weak self] nonce in self?.receiver.knocked(nonce) }
+        shortcut.onTypeClipboard = { [weak self] in Task { @MainActor in self?.typeClipboard(from: .shortcut) } }
+        // Where the panel's Type the Clipboard types into: the last app in front other than this one.
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() { lastOtherApp = front }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.processIdentifier != getpid() else { return }
+            MainActor.assumeIsolated { self?.lastOtherApp = app }
+        }
         receiver.onChange = { [weak self] in
             guard let self, self.settings.preferences.linkEnabled else { return }
             if self.remoteListening != self.receiver.listening { self.remoteListening = self.receiver.listening }
@@ -908,6 +917,8 @@ final class DictationController: ObservableObject {
     }
 
     func cancel() {
+        // Typing has a cancel of its own: the recording state (and History) is not its to touch.
+        if typingJob != nil { stopTyping(); return }
         endRemote()
         let discard = busy ? entry?.id : nil
         sessionID = UUID()
@@ -922,8 +933,91 @@ final class DictationController: ObservableObject {
         dismissOverlay?()
     }
 
+    // MARK: - Type the Clipboard (merged from PasteForce, user 2026-11-19)
+
+    @Published private(set) var typedCount = 0
+    @Published private(set) var typingTotal = 0
+
+    /// Stops typing now and puts the input source back; the capsule goes.
+    private func stopTyping() {
+        typingJob?.cancel(); typingJob = nil
+        ClipboardTyper.stopNow()
+        sessionID = UUID()
+        phase = .idle; message = ""
+        dismissOverlay?()
+    }
+    private var typingJob: Task<Void, Never>?
+    private var lastOtherApp: NSRunningApplication?
+    private var activationObserver: NSObjectProtocol?
+
+    /// Types the clipboard's text key by key into the field in front: for fields and screens that
+    /// refuse a paste. Line breaks are typed as Return; a password field is typed into too (both the
+    /// user's choice for this action alone: dictation still never does either). Nothing typed is
+    /// kept: not in History, not in the result.
+    func typeClipboard(from origin: ClipboardTyper.Origin) {
+        guard !busy else { return }
+        settings.refreshPermissions()
+        guard settings.accessibilityAllowed else {
+            showTypingProblem(tr("Accessibility permission is not granted. Allow put in System Settings.")); return
+        }
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            showTypingProblem(tr("The clipboard holds no text.")); return
+        }
+        guard text.count <= KeystrokePlan.longest else {
+            showTypingProblem(tr("The clipboard text is too long to type: %ld characters (maximum %ld).", text.count, KeystrokePlan.longest)); return
+        }
+        // The app to type into is fixed now: the one in front, or (from the panel or the menu, while
+        // this app is active) the one that was in front before it.
+        let front = NSWorkspace.shared.frontmostApplication
+        let target = front.flatMap { $0.processIdentifier == getpid() ? nil : $0 } ?? (origin == .shortcut ? nil : lastOtherApp)
+        guard let target else { showTypingProblem(tr("Click the field you want to type into first.")); return }
+        let id = UUID()
+        sessionID = id
+        result = ""; partial = ""; latency = nil; message = ""
+        typedCount = 0; typingTotal = 0
+        phase = .processing; capsuleStep = .typing
+        presentOverlay?()
+        typingJob = Task { @MainActor [weak self] in
+            do {
+                let count = try await ClipboardTyper.type(text, into: target, from: origin,
+                                                          userInputs: { [weak self] in self?.shortcut.userInputs ?? 0 }) { done, total in
+                    guard let self, self.sessionID == id else { return }
+                    self.typedCount = done; self.typingTotal = total
+                }
+                guard let self, self.sessionID == id else { return }
+                self.typingJob = nil
+                self.phase = .done; self.capsuleResult = .typed
+                self.message = tr("Typed %ld characters", count)
+                self.presentOverlay?()
+                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                guard self.sessionID == id, self.phase == .done else { return }
+                self.dismissOverlay?()
+            } catch is CancellationError {
+                // cancel() has put everything back.
+            } catch {
+                guard let self, self.sessionID == id else { return }
+                self.typingJob = nil
+                self.showTypingProblem(error.localizedDescription)
+            }
+        }
+    }
+
+    private func showTypingProblem(_ problem: String) {
+        let id = UUID()
+        sessionID = id
+        result = ""; partial = ""; latency = nil
+        phase = .error; message = problem
+        presentOverlay?()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, self.sessionID == id, self.phase == .error else { return }
+            self.dismissOverlay?()
+        }
+    }
+
     /// Sleep/quit preserve unfinished work; only an explicit Cancel discards it.
     func suspend() {
+        if typingJob != nil { stopTyping() }
         stopRetry()
         endRemote()
         if busy {

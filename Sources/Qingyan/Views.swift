@@ -817,6 +817,16 @@ struct MainView: View {
             Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6)
             Text(status.text).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(1)
             HeaderIconButton(
+                symbol: "keyboard",
+                active: controller.phase == .processing && controller.capsuleStep == .typing,
+                helpText: tr("Type the Clipboard (⌃⌥V)"),
+                accessibility: tr("Type the clipboard into the field in front, key by key")
+            ) {
+                controller.typeClipboard(from: .panel)
+            }
+            .disabled(controller.busy)
+            .padding(.leading, 3)
+            HeaderIconButton(
                 symbol: PanelSection.history.symbol,
                 active: settings.historyOpen,
                 helpText: settings.historyOpen ? tr("Hide History") : tr("History (%ld)", settings.history.count),

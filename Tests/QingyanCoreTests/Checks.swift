@@ -97,6 +97,7 @@ struct Checks {
             ("Spoken editing: two-step requests, field text as data, markers, smallest changed span", revision),
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
+            ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
             ("Microphone binding: a bound device is used only while connected and never falls back; unbound follows the system", microphoneBinding),
             ("Localization: the language setting, words from a table, formats, English where the table has no word", localization)
@@ -1199,6 +1200,29 @@ struct Checks {
                                    dictionary: [], selection: "", speechPlatform: "groq", textPlatform: "custom")
         let again = try JSONDecoder().decode(SavedDictation.self, from: JSONEncoder().encode(saved))
         try check(again.speechPlatform == "groq" && again.textPlatform == "custom", "the platforms of a recording survive saving")
+    }
+
+    static func keystrokes() throws {
+        let a = KeyStroke(code: 0), shiftA = KeyStroke(code: 0, shift: true), b = KeyStroke(code: 11), at = KeyStroke(code: 19, option: true)
+        let layout: [Character: KeyStroke] = ["a": a, "A": shiftA, "b": b, "@": at]
+        let steps = KeystrokePlan.steps(for: "aA\r\nb\t@\u{4E2D}😀\u{7}\n\r\u{2028}", layout: layout)
+        try check(steps == [.key(a), .key(shiftA), .newline, .key(b), .key(.tabKey), .key(at), .text("\u{4E2D}"), .text("😀"), .newline, .newline, .newline],
+                  "each character is its key, a line break is one Return (\\r\\n too), a tab is Tab, the rest is Unicode, a bell is dropped")
+        try check(KeystrokePlan.steps(for: "👨‍👩‍👧é", layout: [:]) == [.text("👨‍👩‍👧"), .text("é")], "a cluster goes out whole")
+        try check(KeystrokePlan.steps(for: "", layout: layout).isEmpty, "nothing for nothing")
+        try check(KeystrokePlan.pause(after: .newline) > KeystrokePlan.pause(after: .key(a)) && KeystrokePlan.pause(after: .text("\u{4E2D}")) >= 8,
+                  "a line gets longer than a key, and no key goes out faster than every 8 ms")
+        try check(KeyStroke.returnKey.code == 36 && KeyStroke.tabKey.code == 48 && KeystrokePlan.longest == 20_000, "Return, Tab, the longest text")
+        let printable = (32...126).map { Character(UnicodeScalar(UInt8($0))) }
+        try check(printable.allSatisfy { KeystrokePlan.usKeys[$0] != nil } && KeystrokePlan.usKeys.count == 95, "every printable ASCII character has a US key")
+        try check(KeystrokePlan.usKeys["!"] == KeyStroke(code: 18, shift: true) && KeystrokePlan.usKeys["~"] == KeyStroke(code: 50, shift: true)
+                  && KeystrokePlan.usKeys["\\"] == KeyStroke(code: 42) && KeystrokePlan.usKeys["\""] == KeyStroke(code: 39, shift: true), "US keys: ! ~ \\ \"")
+        try check(Set(KeystrokePlan.usKeys.values).count == 95, "no two characters share a key")
+        try check(KeystrokePlan.steps(for: "Pa55!~", layout: KeystrokePlan.usKeys).allSatisfy { if case .key = $0 { return true } else { return false } },
+                  "a password of ASCII goes to a remote desktop as keys alone")
+        try check(["com.apple.ScreenSharing", "com.p5sys.jump.mac.viewer", "com.microsoft.rdc.macos", "com.teamviewer.TeamViewer", "tv.parsec.www"].allSatisfy(KeystrokePlan.isRemoteClient)
+                  && !KeystrokePlan.isRemoteClient("com.apple.Safari") && !KeystrokePlan.isRemoteClient("com.p5sys.jump.connect") && !KeystrokePlan.isRemoteClient(nil),
+                  "remote-desktop clients take keys only; a browser and Jump Desktop Connect (the host agent) do not count")
     }
 
     static func updates() throws {

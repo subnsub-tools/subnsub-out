@@ -72,6 +72,16 @@ The Shelf is at the bottom of the panel. Drop files, images or text anywhere on 
 - Storage and transfer: files are kept in `~/Library/Application Support/Qingyan/Shelf` (folder mode 0700), unencrypted on disk, not uploaded to any cloud or model service. They travel only between Macs in the trust list that are allowed to share the Shelf, on the same port and the same encrypted connection as text.
 - Diagnostics: create `shelf-probe.trigger` in `~/Library/Application Support/Qingyan/`; put reads and deletes it within two seconds. `big 20` adds a generated 20 MB file, removed after two minutes; `fetch` fetches every large file not on this Mac; any other text adds an item "put sync self-test", removed after 8 seconds. This lets you check another Mac's Shelf from a terminal.
 
+## Type the Clipboard
+
+Some places refuse a paste: password fields, forms that block it, and remote desktops or consoles that do not share a clipboard with this Mac. Control + Option + V (or Type the Clipboard in the menu bar menu, or the keyboard button in the panel's title row) types the clipboard text into the active field instead, key by key, as if typed by hand. It uses the Accessibility permission put already has.
+
+- The keys wait until Control, Option and V are released, then go out at about 80 per second, with a short pause after each line. Esc or the capsule's Cancel button stops typing; so do another window coming to the front, a click or a key press, and a change of input source. The capsule shows how far it has gotten.
+- Line breaks are typed as Return and tabs as Tab, so a multi-line script typed into a console runs line by line. It also types into password fields. Both apply to this action only: dictation still never sends Return and does not write into password fields.
+- When typing into an app on this Mac, characters are typed with the keys of the current layout, and other characters (such as Chinese or emoji) as Unicode text. In a remote desktop (Screen Sharing, Jump Desktop, Windows App, VNC viewers, TeamViewer, AnyDesk, Parsec and the like), US keys are used because the other end reads keys, nearly always with a US layout; text containing characters that no key can type is not typed there at all, so nothing arrives with missing characters. When an input method such as Pinyin is active, an ASCII-capable layout is used for typing and the input method is restored afterward.
+- At most 20,000 characters. Nothing typed is kept: not in History, not on the panel.
+- This feature originated from PasteForce, a separate app that did only this; put works with any layout and types any character, waits for the shortcut keys to be released, and paces the keys for remote desktops.
+
 ## Editing existing text by voice
 
 In Dictate mode with Polish on, you can speak an editing command without selecting anything: put the cursor in a text field and say, for example, "clear everything", "delete the previous sentence and replace it with Thursday at three", "change Wednesday to Thursday", "no, let me start over…".
@@ -153,8 +163,8 @@ Install the same put on each Mac. Under Multiple Macs on the panel, turn on work
 - Fn together with another key does not start dictation; the panel and the capsule are separate, and the recording capsule never takes keyboard focus.
 - Dictate and Translate do not capture the cursor at the start. The current insertion point is read only when the final text is ready; the app, control, value or selection before and after recording are not compared, and the cursor, field or app may change while recording or processing. Rewrite reads the selected text only at the start, and its output also goes to the final cursor. With nowhere to write, the text is saved to History and the original app is not reactivated.
 - The selection is replaced through Accessibility where possible; apps that do not support it get Cmd+V. The clipboard is then restored, rich text included, and new content copied meanwhile is not overwritten.
-- put never sends Return or clicks a send button. Some terminals may treat line breaks in pasted text as Enter; do not use it to type unchecked multi-line terminal commands.
-- Password controls, Secure Keyboard Entry and custom-drawn fields that expose no Accessibility are not written to automatically; recording to History still works. Secure Keyboard Entry may block global shortcuts; recording can be started from the panel. Recording needs the Microphone permission and a writable disk, but no key or network.
+- Dictation never sends Return or clicks a send button. Some terminals may treat line breaks in pasted text as Enter; do not use dictation to type unchecked multi-line terminal commands. Type the Clipboard is the exception by design: it types line breaks as Return.
+- Dictation does not automatically write into password controls, fields under Secure Keyboard Entry, or custom-drawn fields without Accessibility support (Type the Clipboard does type into password fields); recording to History still works. Secure Keyboard Entry may block global shortcuts; recording can be started from the panel. Recording needs the Microphone permission and a writable disk, but no key or network.
 - When only the paste keystroke can be sent, there is no proof the target app handled it; the status reads "Paste sent". The time shown runs from the stop key to the write request, not to the target control finishing drawing.
 
 ## Local checks

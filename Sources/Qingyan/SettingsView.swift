@@ -263,6 +263,10 @@ private struct InputGroup: View {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
                 }.buttonStyle(QuietButton())
             }
+            Divider()
+            Row(tr("Type the Clipboard"), info: tr("Control + Option + V types the clipboard's text into the field in front, key by key, where pasting is refused: password fields, forms that block paste, remote desktops and consoles. Line breaks are typed as Return. Esc or the capsule's Cancel button stops it. Nothing typed is kept.")) {
+                Text("⌃ ⌥ V").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.muted)
+            }
         }
     }
 }
