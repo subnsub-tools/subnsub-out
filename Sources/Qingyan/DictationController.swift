@@ -225,7 +225,7 @@ final class DictationController: ObservableObject {
                 defer { self.boundWasPresent = present }
                 guard self.boundWasPresent == true, !present, !self.busy else { return }
                 let name = MicrophoneBinding.displayLabel(boundName: self.settings.preferences.microphoneName, uid: uid)
-                self.warnMicrophone(tr("The locked microphone “%@” was disconnected. input does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
+                self.warnMicrophone(tr("The locked microphone “%@” was disconnected. put does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
             }
         }.store(in: &microphoneSubscriptions)
         // A binding made or changed by hand starts from what is connected now.
@@ -310,7 +310,7 @@ final class DictationController: ObservableObject {
                 : (false, tr("Connected, but the other Mac has not granted Accessibility permission, so it cannot paste.")) },
             context: { TextTarget.field() },
             deliver: { [weak self] request in
-                guard let self else { throw VoiceError(tr("input is quitting on the other Mac.")) }
+                guard let self else { throw VoiceError(tr("put is quitting on the other Mac.")) }
                 return try self.receive(request)
             })
     }
@@ -405,9 +405,9 @@ final class DictationController: ObservableObject {
             } else if !self.found.isEmpty {
                 self.searchNote = ""
             } else if nodes.count == 1 {
-                self.searchNote = tr("Scanned 1 online Mac. No unpaired Mac running input was found.")
+                self.searchNote = tr("Scanned 1 online Mac. No unpaired Mac running put was found.")
             } else {
-                self.searchNote = tr("Scanned %ld online Macs. No unpaired Mac running input was found.", nodes.count)
+                self.searchNote = tr("Scanned %ld online Macs. No unpaired Mac running put was found.", nodes.count)
             }
         }
     }
@@ -596,7 +596,7 @@ final class DictationController: ObservableObject {
                 throw VoiceError(problems.isEmpty ? tr("A remote desktop window is in front, but none of the paired Macs can be reached.")
                     : tr("A remote desktop window is in front, but none of the paired Macs can be reached. %@", problems))
             }
-            throw VoiceError(tr("A remote desktop window is in front, but no paired Mac answered. Make sure input is running on the other Mac and allows writing."))
+            throw VoiceError(tr("A remote desktop window is in front, but no paired Mac answered. Make sure put is running on the other Mac and allows writing."))
         }
         let outcome: WriteResult
         switch plan {

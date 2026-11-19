@@ -30,7 +30,6 @@ final class Updater: ObservableObject {
     private var timer: Timer?
     private var ready: (build: UpdateFeed.Build, app: URL)?
     private var lastCheck = Date.distantPast
-    private let installed = URL(fileURLWithPath: "/Applications/input.app")
 
     let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1"
     private let number = Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0
@@ -47,9 +46,10 @@ final class Updater: ObservableObject {
         }
     }
 
-    /// Whether this copy can be replaced at all: only the one in Applications is.
+    /// Whether this copy can be replaced at all: only the one in Applications is, as put.app or
+    /// (when it could not move there, see `Relocation`) still as input.app.
     private var replaceable: Bool {
-        !settings.preview && Bundle.main.bundleURL.standardizedFileURL.path == installed.path
+        !settings.preview && AppLocation.replaceable(Bundle.main.bundleURL.standardizedFileURL.path)
     }
 
     func start() {
@@ -129,7 +129,7 @@ final class Updater: ObservableObject {
     /// same source and keeps it ready.
     private func update(from source: UpdateFeed.Source) async throws {
         let data: Data = try await ask(source) { delegate in
-            try await URLSession.shared.data(for: UpdateFeed.request(source.latest), delegate: delegate)
+            try await URLSession.shared.data(for: UpdateFeed.request(source.manifest), delegate: delegate)
         }
         guard let build = UpdateFeed.build(in: (try? JSONSerialization.jsonObject(with: data)) as Any, from: source) else {
             throw VoiceError(tr("The list of versions could not be read. The update was canceled."))
@@ -138,7 +138,7 @@ final class Updater: ObservableObject {
         say("Downloading %@…", build.version)
         let app = try await fetch(build)
         ready = (build, app)
-        say("%@ is ready and will install when input is idle", build.version)
+        say("%@ is ready and will install when put is idle", build.version)
         installIfIdle()
     }
 
@@ -154,7 +154,7 @@ final class Updater: ObservableObject {
         let temporary: URL = try await ask(build.source) { delegate in
             try await session.download(for: UpdateFeed.request(build.asset, file: true), delegate: delegate)
         }
-        let zip = folder.appendingPathComponent("input.zip")
+        let zip = folder.appendingPathComponent("put.zip")
         try files.moveItem(at: temporary, to: zip)
         let bytes = try Data(contentsOf: zip, options: .mappedIfSafe)
         let found = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
@@ -165,7 +165,7 @@ final class Updater: ObservableObject {
             throw VoiceError(tr("Could not unpack the package for %@.", build.version))
         }
         try? files.removeItem(at: zip)
-        let app = folder.appendingPathComponent("input.app", isDirectory: true)
+        let app = folder.appendingPathComponent("put.app", isDirectory: true)
         let info = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))
         guard info?["CFBundleIdentifier"] as? String == UpdateFeed.bundleIdentifier,
               Int(info?["CFBundleVersion"] as? String ?? "") == build.number else {
@@ -191,22 +191,20 @@ final class Updater: ObservableObject {
     /// Swaps the bundle in Applications for the one that is waiting and starts it again.
     private func installIfIdle() {
         guard let ready, replaceable, !isBusy() else { return }
+        let placed: URL
         do {
             // Proven again at the moment of use: the folder has been lying on disk since the download.
             try Self.requireSameSigner(ready.app)
-            _ = try FileManager.default.replaceItemAt(installed, withItemAt: ready.app)
+            let here = Bundle.main.bundleURL.standardizedFileURL
+            placed = try FileManager.default.replaceItemAt(here, withItemAt: ready.app) ?? here
         } catch {
             self.ready = nil
-            let reason = error is VoiceError ? error.localizedDescription : tr("Could not replace input in Applications.")
+            let reason = error is VoiceError ? error.localizedDescription : tr("Could not replace put in Applications.")
             say("Version %@ · %@", version, reason)
             return
         }
         UserDefaults.standard.set(ready.build.version, forKey: "updatedTo")
-        // The new copy starts once this one has gone: two cannot run side by side.
-        let relaunch = Process()
-        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relaunch.arguments = ["-c", "while /bin/kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open \"\(installed.path)\""]
-        try? relaunch.run()
+        Relocation.relaunch(placed.path)
         NSApp.terminate(nil)
     }
 

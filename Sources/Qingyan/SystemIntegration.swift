@@ -353,7 +353,7 @@ struct TextTarget {
     }
 
     static func capture() throws -> TextTarget {
-        guard AXIsProcessTrusted() else { throw VoiceError(tr("Accessibility permission is not granted. Allow input in System Settings.")) }
+        guard AXIsProcessTrusted() else { throw VoiceError(tr("Accessibility permission is not granted. Allow put in System Settings.")) }
         guard !IsSecureEventInputEnabled() else { throw VoiceError(tr("Secure input is on. No text is written while a password is being entered.")) }
         guard let app = NSWorkspace.shared.frontmostApplication else {
             throw VoiceError(tr("No app is in focus. The text is saved in History."))

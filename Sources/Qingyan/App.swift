@@ -65,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var window: NSWindow?
     private var overlay: NSPanel?
     private var overlayHost: NSHostingView<VoiceBar>?
+    /// The capsule's size as SwiftUI last laid it out.
+    private var overlayReportedSize: CGSize?
     private var overlayCorner: OverlayPlacement.AnchorCorner = .topCenter
     private var overlayScreenFrame: CGRect?
     private var overlayAnchorOrigin: CGPoint?
@@ -88,7 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: "local.hopo.qingyan")
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if let existing = others.first { existing.activate(); NSApp.terminate(nil); return }
+        // A copy still at the name from before the rename moves to put.app and starts again there.
+        if Relocation.moveIfNeeded() { return }
+        let loginItemRenewed = Relocation.renewLoginItem()
         settings = SettingsStore()
+        if !loginItemRenewed { settings.loginMessage = tr("Open at login could not be set up again after the app moved to put.app. Turn it on again here.") }
         controller = DictationController(settings: settings)
         settings.openPanel = { [weak self] in self?.showWindow() }
         installMainMenu()
@@ -153,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func installStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            button.title = " input"
+            button.title = " put"
             button.imagePosition = .imageLeading
             button.target = self
             button.action = #selector(statusItemClicked(_:))
@@ -162,15 +168,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         labelStatusItem()
         phaseSubscription = controller.$phase.removeDuplicates().sink { [weak self] phase in
             let symbol = phase == .recording ? "mic.fill" : phase == .processing ? "ellipsis" : "waveform"
-            self?.statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "input")
+            self?.statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "put")
         }
     }
 
     /// The status item's tooltip and spoken name, in the chosen language.
     private func labelStatusItem() {
         guard let button = statusItem?.button else { return }
-        button.toolTip = tr("input · Click to show the panel · Right-click for the menu")
-        button.setAccessibilityLabel(tr("input, opens the main panel"))
+        button.toolTip = tr("put · Click to show the panel · Right-click for the menu")
+        button.setAccessibilityLabel(tr("put, opens the main panel"))
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -187,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        item(menu, controller.phase == .recording ? tr("input · Recording") : tr("input · %@ to Start or Stop", settings.shortcutLabel), nil)?.isEnabled = false
+        item(menu, controller.phase == .recording ? tr("put · Recording") : tr("put · %@ to Start or Stop", settings.shortcutLabel), nil)?.isEnabled = false
         menu.addItem(.separator())
         if controller.phase == .recording { item(menu, tr("Stop Recording"), #selector(stopRecording)) }
         if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording)) }
@@ -206,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item(menu, tr("Settings…"), #selector(openSettings))
         if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult)) }
         menu.addItem(.separator())
-        item(menu, tr("Quit input"), #selector(quit))
+        item(menu, tr("Quit put"), #selector(quit))
     }
 
     @discardableResult private func item(_ menu: NSMenu, _ title: String, _ action: Selector?) -> NSMenuItem? {
@@ -235,10 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         preferences.target = self
         application.addItem(preferences)
         application.addItem(.separator())
-        let hide = NSMenuItem(title: tr("Hide input"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hide = NSMenuItem(title: tr("Hide put"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         hide.target = NSApp
         application.addItem(hide)
-        let quit = NSMenuItem(title: tr("Quit input"), action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: tr("Quit put"), action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         application.addItem(quit)
         let edit = NSMenu(title: tr("Edit"))
@@ -329,7 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func makePanel(settings: SettingsStore, controller: DictationController) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.defaultHeight),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "input"
+        window.title = "put"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
@@ -482,8 +488,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func measuredOverlaySize() -> CGSize {
         guard let host = overlayHost else { return OverlayPlacement.defaultSize }
-        host.layoutSubtreeIfNeeded()
-        let fitting = host.fittingSize
+        // The capsule's own view keeps no size of its own (sizingOptions = [], so that it never
+        // resizes the panel by itself), and so its fittingSize is zero: every capsule used to open
+        // at the smallest size, cut off at both ends. A throwaway view of the same content is measured.
+        let probe = NSHostingView(rootView: host.rootView)
+        probe.sizingOptions = .intrinsicContentSize
+        let fitting = probe.fittingSize
         let width = min(max(ceil(fitting.width), 96), 248)
         let height = min(max(ceil(fitting.height), 38), 58)
         return CGSize(width: width, height: height)
@@ -554,12 +564,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             overlay.alphaValue = 0
             overlay.setFrame(NSRect(x: targetFrame.minX, y: targetFrame.minY + dy, width: size.width, height: size.height), display: true)
             overlay.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { context in
+            NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.16
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1)
                 overlay.animator().alphaValue = 1
                 overlay.animator().setFrame(targetFrame, display: true)
-            }
+            }, completionHandler: { [weak self] in
+                // A size SwiftUI reported while the frame was still gliding was undone by it.
+                MainActor.assumeIsolated { if let size = self?.overlayReportedSize { self?.resizeOverlay(to: size) } }
+            })
         } else {
             overlay.orderFrontRegardless()
             overlay.alphaValue = 1
@@ -570,6 +583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     private func resizeOverlay(to rawSize: CGSize) {
+        overlayReportedSize = rawSize
         guard let overlay, overlay.isVisible, !overlayLeaving else { return }
         let size = CGSize(
             width: min(max(ceil(rawSize.width), 96), 248),

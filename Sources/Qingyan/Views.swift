@@ -812,7 +812,7 @@ struct MainView: View {
     private var header: some View {
         HStack(spacing: 5) {
             Image(systemName: "waveform").font(.system(size: 11, weight: .semibold))
-            Text("input").font(.system(size: 13, weight: .bold))
+            Text("put").font(.system(size: 13, weight: .bold))
             Spacer(minLength: 4)
             Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6)
             Text(status.text).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(1)
@@ -968,7 +968,7 @@ struct MainView: View {
                             .background(Color.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.orange.opacity(0.32), lineWidth: 0.8))
                         } else {
-                            caption(resolution.isBound ? tr("This microphone is locked. If it disconnects, input pauses and you are notified; input never switches to another microphone on its own.") : tr("Click any microphone below to lock it permanently."))
+                            caption(resolution.isBound ? tr("This microphone is locked. If it disconnects, put pauses and you are notified; put never switches to another microphone on its own.") : tr("Click any microphone below to lock it permanently."))
                         }
 
                         ForEach(controller.microphones.all) { mic in

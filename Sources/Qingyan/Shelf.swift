@@ -321,7 +321,7 @@ final class ShelfModel: ObservableObject {
         if request == "fetch" {
             for item in store.items where item.isLarge && !store.isPresent(item.id) { sync?.fetch(item.id) }
         } else if request.hasPrefix("big "), let megabytes = Int(request.dropFirst(4)), (1...2048).contains(megabytes) {
-            let file = FileManager.default.temporaryDirectory.appendingPathComponent("input sync self-test \(megabytes)MB.bin")
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("put sync self-test \(megabytes)MB.bin")
             FileManager.default.createFile(atPath: file.path, contents: nil)
             guard let handle = try? FileHandle(forWritingTo: file) else { return }
             var block = [UInt8](repeating: 0, count: 1 << 20)
@@ -337,7 +337,7 @@ final class ShelfModel: ObservableObject {
                 self.store?.remove(item.id)
             }
         } else {
-            guard let item = try? store.add(Data("input sync self-test \(request)".utf8), kind: .text, name: tr("Text.txt"), origin: name) else { return }
+            guard let item = try? store.add(Data("put sync self-test \(request)".utf8), kind: .text, name: tr("Text.txt"), origin: name) else { return }
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 self?.store?.remove(item.id)

@@ -1,7 +1,8 @@
 import Foundation
 
 /// Where new builds of the app come from. Each place holds every signed build as
-/// `input-<version>.zip` and a `latest.json` naming the newest:
+/// `put-<version>.zip` and a `put.json` naming the newest. (Its `latest.json` names the one build
+/// that copies from before the rename, which read only that, take: see `AppLocation`.)
 ///
 /// - first the public repository's standing release `builds`, where its workflow publishes them:
 ///   what anybody can check against the source and the build's attestation, so a build changed on
@@ -24,7 +25,7 @@ public enum UpdateFeed {
             case .site: return URL(string: "https://dashboard.subnsub.com/api/input/")!
             }
         }
-        public var latest: URL { base.appendingPathComponent("latest.json") }
+        public var manifest: URL { base.appendingPathComponent("put.json") }
     }
 
     /// How long GitHub must have been out of reach before the automatic check asks the site.
@@ -52,18 +53,18 @@ public enum UpdateFeed {
         return Int(last)
     }
 
-    /// The build `latest.json` announces:
-    /// `{"version": "0.1.57", "file": "input-0.1.57.zip", "size": 1209759, "sha256": "<64 hex digits>"}`.
+    /// The build `put.json` announces:
+    /// `{"version": "0.1.57", "file": "put-0.1.57.zip", "size": 1209759, "sha256": "<64 hex digits>"}`.
     /// Nil when it is not that. The zip is always fetched from beside the manifest, under the one
     /// name its version gives it: the manifest says which build, never where from.
     public static func build(in manifest: Any, from source: Source) -> Build? {
         guard let object = manifest as? [String: Any], let version = object["version"] as? String,
-              let number = number(of: version), object["file"] as? String == "input-\(version).zip",
+              let number = number(of: version), object["file"] as? String == "put-\(version).zip",
               let size = object["size"] as? Int, size > 0, size <= largest,
               let stated = object["sha256"] as? String else { return nil }
         let digest = stated.lowercased()
         guard digest.count == 64, digest.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
-        return Build(version: version, number: number, asset: source.base.appendingPathComponent("input-\(version).zip"),
+        return Build(version: version, number: number, asset: source.base.appendingPathComponent("put-\(version).zip"),
                      size: size, digest: digest, source: source)
     }
 
@@ -101,7 +102,7 @@ public enum UpdateFeed {
     public static func request(_ url: URL, file: Bool = false) -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: file ? 120 : 20)
         request.setValue(file ? "application/zip" : "application/json", forHTTPHeaderField: "Accept")
-        request.setValue("input-updater", forHTTPHeaderField: "User-Agent")
+        request.setValue("put-updater", forHTTPHeaderField: "User-Agent")
         return request
     }
 
@@ -109,8 +110,27 @@ public enum UpdateFeed {
     public static func problem(status: Int) -> VoiceError {
         switch status {
         case 404: return VoiceError(tr("No version is available from the update server yet."))
-        case 403, 429: return VoiceError(tr("Too many update checks. input will try again automatically."), retryable: true)
+        case 403, 429: return VoiceError(tr("Too many update checks. put will try again automatically."), retryable: true)
         default: return VoiceError(tr("Update check failed (HTTP %ld).", status), retryable: true)
         }
     }
+}
+
+/// Where the app lives. It was called input before it was called put, and the builds from before
+/// the rename install and update it as /Applications/input.app. A copy started from there moves
+/// itself to /Applications/put.app, once, unless something is there already; either way, a copy in
+/// Applications under either name keeps itself up to date.
+public enum AppLocation {
+    public static let current = "/Applications/put.app"
+    public static let legacy = "/Applications/input.app"
+
+    public enum Step: Equatable, Sendable { case stay, move }
+
+    /// What a copy started from `running` does about where it is.
+    public static func step(running: String, currentTaken: Bool) -> Step {
+        running == legacy && !currentTaken ? .move : .stay
+    }
+
+    /// Only a copy in Applications replaces itself with a new build.
+    public static func replaceable(_ running: String) -> Bool { running == current || running == legacy }
 }

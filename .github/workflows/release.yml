@@ -1,4 +1,4 @@
-# Checks, builds, signs and releases input on every push to main.
+# Checks, builds, signs and releases put on every push to main.
 #
 # The app is signed with the self-signed certificate "input signing (SUB&SUB)", whose private
 # key is the secret INPUT_SIGNING_P12 (base64 of the .p12) with INPUT_SIGNING_P12_PASSWORD.
@@ -7,13 +7,19 @@
 # Without the secret (a fork) a run checks and builds the code with an ad-hoc signature and
 # publishes nothing.
 #
-# Builds are assets of one standing release, "builds": input-0.1.<build>.zip and latest.json
-# (version, file, size, sha256), the zip uploaded first and latest.json last, the ten newest zips
+# Builds are assets of one standing release, "builds": put-0.1.<build>.zip and put.json
+# (version, file, size, sha256), the zip uploaded first and put.json last, the ten newest zips
 # kept. Its tag was made once by a maintainer; the repository lets no workflow create or move tags.
+#
+# The app was called input before. Copies installed then read latest.json and take only
+# input-<version>.zip holding input.app, so the first build named put was also published that way,
+# once, with "bridge": true in latest.json: started from /Applications/input.app it moves itself
+# to put.app and reads put.json from then on. latest.json stays on that build for good; a run
+# that finds no bridge there (the first, or after a failed upload) publishes one.
 # Each zip also gets a build provenance attestation (GitHub's, recorded in the public Sigstore
 # log), so that anyone can check which run of this workflow, from which commit, built it.
-# The update feed (https://dashboard.subnsub.com/api/input/latest.json) serves from it. The
-# build number is one more than the larger of the newest build here and the build the feed names
+# The update feed (https://dashboard.subnsub.com/api/input/put.json) serves from it. The
+# build number is one more than the larger of the newest build here and the builds the feed names
 # now, so it only grows.
 
 name: release
@@ -57,11 +63,18 @@ jobs:
         run: |
           set -euo pipefail
           released=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '[.assets[].name | capture("^input-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0' 2>/dev/null || echo 0)
+            --jq '[.assets[].name | capture("^(input|put)-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0' 2>/dev/null || echo 0)
+          # What the feed names: put.json (missing until the first build named put) and latest.json.
           # Retried: a runner's resolver sometimes misses a name for a moment.
-          served=$(curl -fsS --max-time 20 --retry 5 --retry-delay 5 --retry-all-errors https://dashboard.subnsub.com/api/input/latest.json \
-            | python3 -c 'import json, sys; print(int(json.load(sys.stdin)["version"].rsplit(".", 1)[1]))') \
-            || { echo "::error::the update feed could not be read, so the next build number is unknown"; exit 1; }
+          served=0
+          for manifest in put.json latest.json; do
+            code=$(curl -sS --max-time 20 --retry 5 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/feed.json" -w '%{http_code}' \
+              "https://dashboard.subnsub.com/api/input/$manifest") || code=000
+            if [ "$code" = 404 ] && [ "$manifest" = put.json ]; then continue; fi
+            [ "$code" = 200 ] || { echo "::error::the update feed's $manifest could not be read (HTTP $code), so the next build number is unknown"; exit 1; }
+            n=$(python3 -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["version"].rsplit(".", 1)[1]))' "$RUNNER_TEMP/feed.json")
+            served=$(( n > served ? n : served ))
+          done
           build=$(( (released > served ? released : served) + 1 ))
           echo "INPUT_BUILD=$build" >> "$GITHUB_ENV"
           echo "Build $build (newest here $released, feed $served)"
@@ -95,8 +108,8 @@ jobs:
         run: |
           set -euo pipefail
           bash build.sh
-          codesign --verify --strict --verbose=2 build/input.app
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/input.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
+          codesign --verify --strict --verbose=2 build/put.app
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/put.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
 
       - name: Forget the signing identity
         # Nothing after the build signs, so no later step (the attestation action included) gets
@@ -116,7 +129,7 @@ jobs:
           # The requirement every installed copy holds an update to. A build that does not meet it
           # would be refused by them, so it is not released.
           REQUIREMENT='identifier "local.hopo.qingyan" and certificate root = H"5f3964801c4df9f728472f64717dbc410f4e00d8"'
-          codesign --verify --strict -R="$REQUIREMENT" build/input.app
+          codesign --verify --strict -R="$REQUIREMENT" build/put.app
           # A run of an older commit (a rerun) must not publish it as the newest build.
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$head" != "$GITHUB_SHA" ]; then
@@ -124,12 +137,28 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           version="0.1.$INPUT_BUILD"
-          zip="$RUNNER_TEMP/input-$version.zip"
-          ditto -c -k --keepParent build/input.app "$zip"
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          zip="$out/put-$version.zip"
+          ditto -c -k --keepParent build/put.app "$zip"
           size=$(stat -f%z "$zip")
           sum=$(shasum -a 256 "$zip" | cut -d' ' -f1)
-          printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "input-$version.zip" "$size" "$sum" > "$RUNNER_TEMP/latest.json"
-          { echo "publish=true"; echo "version=$version"; echo "zip=$zip"; } >> "$GITHUB_OUTPUT"
+          printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "put-$version.zip" "$size" "$sum" > "$RUNNER_TEMP/put.json"
+          # The bridge for copies from before the rename (see the top): the same signed bundle, its
+          # folder named input.app. A run that cannot read latest.json publishes it again, which
+          # only moves those copies on to a newer build that is just as able to move them.
+          bridge=false
+          if ! gh release download builds --repo "$GITHUB_REPOSITORY" --pattern latest.json --output - 2>/dev/null \
+              | python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("bridge") is True else 1)'; then
+            bridge=true
+            mkdir -p "$RUNNER_TEMP/bridge"
+            ditto build/put.app "$RUNNER_TEMP/bridge/input.app"
+            codesign --verify --strict -R="$REQUIREMENT" "$RUNNER_TEMP/bridge/input.app"
+            old="$out/input-$version.zip"
+            ditto -c -k --keepParent "$RUNNER_TEMP/bridge/input.app" "$old"
+            printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s","bridge":true}\n' "$version" "input-$version.zip" \
+              "$(stat -f%z "$old")" "$(shasum -a 256 "$old" | cut -d' ' -f1)" > "$RUNNER_TEMP/latest.json"
+          fi
+          { echo "publish=true"; echo "version=$version"; echo "zip=$zip"; echo "out=$out"; echo "bridge=$bridge"; } >> "$GITHUB_OUTPUT"
 
       - name: Attest
         # A provenance attestation for the zip, signed by GitHub: anyone can check that it was built
@@ -137,7 +166,7 @@ jobs:
         if: steps.package.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.package.outputs.zip }}
+          subject-path: ${{ steps.package.outputs.out }}/*.zip
 
       - name: Release
         if: steps.package.outputs.publish == 'true'
@@ -145,14 +174,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.package.outputs.version }}
           ZIP: ${{ steps.package.outputs.zip }}
+          OUT: ${{ steps.package.outputs.out }}
+          BRIDGE: ${{ steps.package.outputs.bridge }}
         run: |
           set -euo pipefail
           # The zip first, then the manifest that names it, so the file it names is always there.
           gh release upload builds "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload builds "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release edit builds --repo "$GITHUB_REPOSITORY" --title "input builds" \
-            --notes "The newest is input $VERSION, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate. Installed copies of input update to it by themselves; latest.json names it. Each zip has a build provenance attestation: gh attestation verify input-$VERSION.zip --repo $GITHUB_REPOSITORY"
-          # The ten newest zips stay.
+          gh release upload builds "$RUNNER_TEMP/put.json" --repo "$GITHUB_REPOSITORY" --clobber
+          if [ "$BRIDGE" = true ]; then
+            gh release upload builds "$OUT/input-$VERSION.zip" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload builds "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+          gh release edit builds --repo "$GITHUB_REPOSITORY" --title "put builds" \
+            --notes "The newest is put $VERSION, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate (named before the app was renamed put). Installed copies of put update to it by themselves; put.json names it. latest.json names the one build that copies installed while the app was called input update to; it moves them to put. Each zip has a build provenance attestation: gh attestation verify put-$VERSION.zip --repo $GITHUB_REPOSITORY"
+          # The ten newest put zips stay. The input zips (the bridge, and builds from before it) are left.
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
-            --jq '[.assets[] | select(.name | test("^input-0\\.1\\.[0-9]+\\.zip$")) | {id, n: (.name | capture("0\\.1\\.(?<n>[0-9]+)").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id' |
+            --jq '[.assets[] | select(.name | test("^put-0\\.1\\.[0-9]+\\.zip$")) | {id, n: (.name | capture("0\\.1\\.(?<n>[0-9]+)").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id' |
             while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done

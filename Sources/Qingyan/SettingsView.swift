@@ -245,7 +245,7 @@ private struct InputGroup: View {
                 }
             }
             Divider()
-            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. With Fn, input takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when input quits or another shortcut is chosen.")) {
+            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. With Fn, put takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when put quits or another shortcut is chosen.")) {
                 GlassMenu(label: tr("Shortcut"), selection: $settings.preferences.shortcut,
                           options: [("fn", "Fn / 🌐"), ("control-option-space", "Control + Option + Space")])
                     .onChange(of: settings.preferences.shortcut) { _, _ in controller.refresh() }
@@ -366,7 +366,7 @@ private struct GeneralGroup: View {
                 )).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             if !settings.loginMessage.isEmpty { hint(settings.loginMessage, warning: true) }
-            Row(tr("Install updates automatically"), info: tr("Checks for new versions in the background. Once an update's hash and digital signature are verified, input replaces itself and restarts while idle.")) {
+            Row(tr("Install updates automatically"), info: tr("Checks for new versions in the background. Once an update's hash and digital signature are verified, put replaces itself and restarts while idle.")) {
                 Toggle(tr("Install updates automatically"), isOn: $settings.preferences.autoUpdate).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             HStack(alignment: .center, spacing: 6) {
@@ -379,7 +379,7 @@ private struct GeneralGroup: View {
             HStack {
                 hint(tr("The last 100 finished records are kept on this Mac."))
                 Spacer(minLength: 0)
-                Button(tr("Quit input")) { NSApp.terminate(nil) }.buttonStyle(QuietButton())
+                Button(tr("Quit put")) { NSApp.terminate(nil) }.buttonStyle(QuietButton())
             }
         }
     }
