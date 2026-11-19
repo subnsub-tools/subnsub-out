@@ -1,4 +1,5 @@
-# Checks, builds, signs and releases put on every push to main.
+# Checks, builds, signs and releases put on every push to main, except one that changes only the
+# README or the licence: words alone make no new build (and no update on every Mac).
 #
 # The app is signed with the self-signed certificate "input signing (SUB&SUB)", whose private
 # key is the secret INPUT_SIGNING_P12 (base64 of the .p12) with INPUT_SIGNING_P12_PASSWORD.
@@ -33,6 +34,7 @@ name: release
 on:
   push:
     branches: [main]
+    paths-ignore: [README.md, LICENSE]
   workflow_dispatch:
 
 concurrency:
@@ -229,7 +231,7 @@ jobs:
           # This build's own release, on the commit it was built from, marked the latest.
           {
             printf 'put %s, for Macs with Apple silicon and with Intel (macOS 14 or later), built by GitHub Actions from %s and signed with the input signing certificate (named before the app was renamed put).\n\n' "$VERSION" "$GITHUB_SHA"
-            printf 'To install put on a Mac that has none, run this in Terminal (it checks the download and the signature, and macOS does not stop the first launch):\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\n' "$GITHUB_REPOSITORY"
+            printf 'To install put on a Mac that does not have it, run this in Terminal (it checks the download and the signature, and macOS does not stop the first launch):\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\n' "$GITHUB_REPOSITORY"
             printf 'Or open put-%s.dmg and drag put onto Applications, then open it once and allow it under System Settings → Privacy & Security (the build is not notarized). Installed copies update themselves; put-%s.zip is the same app, for those updates.\n\n' "$VERSION" "$VERSION"
             printf 'Where a file was built: gh attestation verify put-%s.dmg --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
             git log -1 --format=%B "$GITHUB_SHA"
