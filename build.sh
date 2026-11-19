@@ -35,6 +35,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create "${SLICES[@]}" -output "$APP/Contents/MacOS/put"
 lipo "$APP/Contents/MacOS/put" -verify_arch arm64 x86_64 || { printf 'The app is not universal.\n' >&2; exit 1; }
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+# The icon (made from Resources/AppIcon.svg by tools/icon.swift).
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 # The words of the app in Simplified Chinese (QingyanCore's Localization reads zh-Hans.json), and
 # the permission prompts' text for macOS in the same language.
 cp "$ROOT/Resources/zh-Hans.json" "$APP/Contents/Resources/zh-Hans.json"

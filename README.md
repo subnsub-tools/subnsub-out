@@ -14,7 +14,7 @@ The interface is in English and Simplified Chinese (Settings → General → Lan
 
 ## Build and run
 
-Requires macOS 14+ and the Swift 6 toolchain. The Command Line Tools are enough; a full Xcode is not needed. `build.sh` makes one app for Macs with Apple silicon and with Intel: it builds each architecture and joins them with `lipo`.
+Requires macOS 14+ and the Swift 6 toolchain. The Command Line Tools are enough; a full Xcode is not needed. `build.sh` makes one app for Macs with Apple silicon and with Intel: it builds each architecture and joins them with `lipo`. The icon is `Resources/AppIcon.icns`, made from `Resources/AppIcon.svg` (the P of Inter SemiBold beside the bar of the subnsub mark) with `swift tools/icon.swift Resources/AppIcon.svg Resources/AppIcon.icns`.
 
 ```sh
 bash build.sh --install
