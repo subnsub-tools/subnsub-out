@@ -183,16 +183,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording)) }
         if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording)) }
         if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard)) }
-        let modes = NSMenu()
-        for mode in WritingMode.allCases {
-            let entry = NSMenuItem(title: mode.title, action: #selector(changeMode(_:)), keyEquivalent: "")
-            entry.target = self; entry.representedObject = mode.rawValue
-            entry.state = settings.preferences.mode == mode ? .on : .off
-            entry.isEnabled = !controller.busy
-            modes.addItem(entry)
-        }
-        let parent = NSMenuItem(title: tr("Input Mode"), action: nil, keyEquivalent: "")
-        parent.submenu = modes; menu.addItem(parent)
         item(menu, tr("Show Main Panel"), #selector(openMain))
         item(menu, tr("Settings…"), #selector(openSettings))
         if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult)) }
@@ -212,10 +202,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc private func cancelRecording() { controller.cancel() }
     @objc private func copyResult() { controller.copyResult() }
     @objc private func quit() { NSApp.terminate(nil) }
-    @objc private func changeMode(_ sender: NSMenuItem) {
-        guard !controller.busy, let value = sender.representedObject as? String, let mode = WritingMode(rawValue: value) else { return }
-        settings.preferences.mode = mode
-    }
 
     private func installMainMenu() {
         let main = NSMenu()
@@ -670,11 +656,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.hotkeyInstalled = true
         controller.shortcutStatus = tr("Fn is taken over · A single press no longer switches the input source or opens emoji or dictation.")
         try await panel("panel-ready")
-        for mode in [WritingMode.translate, .rewrite] {
-            settings.preferences.mode = mode
-            try await panel("panel-\(mode.rawValue)")
-        }
-        settings.preferences.mode = .dictate
+        controller.recordShortcut()
+        try await panel("panel-shortcut-recording")
+        controller.endShortcutRecording()
         controller.phase = .done
         controller.result = "Preview: Discuss the new plan at 3 p.m. tomorrow."; controller.message = tr("Written to Notes · Saved to history"); controller.latency = 1.42
         try await panel("panel-result")
@@ -803,21 +787,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         func expect(_ ok: Bool, _ what: String) throws { if !ok { throw VoiceError("A click did not reach \(what).") } }
         try await press(258, fromTop: 15)
         try expect(settings.page == .settings, "the settings button in the title row")
+        try await shot("window-settings")
         try await press(258, fromTop: 15)
         try expect(settings.page == .main, "the settings button that returns from Settings to the main page")
         try await press(225, fromTop: 15)
         try expect(settings.historyOpen, "the history button in the title row")
         settings.historyOpen = false
         try await Task.sleep(nanoseconds: 500_000_000)
-        try await press(140, fromTop: 120)
-        try expect(settings.preferences.mode == .translate, "the input mode “Translate”")
-        settings.preferences.mode = .dictate
-        try await Task.sleep(nanoseconds: 300_000_000)
-        try await press(206, fromTop: 156)
+        try await press(35, fromTop: 62)
+        try expect(controller.recordingShortcut, "the shortcut badge")
+        try await press(35, fromTop: 62)
+        try expect(!controller.recordingShortcut, "the shortcut badge, clicked again to keep the shortcut")
+        try await press(206, fromTop: 121)
         try expect(!settings.preferences.polish, "Polish “Off”")
-        try await press(248, fromTop: 156)
+        try await press(248, fromTop: 121)
         try expect(settings.preferences.polish, "Polish “On”")
-        print("Clicks reach the settings and history buttons, the mode choice and the tidying choice.")
+        print("Clicks reach the settings and history buttons, the shortcut badge and the tidying choice.")
         live.close()
         for key in ["panelWishedHeight", "panelLeft", "panelTop"] { UserDefaults.standard.removeObject(forKey: key) }
         print("Rendered \(count) native UI states without recording, API calls, or permission changes.")

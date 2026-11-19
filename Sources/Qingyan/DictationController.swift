@@ -199,7 +199,11 @@ final class DictationController: ObservableObject {
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() { lastOtherApp = front }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.processIdentifier != getpid() else { return }
-            MainActor.assumeIsolated { self?.lastOtherApp = app }
+            MainActor.assumeIsolated {
+                self?.lastOtherApp = app
+                // Another app in front: the keys pressed from now on are meant for it.
+                if self?.recordingShortcut == true { self?.endShortcutRecording() }
+            }
         }
         receiver.onChange = { [weak self] in
             guard let self, self.settings.preferences.linkEnabled else { return }
@@ -285,15 +289,15 @@ final class DictationController: ObservableObject {
         settings.refreshPermissions()
         shortcut.choice = settings.preferences.shortcut
         if settings.accessibilityAllowed { shortcut.start() } else { shortcut.stop() }
-        let installed = shortcut.installed && (shortcut.choice != "fn" || shortcut.fnExclusive)
+        let installed = shortcut.installed && (shortcut.active != .fn || shortcut.fnExclusive)
         if hotkeyInstalled != installed { hotkeyInstalled = installed }
         let nextStatus: String
         if !settings.accessibilityAllowed {
             nextStatus = tr("Accessibility permission is not granted, so the shortcut is not active.")
         } else if !shortcut.installed {
             nextStatus = tr("The shortcut could not start. Grant Accessibility permission again.")
-        } else if shortcut.choice != "fn" {
-            nextStatus = tr("The key combination is in use. The Fn key is returned to macOS.")
+        } else if shortcut.active != .fn {
+            nextStatus = tr("The shortcut is %@. The Fn key is returned to macOS.", settings.shortcutLabel)
         } else if shortcut.fnExclusive {
             nextStatus = tr("Fn is taken over · A single press no longer changes the input source, opens emoji or starts system dictation.")
         } else {
@@ -705,8 +709,57 @@ final class DictationController: ObservableObject {
         reply.localizedCaseInsensitiveContains("clipboard") || reply.contains("\u{526A}\u{8D34}\u{677F}")
     }
 
+    // MARK: - Recording a new shortcut (user 2026-11-19)
+
+    @Published private(set) var recordingShortcut = false
+    /// Why the last key pressed cannot be the shortcut; empty until one is refused.
+    @Published private(set) var shortcutNote = ""
+    private var shortcutDeadline: Task<Void, Never>?
+    /// When a click or Esc last ended the recording of a shortcut: the click on the badge that ends it
+    /// reaches the key monitor first, and must not start it again.
+    private var shortcutEndedByInput = Date.distantPast
+
+    /// The shortcut badge was clicked: the next shortcut pressed becomes the one that starts and stops
+    /// a recording. A second click, Esc or 20 seconds without a usable key leave it as it was.
+    func recordShortcut() {
+        if recordingShortcut { endShortcutRecording(); return }
+        guard !busy, Date().timeIntervalSince(shortcutEndedByInput) > 0.8 else { return }
+        if settings.preview { recordingShortcut = true; return }
+        settings.refreshPermissions()
+        guard settings.accessibilityAllowed else { settings.requestAccessibility(); refresh(); return }
+        if !shortcut.installed { refresh() }
+        guard shortcut.installed else { return }
+        shortcutNote = ""
+        recordingShortcut = true
+        shortcut.onRecorded = { [weak self] verdict in self?.recorded(verdict) }
+        shortcutDeadline = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.endShortcutRecording()
+        }
+    }
+
+    func endShortcutRecording() {
+        shortcutDeadline?.cancel(); shortcutDeadline = nil
+        if !settings.preview { shortcut.onRecorded = nil }
+        if recordingShortcut { recordingShortcut = false }
+        if !shortcutNote.isEmpty { shortcutNote = "" }
+    }
+
+    private func recorded(_ verdict: Shortcut.Verdict?) {
+        switch verdict {
+        case nil: shortcutEndedByInput = Date(); endShortcutRecording()
+        case .refuse(let why)?: shortcutNote = why
+        case .accept(let next)?:
+            endShortcutRecording()
+            settings.preferences.shortcut = next.stored
+            refresh()
+        }
+    }
+
     func takeOverFn() {
         guard !settings.preview, !busy else { return }
+        endShortcutRecording()
         shortcut.stop()
         settings.preferences.shortcut = "fn"
         settings.refreshPermissions()
@@ -737,6 +790,7 @@ final class DictationController: ObservableObject {
     }
 
     private func begin() {
+        endShortcutRecording()
         settings.refreshPermissions()
         guard settings.microphoneAllowed else {
             message = tr("Allow microphone access first.")

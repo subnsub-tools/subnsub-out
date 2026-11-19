@@ -26,6 +26,10 @@ enum Metrics {
     static let drawer: CGFloat = 316
     static let minHeight: CGFloat = 260
     static let defaultHeight: CGFloat = 680
+    /// Before macOS 26 controls are a little wider, and rows draw their gaps a little tighter.
+    static let legacy: Bool = {
+        if #available(macOS 26.0, *) { return false } else { return true }
+    }()
 }
 
 /// Cached motion preferences so animations never query NSWorkspace IPC on every render.
@@ -473,27 +477,49 @@ struct GlassMenu<Value: Hashable>: View {
     @State private var hovered = false
 
     var body: some View {
-        Menu {
-            ForEach(options.indices, id: \.self) { index in
-                Button { selection = options[index].value } label: {
-                    if options[index].value == selection { Label(options[index].title, systemImage: "checkmark") }
-                    else { Text(options[index].title) }
+        let title = Self.short(options.first { $0.value == selection }?.title ?? "—")
+        Group {
+            if #available(macOS 26.0, *) {
+                Menu { items } label: { HStack(spacing: 4) { Text(title).lineLimit(1); chevron } }
+                    .menuStyle(.borderlessButton).fixedSize()
+            } else {
+                // Before macOS 26 a borderless menu button puts an image in its label first and adds an
+                // arrow of its own, which made the model menus so wide that the Settings drawer
+                // overflowed its edge: there the menu shows the name alone and the arrows sit beside it.
+                HStack(spacing: 4) {
+                    Menu { items } label: { Text(title).lineLimit(1) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    chevron.allowsHitTesting(false)
                 }
             }
-        } label: {
-            HStack(spacing: 4) {
-                Text(options.first { $0.value == selection }?.title ?? "—").lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Palette.muted)
-            }
         }
-        .menuStyle(.borderlessButton).fixedSize()
-        .padding(.horizontal, 9).padding(.vertical, 4.5)
+        // The menu button before macOS 26 brings a little room of its own around the name.
+        .padding(.horizontal, Metrics.legacy ? 7 : 9).padding(.vertical, 4.5)
         .frame(minHeight: 26)
         .background(Color.primary.opacity(hovered ? 0.11 : 0.065), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Palette.line, lineWidth: 0.85))
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onHover { hovered = $0 }
         .accessibilityLabel(label)
+    }
+
+    @ViewBuilder private var items: some View {
+        ForEach(options.indices, id: \.self) { index in
+            Button { selection = options[index].value } label: {
+                if options[index].value == selection { Label(options[index].title, systemImage: "checkmark") }
+                else { Text(options[index].title) }
+            }
+        }
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.up.chevron.down").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Palette.muted)
+    }
+
+    /// A long name (a model typed in by hand) is shortened in the middle, so that the menu, which
+    /// keeps its full width, still fits its row.
+    static func short(_ title: String) -> String {
+        title.count <= 22 ? title : String(title.prefix(10)) + "…" + String(title.suffix(10))
     }
 }
 
@@ -531,10 +557,12 @@ struct Row<Trailing: View>: View {
         self.label = label; self.info = info; self.trailing = trailing()
     }
     var body: some View {
-        HStack(spacing: 6) {
-            Text(label).font(.system(size: 12)).lineLimit(1).fixedSize()
+        HStack(spacing: Metrics.legacy ? 4 : 6) {
+            // Shortened only as a last resort: a row too narrow for its label and control must not push
+            // the card past its column.
+            Text(label).font(.system(size: 12)).lineLimit(1).layoutPriority(1)
             if let info { Info(text: info) }
-            Spacer(minLength: 6)
+            Spacer(minLength: 2)
             trailing
         }
     }
@@ -706,6 +734,7 @@ struct MainView: View {
     @State private var shownResult = Outcome(message: "", text: "", latency: nil, failed: false)
     @State private var shownSteps: [Step] = []
     @State private var recordButtonHovered = false
+    @State private var shortcutHovered = false
     @State private var micExpanded = false
 
     private struct Outcome: Equatable {
@@ -797,25 +826,31 @@ struct MainView: View {
     private var recording: Bool { controller.phase == .recording }
     private var processing: Bool { controller.phase == .processing }
 
+    /// The state, as the dot on put and, on hover, in words (user 2026-11-19: no words in the title row).
     private var status: (ok: Bool, text: String) {
-        if recording { return (true, tr("Recording")) }
-        if processing { return (true, tr("Processing")) }
+        if recording { return (true, tr("Recording · Tap %@ again to stop.", settings.shortcutLabel)) }
+        if processing { return (true, tr("Processing · The text is being written.")) }
         if receiving {
             let ok = settings.accessibilityAllowed && controller.remoteListening
-            return (ok, ok ? tr("Ready to receive") : tr("Setup needed"))
+            return (ok, ok ? tr("Ready to receive · Text from the other Macs is typed at the cursor on this Mac.")
+                           : tr("Setup needed · The panel lists the steps still missing."))
         }
-        if controller.boundMicrophoneMissing { return (false, tr("Device offline")) }
+        if controller.boundMicrophoneMissing { return (false, tr("Device offline · The locked microphone is not connected.")) }
         let ok = settings.ready && controller.hotkeyInstalled
-        return (ok, ok ? tr("Ready") : tr("Setup needed"))
+        return (ok, ok ? tr("Ready · Tap %@ to start.", settings.shortcutLabel) : tr("Setup needed · The panel lists the steps still missing."))
     }
 
     private var header: some View {
         HStack(spacing: 5) {
-            Image(systemName: "waveform").font(.system(size: 11, weight: .semibold))
-            Text("put").font(.system(size: 13, weight: .bold))
+            HStack(alignment: .top, spacing: 2) {
+                Text("put").font(.system(size: 13, weight: .bold))
+                Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6).padding(.top, 1)
+            }
+            .contentShape(Rectangle())
+            .help(status.text)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("put · " + status.text)
             Spacer(minLength: 4)
-            Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6)
-            Text(status.text).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(1)
             HeaderIconButton(
                 symbol: "keyboard",
                 active: controller.phase == .processing && controller.capsuleStep == .typing,
@@ -851,7 +886,7 @@ struct MainView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             recordStrip
-            modeCard.padding(.top, 8)
+            polishCard.padding(.top, 8)
             Reveal(open: !receiving) { microphoneCard.padding(.top, 8) }
             Reveal(open: !missing.isEmpty) { setupCard.padding(.top, 8) }
             Reveal(open: resultOpen) { resultCard.padding(.top, 8) }
@@ -866,9 +901,12 @@ struct MainView: View {
 
     private var recordStrip: some View {
         let micOffline = !receiving && controller.boundMicrophoneMissing
-        let headline: String = recording ? tr("Recording, tap again to stop") : processing ? tr("Writing the text…")
+        let choosing = controller.recordingShortcut
+        let headline: String = choosing ? tr("Press the new shortcut")
+            : recording ? tr("Recording, tap again to stop") : processing ? tr("Writing the text…")
             : micOffline ? tr("Locked microphone not connected") : tr("Tap to start, tap again to stop")
-        let subline: String = micOffline ? tr("“%@” offline, no input", controller.boundMicrophoneLabel)
+        let subline: String = choosing ? (controller.shortcutNote.isEmpty ? tr("Fn, a Command key, an F key, or a key with Control or Option · Esc cancels") : controller.shortcutNote)
+            : micOffline ? tr("“%@” offline, no input", controller.boundMicrophoneLabel)
             : settings.sendsRemotely ? tr("Types at the cursor on the focused Mac") : tr("Types the result at the cursor")
         // Worked out one by one: as one expression the button's styling is too much for the type checker.
         let hovered = recordButtonHovered
@@ -883,19 +921,34 @@ struct MainView: View {
             : (micOffline ? tr("The locked microphone is not connected. Click for details.") : tr("Start recording"))
         let stripTint: Color = micOffline ? Color.orange : Palette.accent
         let stripRim: Color = micOffline ? Color.orange.opacity(0.32) : Palette.line
-        let headlineTint: Color = micOffline && !recording ? Color.orange : Palette.ink
+        let headlineTint: Color = micOffline && !recording && !choosing ? Color.orange : Palette.ink
+        let label = settings.shortcutLabel
+        let badgeFill: Color = choosing ? Palette.accent.opacity(0.18) : Color.primary.opacity(shortcutHovered ? 0.15 : 0.09)
+        let badgeRim: Color = choosing ? Palette.accent.opacity(0.7) : Palette.line
+        let refused = choosing && !controller.shortcutNote.isEmpty
         return HStack(spacing: 9) {
-            Text(settings.shortcutLabel)
-                .font(.system(size: settings.shortcutLabel == "fn" ? 15 : 10, weight: .medium, design: .rounded))
-                .padding(.horizontal, 9).frame(height: 32)
-                .background(Color.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Palette.line, lineWidth: 1))
+            // Clicked, it waits for the new shortcut (user 2026-11-19).
+            Button { controller.recordShortcut() } label: {
+                Text(choosing ? "…" : label)
+                    .font(.system(size: choosing || label == "fn" ? 15 : 10, weight: .medium, design: .rounded))
+                    .lineLimit(1)
+                    .padding(.horizontal, 9).frame(minWidth: 32).frame(height: 32)
+                    .background(badgeFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(badgeRim, lineWidth: 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .onHover { shortcutHovered = $0 }
+            .disabled(controller.busy)
+            .help(choosing ? tr("Press the new shortcut, or Esc to keep %@", label) : tr("Shortcut: %@ · Click to change it", label))
+            .accessibilityLabel(choosing ? tr("Press the new shortcut, or Esc to keep %@", label) : tr("Shortcut: %@ · Click to change it", label))
             VStack(alignment: .leading, spacing: 2) {
                 Text(headline)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(headlineTint)
                 Text(subline)
-                    .font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
+                    .font(.system(size: 10.5)).foregroundStyle(refused ? Color.orange : Palette.muted)
+                    .lineLimit(choosing ? 4 : 1).fixedSize(horizontal: false, vertical: choosing)
             }
             Spacer(minLength: 2)
             Button { controller.toggle() } label: {
@@ -1015,28 +1068,10 @@ struct MainView: View {
         }
     }
 
-    private var modeCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 8) {
-                GlassSegments(label: tr("Input mode"), selection: $settings.preferences.mode,
-                              options: WritingMode.allCases.map { ($0, $0.title) })
-                Group {
-                    switch settings.preferences.mode {
-                    case .dictate:
-                        PolishChoice(settings: settings)
-                    case .translate:
-                        Row(tr("Target language")) {
-                            // Kept, and sent to the model, by its English name; shown in the app's language.
-                            GlassMenu(label: tr("Target language"), selection: $settings.preferences.targetLanguage,
-                                      options: ["English", "Simplified Chinese", "Traditional Chinese", "Japanese", "Korean", "French", "German", "Spanish"].map { (value: $0, title: tr($0)) })
-                        }
-                    case .rewrite:
-                        Row(tr("Select text, then say the change"), info: tr("Select text in the app first, then press the shortcut and say how to change it. With no text selected, it works as Dictate.")) { EmptyView() }
-                    }
-                }
-                .frame(height: 26)
-            }
-        }.disabled(controller.busy)
+    /// Dictate / Translate / Rewrite are hidden for now (user 2026-11-19):
+    /// put always dictates, and only Polish is left of that block.
+    private var polishCard: some View {
+        Card { PolishChoice(settings: settings).frame(height: 26) }.disabled(controller.busy)
     }
 
     private struct Step: Identifiable {

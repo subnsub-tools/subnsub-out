@@ -77,9 +77,15 @@ final class GlobalShortcut {
     /// How many keys and clicks of the user's have come in (not this app's own): Type the Clipboard
     /// stops when one comes in between, since it may have moved the focus.
     private(set) var userInputs = 0
-    /// After Control + Option + V, the V is swallowed until it is released, so that its repeats do not
-    /// reach the field once Control and Option are up.
-    private var swallowingV = false
+    /// Keys whose key-down was taken (Control + Option + V, the shortcut, a key pressed while a new
+    /// shortcut is recorded): their repeats and their key-up are taken too until they are released, so
+    /// nothing of them reaches the app in front once the modifiers are up.
+    private var swallowed: Set<Int64> = []
+    /// Keys other than modifiers that are down now, from their key-down and key-up.
+    private var held: Set<Int64> = []
+    /// Whether the Fn key itself is down, from its own events: F keys and arrows carry the Fn flag on
+    /// their own, so the flag on a key-down says nothing.
+    private var fnDown = false
     private var knock = KnockDecoder()
     /// True once the user has typed or clicked. Cleared right after this app pastes, so while it is
     /// still false the cursor has to be sitting exactly behind the pasted text.
@@ -87,16 +93,30 @@ final class GlobalShortcut {
     var choice = "fn" {
         didSet {
             guard choice != oldValue else { return }
+            active = Shortcut(stored: choice) ?? .fn
             gesture.reset()
             updateFnOwnership()
         }
     }
+    /// The shortcut `choice` names; Fn when it names none this version knows.
+    private(set) var active: Shortcut = .fn
+    /// While set, keys are not acted on: the next shortcut pressed is reported here (nil: Esc, the
+    /// recording of a new shortcut is cancelled), and Fn and the shortcut do nothing meanwhile.
+    var onRecorded: ((Shortcut.Verdict?) -> Void)? {
+        didSet {
+            recordingTap = nil
+            // Fn is held for the recording too, or pressing it to record it would also run its macOS action.
+            if (onRecorded == nil) != (oldValue == nil) { updateFnOwnership() }
+        }
+    }
+    /// The modifier key that went down on its own while recording, if it is still the only one.
+    private var recordingTap: Int64?
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var gesture = FnGesture()
     private let fnSystemAction = FnSystemAction()
     var installed: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
-    var fnExclusive: Bool { choice == "fn" && installed && fnSystemAction.isDisabled }
+    var fnExclusive: Bool { active == .fn && installed && fnSystemAction.isDisabled }
 
     func start() {
         guard AXIsProcessTrusted() else { stop(); return }
@@ -128,7 +148,7 @@ final class GlobalShortcut {
     }
 
     private func updateFnOwnership() {
-        if choice == "fn" && installed { fnSystemAction.acquire() }
+        if (active == .fn || onRecorded != nil) && installed { fnSystemAction.acquire() }
         else { fnSystemAction.restore() }
     }
 
@@ -137,60 +157,143 @@ final class GlobalShortcut {
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
         tap = nil; source = nil; gesture.reset()
+        onRecorded = nil
         fnSystemAction.restore()
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+        let pass = Unmanaged.passUnretained(event)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            gesture.reset()
+            // Key-ups may have been missed meanwhile.
+            gesture.reset(); recordingTap = nil; swallowed = []; held = []
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return Unmanaged.passUnretained(event)
+            return pass
         }
         // Keys this app posts itself (the paste, the knock) are not the user's and must not disturb the gesture.
-        if event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return Unmanaged.passUnretained(event) }
+        if event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return pass }
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
             touched = true
             userInputs &+= 1
-            return Unmanaged.passUnretained(event)
+            // A click with the shortcut's modifier held is a chord, not a tap.
+            gesture.otherKeyPressed()
+            recordingTap = nil
+            // A click anywhere ends the recording of a new shortcut, so that typing elsewhere is not taken.
+            onRecorded?(nil)
+            return pass
         }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
-        if type == .keyUp {
-            if code == 9, swallowingV { swallowingV = false; return nil }
-            return Unmanaged.passUnretained(event)
-        }
-        if type == .keyDown {
-            if code == 9, swallowingV { return nil }
+        let flags = event.flags
+        let repeating = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        switch type {
+        case .keyUp:
+            held.remove(code)
+            return swallowed.remove(code) != nil ? nil : pass
+        case .keyDown:
+            if swallowed.contains(code) {
+                if repeating { return nil }
+                swallowed.remove(code)       // its key-up was missed: this is a new press
+            }
+            held.insert(code)
             touched = true
             userInputs &+= 1
+        case .flagsChanged:
+            if code == 63 { fnDown = flags.contains(.maskSecondaryFn) }
+        default: break
         }
-        let flags = event.flags
+        // The knock is read even while a new shortcut is being recorded.
         if type == .flagsChanged, let step = KnockKeys.step(code: code, flags: flags) {
             if let nonce = knock.feed(step, at: ProcessInfo.processInfo.systemUptime) { onKnock?(nonce) }
         } else { knock.reset() }
+        if let onRecorded { return record(type, event, code: code, report: onRecorded) }
         if type == .keyDown {
             gesture.otherKeyPressed()
             if code == 53, onCancel?() == true { return nil }
             if code == 9, flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand), !flags.contains(.maskShift) {
-                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { swallowingV = true; onTypeClipboard?() }
+                if !repeating { onTypeClipboard?() }
+                swallowed.insert(code)
                 return nil
             }
-            if choice == "control-option-space", code == 49,
-               flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand),
-               !flags.contains(.maskShift) {
-                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onToggle?() }
+            // With Fn held, only an F key matches: Fn with another key is a different key.
+            if case let .combination(key, modifiers) = active, code == Int64(key), Self.modifiers(flags) == modifiers,
+               !fnDown || Shortcut.functionKeys[key] != nil {
+                if !repeating { onToggle?() }
+                swallowed.insert(code)
                 return nil
             }
         }
-        if type == .flagsChanged, choice == "fn" {
-            let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
-            let other = !flags.intersection(modifiers).isEmpty
-            if code == 63 {
-                if gesture.flagsChanged(isDown: flags.contains(.maskSecondaryFn), hasOtherModifiers: other) { onToggle?() }
-                // The system Globe action is disabled separately; consuming this event alone is insufficient.
-                return nil
-            } else if other { gesture.otherKeyPressed() }
+        if type == .flagsChanged {
+            switch active {
+            case .fn:
+                let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+                let other = !flags.intersection(modifiers).isEmpty
+                if code == 63 {
+                    let down = flags.contains(.maskSecondaryFn)
+                    if gesture.flagsChanged(isDown: down, hasOtherModifiers: other || (down && handsBusy())) { onToggle?() }
+                    // The system Globe action is disabled separately; consuming this event alone is insufficient.
+                    return nil
+                } else if other { gesture.otherKeyPressed() }
+            case .commandTap(let right):
+                let mine: UInt64 = right ? 0x10 : 0x08, theirs: UInt64 = right ? 0x08 : 0x10
+                if code == (right ? 54 : 55) {
+                    let down = flags.rawValue & mine != 0
+                    let other = !flags.intersection([.maskControl, .maskAlternate, .maskShift, .maskSecondaryFn]).isEmpty
+                        || flags.rawValue & theirs != 0
+                    if gesture.flagsChanged(isDown: down, hasOtherModifiers: other || (down && handsBusy())) { onToggle?() }
+                    // A Command key on its own does nothing in macOS: the event goes on, so no app sees it held.
+                } else { gesture.otherKeyPressed() }
+            case .combination: break
+            }
         }
-        return Unmanaged.passUnretained(event)
+        return pass
+    }
+
+    /// A mouse button or another key already held when a modifier goes down makes it part of a drag or
+    /// a chord, not a tap.
+    private func handsBusy() -> Bool {
+        if NSEvent.pressedMouseButtons != 0 { return true }
+        held = held.filter { CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0)) }
+        return !held.isEmpty
+    }
+
+    static func modifiers(_ flags: CGEventFlags) -> Shortcut.Modifiers {
+        var modifiers: Shortcut.Modifiers = []
+        if flags.contains(.maskControl) { modifiers.insert(.control) }
+        if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+        if flags.contains(.maskShift) { modifiers.insert(.shift) }
+        if flags.contains(.maskCommand) { modifiers.insert(.command) }
+        return modifiers
+    }
+
+    /// Recording a new shortcut: the first key with its modifiers, or a modifier key pressed and let go
+    /// on its own. Keys pressed meanwhile reach no app (nor their repeats and key-ups); modifier keys go
+    /// on, except Fn (as above).
+    private func record(_ type: CGEventType, _ event: CGEvent, code: Int64,
+                        report: (Shortcut.Verdict?) -> Void) -> Unmanaged<CGEvent>? {
+        switch type {
+        case .keyDown:
+            recordingTap = nil
+            swallowed.insert(code)
+            guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return nil }
+            let modifiers = Self.modifiers(event.flags)
+            if code == 53 && modifiers.isEmpty { report(nil) }
+            else if fnDown && Shortcut.functionKeys[Int(code)] == nil {
+                report(.refuse(tr("Fn with another key cannot be the shortcut. Press the key without Fn.")))
+            } else { report(Shortcut.recorded(code: Int(code), modifiers: modifiers)) }
+            return nil
+        case .flagsChanged:
+            guard let bit = Shortcut.modifierBits[Int(code)] else { return Unmanaged.passUnretained(event) }
+            let raw = event.flags.rawValue
+            let count = Shortcut.modifierBits.values.filter { raw & $0 != 0 }.count
+            if raw & bit != 0 {
+                recordingTap = count == 1 && !handsBusy() ? code : nil
+            } else {
+                if recordingTap == code && count == 0 { report(Shortcut.recordedTap(code: Int(code))) }
+                recordingTap = nil
+            }
+            return code == 63 ? nil : Unmanaged.passUnretained(event)
+        default:
+            return Unmanaged.passUnretained(event)
+        }
     }
 }
 

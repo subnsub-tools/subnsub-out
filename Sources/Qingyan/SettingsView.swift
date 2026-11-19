@@ -245,10 +245,14 @@ private struct InputGroup: View {
                 }
             }
             Divider()
-            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. With Fn, put takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when put quits or another shortcut is chosen.")) {
-                GlassMenu(label: tr("Shortcut"), selection: $settings.preferences.shortcut,
-                          options: [("fn", "Fn / 🌐"), ("control-option-space", "Control + Option + Space")])
-                    .onChange(of: settings.preferences.shortcut) { _, _ in controller.refresh() }
+            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. To change the shortcut, click it here or on the panel and press the new one: Fn, a Command key on its own, an F key, or a key with Control or Option. With Fn, put takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when put quits or another shortcut is chosen.")) {
+                Button(controller.recordingShortcut ? tr("Press the new shortcut…") : settings.shortcutLabel) { controller.recordShortcut() }
+                    .buttonStyle(QuietButton())
+                    .help(tr("Shortcut: %@ · Click to change it", settings.shortcutLabel))
+            }
+            if controller.recordingShortcut {
+                hint(controller.shortcutNote.isEmpty ? tr("Fn, a Command key, an F key, or a key with Control or Option · Esc cancels") : controller.shortcutNote,
+                     warning: !controller.shortcutNote.isEmpty)
             }
             HStack(alignment: .top, spacing: 5) {
                 Image(systemName: controller.hotkeyInstalled ? "checkmark.shield" : "exclamationmark.shield")

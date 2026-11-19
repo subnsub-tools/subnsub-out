@@ -443,9 +443,11 @@ final class SettingsStore: ObservableObject {
     init(preview: Bool = false) {
         self.preview = preview
         defaults = preview ? UserDefaults(suiteName: "local.hopo.qingyan.preview")! : .standard
-        let loaded = preview ? Preferences() : defaults.data(forKey: "preferences").flatMap {
+        var loaded = preview ? Preferences() : defaults.data(forKey: "preferences").flatMap {
             try? JSONDecoder().decode(Preferences.self, from: $0)
         } ?? Preferences()
+        // Translate and Rewrite are hidden for now (user 2026-11-19): put always dictates.
+        loaded.mode = .dictate
         preferences = loaded
         // From the decoded value: self cannot be read before every stored property is set.
         Localization.use(Localization.resolve(loaded.language))
@@ -476,7 +478,7 @@ final class SettingsStore: ObservableObject {
         refreshPermissions()
     }
 
-    var shortcutLabel: String { preferences.shortcut == "fn" ? "fn" : "⌃ ⌥ Space" }
+    var shortcutLabel: String { (Shortcut(stored: preferences.shortcut) ?? .fn).label(keyName: KeyboardLayoutMap.name(of:)) }
     var ready: Bool { hasKey && microphoneAllowed && accessibilityAllowed }
     /// Text may go to another Mac: working with others is on and there is someone to work with.
     var sendsRemotely: Bool { preferences.linkEnabled && !preferences.devices.isEmpty }

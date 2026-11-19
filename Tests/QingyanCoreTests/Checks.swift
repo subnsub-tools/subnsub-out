@@ -86,6 +86,7 @@ struct Checks {
         var failed = 0
         let cases: [(String, () throws -> Void)] = [
             ("Fn tap, repeat, chords and reset", fnGesture),
+            ("Shortcuts: stored names, labels, what may be recorded", shortcuts),
             ("Partial/final reconciliation and reordered events", transcripts),
             ("Audio format and manual end-of-turn", session),
             ("Dictionary boundaries and invalid hints", dictionary),
@@ -177,6 +178,44 @@ struct Checks {
         _ = fn.flagsChanged(isDown: true, hasOtherModifiers: false)
         fn.reset()
         try check(!fn.flagsChanged(isDown: false, hasOtherModifiers: false), "stale key release")
+    }
+
+    static func shortcuts() throws {
+        typealias M = Shortcut.Modifiers
+        try check(Shortcut(stored: "fn") == .fn && Shortcut(stored: "control-option-space") == .combination(code: 49, modifiers: [.control, .option]),
+                  "the two shortcuts of earlier versions read as before")
+        try check(Shortcut.combination(code: 49, modifiers: [.control, .option]).stored == "control-option-space", "and the old combination keeps its old name")
+        let all: [Shortcut] = [.fn, .commandTap(right: true), .commandTap(right: false), .combination(code: 40, modifiers: [.control, .shift]),
+                               .combination(code: 96, modifiers: [])]
+        try check(all.allSatisfy { Shortcut(stored: $0.stored) == $0 }, "every shortcut reads back as itself")
+        try check(["", "key", "key:40", "key:40:3:1", "key:x:3", "key:200:3", "key:40:16", "key:-1:3", "right-option", "key:0:0", "key:0:4", "key:9:3", "key:53:1"].allSatisfy { Shortcut(stored: $0) == nil },
+                  "a stored name this version does not know, or a key that could not be recorded, is no shortcut")
+        let names: (Int) -> String? = { $0 == 40 ? "k" : nil }
+        try check(Shortcut.combination(code: 40, modifiers: [.command, .shift, .option, .control]).label(keyName: names) == "⌃ ⌥ ⇧ ⌘ K",
+                  "modifiers in the order of macOS menus, the key as the layout types it, upper case")
+        try check(Shortcut.combination(code: 49, modifiers: [.control, .option]).label(keyName: names) == "⌃ ⌥ Space"
+                  && Shortcut.combination(code: 96, modifiers: []).label(keyName: names) == "F5"
+                  && Shortcut.combination(code: 126, modifiers: [.control]).label(keyName: names) == "⌃ ↑"
+                  && Shortcut.combination(code: 41, modifiers: [.option]).label(keyName: names) == "⌥ #41"
+                  && Shortcut.fn.label(keyName: names) == "fn" && Shortcut.commandTap(right: true).label(keyName: names) == "Right ⌘",
+                  "Space, F keys and arrows by name; a key the layout does not name, by its number")
+        try check(Shortcut.recorded(code: 40, modifiers: [.control]) == .accept(.combination(code: 40, modifiers: [.control]))
+                  && Shortcut.recorded(code: 40, modifiers: [.option, .command]) == .accept(.combination(code: 40, modifiers: [.option, .command]))
+                  && Shortcut.recorded(code: 96, modifiers: []) == .accept(.combination(code: 96, modifiers: [])),
+                  "a key with Control or Option may be the shortcut, and an F key on its own")
+        for (code, modifiers) in [(40, M()), (40, M.shift), (40, M.command), (40, [M.command, M.shift]), (49, M())] as [(Int, M)] {
+            guard case .refuse = Shortcut.recorded(code: code, modifiers: modifiers) else { throw VoiceError("key \(code) with \(modifiers.rawValue) must be refused") }
+        }
+        guard case .refuse = Shortcut.recorded(code: 9, modifiers: [.control, .option]), case .refuse = Shortcut.recorded(code: 53, modifiers: [.control]) else {
+            throw VoiceError("Control + Option + V and Esc are taken")
+        }
+        try check(Shortcut.recordedTap(code: 63) == .accept(.fn) && Shortcut.recordedTap(code: 54) == .accept(.commandTap(right: true))
+                  && Shortcut.recordedTap(code: 55) == .accept(.commandTap(right: false)), "Fn or a Command key tapped on its own")
+        for code in [56, 60, 58, 61, 59, 62] {
+            guard case .refuse = Shortcut.recordedTap(code: code) else { throw VoiceError("a tap of modifier \(code) must be refused") }
+        }
+        try check(Set(Shortcut.modifierBits.values).count == 9 && Shortcut.modifierBits[54] == 0x10 && Shortcut.modifierBits[61] == 0x40,
+                  "each modifier key has a bit of its own")
     }
 
     static func transcripts() throws {
