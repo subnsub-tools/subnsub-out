@@ -8,9 +8,19 @@ The interface is in English and Simplified Chinese (Settings → General → Lan
 
 ## Download and install
 
+On a Mac with macOS 14 or later (Apple silicon or Intel), one line in Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/subnsub-tools/subnsub-put/main/install.sh | sh
+```
+
+[`install.sh`](install.sh) reads `put.json` from the release `builds` (or from our site when GitHub cannot be reached), downloads the zip it names and checks its size and SHA-256 against `put.json`, and that the app inside is put, of that version, signed with put's certificate; only then does it put the app in `/Applications/put.app` (in place of an older copy, and an old `input.app` goes to the Trash) and open it. Run it as yourself, not with sudo. A file that curl downloads carries no quarantine mark, so macOS does not stop the app's first launch; the script's checks stand in for that check. Run it again any time to bring put up to date by hand.
+
+Or from the disk image:
+
 1. Download `put-0.1.<build>.dmg` from the [newest release](https://github.com/subnsub-tools/subnsub-put/releases/latest) (one app for Macs with Apple silicon and with Intel, macOS 14 or later), open it and drag put onto Applications. It has to be `/Applications/put.app`: only a copy there updates itself. (The `put-0.1.<build>.zip` beside it is the same app, for those updates.)
 2. Open `/Applications/put.app`. The first time, macOS refuses to open it, because the build is signed with our own certificate, not an Apple Developer ID, and is not notarized: close the warning, then open System Settings → Privacy & Security, click Open Anyway beside put, and confirm. Updates the app installs itself are not stopped this way.
-3. Set it up as under [First use](#first-use): the service and API key in Settings (the gear at the right end of the panel's title row), and the Microphone and Accessibility permissions on the panel.
+Then set it up as under [First use](#first-use): the service and API key in Settings (the gear at the right end of the panel's title row), and the Microphone and Accessibility permissions on the panel.
 
 ## Build and run
 

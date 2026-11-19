@@ -61,7 +61,9 @@ jobs:
           swift --version
 
       - name: Checks
-        run: swift run QingyanChecks
+        run: |
+          swift run QingyanChecks
+          sh -n install.sh
 
       - name: Build number
         env:
@@ -227,7 +229,8 @@ jobs:
           # This build's own release, on the commit it was built from, marked the latest.
           {
             printf 'put %s, for Macs with Apple silicon and with Intel (macOS 14 or later), built by GitHub Actions from %s and signed with the input signing certificate (named before the app was renamed put).\n\n' "$VERSION" "$GITHUB_SHA"
-            printf 'To install put on a Mac that has none, open put-%s.dmg and drag put onto Applications, then open it once and allow it under System Settings → Privacy & Security (the build is not notarized). Installed copies update themselves; put-%s.zip is the same app, for those updates.\n\n' "$VERSION" "$VERSION"
+            printf 'To install put on a Mac that has none, run this in Terminal (it checks the download and the signature, and macOS does not stop the first launch):\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\n' "$GITHUB_REPOSITORY"
+            printf 'Or open put-%s.dmg and drag put onto Applications, then open it once and allow it under System Settings → Privacy & Security (the build is not notarized). Installed copies update themselves; put-%s.zip is the same app, for those updates.\n\n' "$VERSION" "$VERSION"
             printf 'Where a file was built: gh attestation verify put-%s.dmg --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
             git log -1 --format=%B "$GITHUB_SHA"
           } > "$RUNNER_TEMP/notes.md"
