@@ -155,16 +155,20 @@ jobs:
           size=$(stat -f%z "$zip")
           sum=$(shasum -a 256 "$zip" | cut -d' ' -f1)
           printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "put-$version.zip" "$size" "$sum" > "$RUNNER_TEMP/put.json"
-          # The disk image to install from: open it and drag put onto Applications. hdiutil on a
-          # runner sometimes finds its device busy for a moment, so it is tried three times.
-          stage="$RUNNER_TEMP/dmg"
-          mkdir -p "$stage"
-          ditto build/put.app "$stage/put.app"
-          ln -s /Applications "$stage/Applications"
+          # The disk image to install from: a window with put, a link to Applications and the
+          # background drawn for it (Resources/dmg), laid out by dmgbuild (tools/dmg-settings.py).
+          # dmgbuild is pinned by version and hash, and runs after the signing keychain is gone.
+          # hdiutil on a runner sometimes finds its device busy for a moment, so it is tried three times.
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet --require-hashes --only-binary :all: --no-deps -r tools/dmg-requirements.txt
           dmg="$out/put-$version.dmg"
           made=false
           for attempt in 1 2 3; do
-            if hdiutil create -quiet -volname put -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"; then made=true; break; fi
+            rm -f "$dmg"
+            if "$RUNNER_TEMP/dmgbuild/bin/dmgbuild" -s tools/dmg-settings.py -D app="$PWD/build/put.app" \
+                -D background="$PWD/Resources/dmg/background.png" -D icon="$PWD/Resources/AppIcon.icns" put "$dmg"; then
+              made=true; break
+            fi
             sleep 5
           done
           [ "$made" = true ] || { echo "::error::the disk image could not be made"; exit 1; }
@@ -181,6 +185,8 @@ jobs:
           trap detach EXIT
           codesign --verify --strict -R="$REQUIREMENT" "$mnt/put.app"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$mnt/put.app/Contents/Info.plist")" = "$INPUT_BUILD" ]
+          # And the window: its layout, its background, the link.
+          [ -f "$mnt/.DS_Store" ] && [ -f "$mnt/.background.tiff" ] && [ -L "$mnt/Applications" ]
           trap - EXIT
           detach
           # The bridge for copies from before the rename (see the top): the same signed bundle, its
