@@ -9,7 +9,8 @@
 #
 # Builds are assets of one standing release, "builds": put-0.1.<build>.zip and put.json
 # (version, file, size, sha256), the zip uploaded first and put.json last, the ten newest zips
-# kept. Its tag was made once by a maintainer; the repository lets no workflow create or move tags.
+# kept. Each build is also put-0.1.<build>.dmg (the app and a link to Applications), for a Mac
+# that has no put yet; the updater never reads it. The ten newest are kept. Its tag was made once by a maintainer; the repository lets no workflow create or move tags.
 #
 # The app was called input before. Copies installed then read latest.json and take only
 # input-<version>.zip holding input.app, so the first build named put was also published that way,
@@ -143,6 +144,34 @@ jobs:
           size=$(stat -f%z "$zip")
           sum=$(shasum -a 256 "$zip" | cut -d' ' -f1)
           printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "put-$version.zip" "$size" "$sum" > "$RUNNER_TEMP/put.json"
+          # The disk image to install from: open it and drag put onto Applications. hdiutil on a
+          # runner sometimes finds its device busy for a moment, so it is tried three times.
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          ditto build/put.app "$stage/put.app"
+          ln -s /Applications "$stage/Applications"
+          dmg="$out/put-$version.dmg"
+          made=false
+          for attempt in 1 2 3; do
+            if hdiutil create -quiet -volname put -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"; then made=true; break; fi
+            sleep 5
+          done
+          [ "$made" = true ] || { echo "::error::the disk image could not be made"; exit 1; }
+          hdiutil verify -quiet "$dmg"
+          # What it holds must be the build that was just checked, as it is. The image is detached
+          # however the checks end; a detach the system refuses for a moment is tried again, and
+          # one that never works does not stop the release (the runner is thrown away).
+          mnt="$(mktemp -d)"
+          hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          detach() {
+            for attempt in 1 2 3; do hdiutil detach -quiet "$mnt" && return 0; sleep 3; done
+            hdiutil detach -quiet -force "$mnt" || echo "::warning::the disk image stayed attached at $mnt"
+          }
+          trap detach EXIT
+          codesign --verify --strict -R="$REQUIREMENT" "$mnt/put.app"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$mnt/put.app/Contents/Info.plist")" = "$INPUT_BUILD" ]
+          trap - EXIT
+          detach
           # The bridge for copies from before the rename (see the top): the same signed bundle, its
           # folder named input.app. A run that cannot read latest.json publishes it again, which
           # only moves those copies on to a newer build that is just as able to move them.
@@ -166,7 +195,7 @@ jobs:
         if: steps.package.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.package.outputs.out }}/*.zip
+          subject-path: ${{ steps.package.outputs.out }}/*
 
       - name: Release
         if: steps.package.outputs.publish == 'true'
@@ -179,15 +208,18 @@ jobs:
         run: |
           set -euo pipefail
           # The zip first, then the manifest that names it, so the file it names is always there.
-          gh release upload builds "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload builds "$ZIP" "$OUT/put-$VERSION.dmg" --repo "$GITHUB_REPOSITORY" --clobber
           gh release upload builds "$RUNNER_TEMP/put.json" --repo "$GITHUB_REPOSITORY" --clobber
           if [ "$BRIDGE" = true ]; then
             gh release upload builds "$OUT/input-$VERSION.zip" --repo "$GITHUB_REPOSITORY" --clobber
             gh release upload builds "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
           fi
           gh release edit builds --repo "$GITHUB_REPOSITORY" --title "put builds" \
-            --notes "The newest is put $VERSION, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate (named before the app was renamed put). Installed copies of put update to it by themselves; put.json names it. latest.json names the one build that copies installed while the app was called input update to; it moves them to put. Each zip has a build provenance attestation: gh attestation verify put-$VERSION.zip --repo $GITHUB_REPOSITORY"
-          # The ten newest put zips stay. The input zips (the bridge, and builds from before it) are left.
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
-            --jq '[.assets[] | select(.name | test("^put-0\\.1\\.[0-9]+\\.zip$")) | {id, n: (.name | capture("0\\.1\\.(?<n>[0-9]+)").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id' |
-            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
+            --notes "The newest is put $VERSION, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate (named before the app was renamed put). To install it on a Mac that has no put yet, open put-$VERSION.dmg and drag put onto Applications. Installed copies of put update to it by themselves; put.json names it. latest.json names the one build that copies installed while the app was called input update to; it moves them to put. Each zip has a build provenance attestation: gh attestation verify put-$VERSION.zip --repo $GITHUB_REPOSITORY"
+          # The ten newest put zips stay, and the ten newest disk images. The input zips (the bridge,
+          # and builds from before it) are left.
+          for kind in zip dmg; do
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
+              --jq "[.assets[] | select(.name | test(\"^put-0\\\\.1\\\\.[0-9]+\\\\.$kind\$\")) | {id, n: (.name | capture(\"0\\\\.1\\\\.(?<n>[0-9]+)\").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id" |
+              while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
+          done

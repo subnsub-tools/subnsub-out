@@ -6,6 +6,12 @@ put is an independent implementation. It is not the official Typeless client and
 
 The interface is in English and Simplified Chinese (Settings → General → Language; "Follow macOS" picks Chinese when the first preferred language of macOS is Chinese).
 
+## Download and install
+
+1. Download the newest `put-0.1.<build>.dmg` from the release [builds](https://github.com/subnsub-tools/subnsub-put/releases/tag/builds), open it and drag put onto Applications. It has to be `/Applications/put.app`: only a copy there updates itself. (The `put-0.1.<build>.zip` beside it is the same app, for those updates.)
+2. Open `/Applications/put.app`. The first time, macOS refuses to open it, because the build is signed with our own certificate, not an Apple Developer ID, and is not notarized: close the warning, then open System Settings → Privacy & Security, click Open Anyway beside put, and confirm. Updates the app installs itself are not stopped this way.
+3. Set it up as under [First use](#first-use): the service and API key in Settings (the gear at the right end of the panel's title row), and the Microphone and Accessibility permissions on the panel.
+
 ## Build and run
 
 Requires macOS 14+ and the Swift 6 toolchain. The Command Line Tools are enough; a full Xcode is not needed.
