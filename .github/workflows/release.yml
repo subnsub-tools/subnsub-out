@@ -1,5 +1,5 @@
 # Checks, builds, signs and releases put on every push to main, except one that changes only the
-# README or the licence: words alone make no new build (and no update on every Mac).
+# README or the license: words alone make no new build (and no update on every Mac).
 #
 # The app is signed with the self-signed certificate "input signing (SUB&SUB)", whose private
 # key is the secret INPUT_SIGNING_P12 (base64 of the .p12) with INPUT_SIGNING_P12_PASSWORD.
