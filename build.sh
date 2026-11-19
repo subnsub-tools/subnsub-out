@@ -21,12 +21,19 @@ if [[ "${1:-}" == --install ]] && { /usr/bin/pgrep -x put >/dev/null || /usr/bin
   exit 1
 fi
 # Only the app. The checks reach into the core with a testable import, which a release build does not allow.
-swift build --package-path "$ROOT" -c release --product Qingyan
-BIN="$(swift build --package-path "$ROOT" -c release --show-bin-path)"
+# One app for both kinds of Mac: built once for Apple silicon and once for Intel, and joined into a
+# universal binary. (Both in one swift build would need a full Xcode; this needs only the Command
+# Line Tools.)
+SLICES=()
+for ARCH in arm64 x86_64; do
+  swift build --package-path "$ROOT" -c release --product Qingyan --arch "$ARCH"
+  SLICES+=("$(swift build --package-path "$ROOT" -c release --arch "$ARCH" --show-bin-path)/Qingyan")
+done
 APP="$ROOT/build/put.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/Qingyan" "$APP/Contents/MacOS/put"
+lipo -create "${SLICES[@]}" -output "$APP/Contents/MacOS/put"
+lipo "$APP/Contents/MacOS/put" -verify_arch arm64 x86_64 || { printf 'The app is not universal.\n' >&2; exit 1; }
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # The words of the app in Simplified Chinese (QingyanCore's Localization reads zh-Hans.json), and
 # the permission prompts' text for macOS in the same language.
