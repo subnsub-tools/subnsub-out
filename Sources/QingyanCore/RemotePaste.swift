@@ -383,6 +383,85 @@ public enum RemoteSender {
     }
 }
 
+/// Why text sent to another Mac did not go into a text field there. The receiving Mac sends the
+/// code beside its words, so the sending Mac can say why in its own language and in few words.
+public enum MissReason: String, Sendable {
+    case noField = "no-field"
+    case previousGone = "previous-gone"
+    case secureInput = "secure-input"
+    case passwordField = "password-field"
+    case noApp = "no-app"
+    case accessibility = "accessibility"
+    case pasteFailed = "paste-failed"
+    case notAllowed = "not-allowed"
+    /// Known on the sending Mac only: the receiving Mac could not be reached, no Mac answered, or the
+    /// text went out and no answer came back (it may have been typed).
+    case unreachable = "unreachable"
+    case noAnswer = "no-answer"
+    case unconfirmed = "unconfirmed"
+    case other = "other"
+}
+
+/// What the receiving Mac did with text: its words, and why it is not in a text field when it is not
+/// (it is then on that Mac's clipboard). A string literal is words alone.
+public struct DeliveryOutcome: ExpressibleByStringLiteral, Sendable {
+    public let message: String
+    public let miss: MissReason?
+    public init(message: String, miss: MissReason? = nil) { self.message = message; self.miss = miss }
+    public init(stringLiteral value: String) { self.init(message: value) }
+}
+
+/// The receiving Mac could not write the text; `onClipboard`: it left the text on its clipboard.
+public struct DeliveryProblem: LocalizedError, Sendable {
+    public let miss: MissReason
+    public let message: String
+    public let onClipboard: Bool
+    public init(miss: MissReason, message: String, onClipboard: Bool) { self.miss = miss; self.message = message; self.onClipboard = onClipboard }
+    public var errorDescription: String? { message }
+}
+
+/// What the receiving Mac answered to text it was sent.
+public struct SendReply: Equatable, Sendable {
+    public let message: String
+    /// Why the text is not in a text field there; nil when it is, or when that Mac's version does not say.
+    public let miss: MissReason?
+    /// The text is on that Mac's clipboard.
+    public let onClipboard: Bool
+}
+
+/// The text reached no Mac: the link was down, or the request could not go out.
+public struct RemoteUnreachable: LocalizedError, Sendable {
+    public let description: String
+    public var errorDescription: String? { description }
+}
+
+/// The request went out and no answer came back: the text may have been typed there.
+public struct DeliveryUnconfirmed: LocalizedError, Sendable {
+    public let peer: String
+    public var errorDescription: String? { tr("%@ did not answer after the text was sent. It may have been typed there.", peer) }
+}
+
+/// Text sent to another Mac was not typed there: who (nil when no Mac was chosen), why, and the words.
+public struct RemoteRefusal: LocalizedError, Sendable {
+    public let peer: String?
+    public let miss: MissReason
+    public let description: String
+    /// The text was left on that Mac's clipboard.
+    public let onClipboard: Bool
+    public init(peer: String?, miss: MissReason, description: String, onClipboard: Bool = false) {
+        self.peer = peer; self.miss = miss; self.description = description; self.onClipboard = onClipboard
+    }
+    public var errorDescription: String? { description }
+}
+
+/// Whether a request has gone out, set from the network's queue and read after.
+private final class SentMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sent = false
+    func set() { lock.lock(); sent = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return sent }
+}
+
 /// One dictation's link to every trusted Mac. Armed while the recording is being transcribed;
 /// a knock typed into the front window then tells which of them the user is operating.
 @MainActor
@@ -393,6 +472,8 @@ public final class RemoteSession {
         var armed = false
         var name = ""
         var problem = ""
+        /// Why this Mac said no to the arming, when it said no.
+        var miss: MissReason?
         var seen: Date?
         var elapsed: TimeInterval = 0
         var reply: Once<[String: Any]>?
@@ -451,7 +532,10 @@ public final class RemoteSession {
             do {
                 try await channel.write(["arm": nonce])
                 let reply = try await channel.readObject()
-                guard reply["ok"] as? Bool == true else { throw VoiceError(reply["message"] as? String ?? tr("Not ready.")) }
+                guard reply["ok"] as? Bool == true else {
+                    link.miss = (reply["miss"] as? String).flatMap(MissReason.init(rawValue:)) ?? .other
+                    throw VoiceError(reply["message"] as? String ?? tr("Not ready."))
+                }
                 link.name = reply["name"] as? String ?? channel.peerName
             } catch let error as VoiceError { throw error }
             catch { throw RemoteIO.unreachable(link.device.label, link.device.port) }
@@ -494,34 +578,56 @@ public final class RemoteSession {
     /// One request and its reply on an armed link.
     private func exchange(_ index: Int, _ request: [String: Any], timeout: TimeInterval) async throws -> [String: Any] {
         let link = links[index]
-        guard link.armed, let channel = link.channel else { throw RemoteIO.unreachable(link.device.label, link.device.port) }
+        let unreachable = RemoteUnreachable(description: RemoteIO.unreachable(link.device.label, link.device.port).localizedDescription)
+        guard link.armed, let channel = link.channel else { throw unreachable }
         let deadline = Task {
             try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             channel.close()
         }
         defer { deadline.cancel() }
+        let mark = SentMark()
         do {
             return try await withCheckedThrowingContinuation { continuation in
                 let once = Once(continuation)
                 link.reply = once
-                channel.send(request) { once.resume(.failure($0)) }
+                channel.send(request, sent: { mark.set() }) { once.resume(.failure($0)) }
             }
         } catch let error as VoiceError { throw error }
-        catch { throw RemoteIO.unreachable(link.device.label, link.device.port) }
+        // Once the request is out, a lost answer says nothing about whether the text was typed.
+        catch { throw mark.isSet ? DeliveryUnconfirmed(peer: name(index)) : unreachable }
     }
 
     /// Hands the text to the Mac that claimed the knock and returns what happened there.
     /// `replace`: the text this Mac sent there last, which the new text takes the place of.
     /// `field`: the whole content of that Mac's text field as it was read; `text` is its new content.
     public func send(to index: Int, text: String, mode: WritingMode, seconds: Double, replace: String? = nil,
-                     field: String? = nil, timeout: TimeInterval = 8) async throws -> String {
+                     field: String? = nil, timeout: TimeInterval = 8) async throws -> SendReply {
         var request: [String: Any] = ["text": text, "mode": mode.rawValue, "seconds": seconds]
         if let replace { request["replace"] = replace }
         if let field { request["field"] = field }
         let reply = try await exchange(index, request, timeout: timeout)
         let message = reply["message"] as? String ?? ""
-        guard reply["ok"] as? Bool == true else { throw VoiceError(tr("%@: %@", name(index), message)) }
-        return message
+        let miss = (reply["miss"] as? String).flatMap(MissReason.init(rawValue:))
+        // A Mac of an earlier version says it only in its words: the very phrases it used for the clipboard.
+        let onClipboard = reply["clipboard"] as? Bool ?? Self.mentionsClipboard(message)
+        guard reply["ok"] as? Bool == true else {
+            throw RemoteRefusal(peer: name(index), miss: miss ?? .other, description: tr("%@: %@", name(index), message), onClipboard: onClipboard)
+        }
+        return SendReply(message: message, miss: miss ?? (onClipboard ? .other : nil), onClipboard: onClipboard)
+    }
+
+    /// Whether the words of a Mac of an earlier version say the text was left on its clipboard: the
+    /// phrases those versions used, in English or in Chinese, and not any mention of a clipboard (an
+    /// app may be called Clipboard Editor).
+    public static func mentionsClipboard(_ reply: String) -> Bool {
+        ["stays on the clipboard", "on the other Mac’s clipboard", "on the other Mac's clipboard",
+         "\u{4FDD}\u{7559}\u{5728}\u{526A}\u{8D34}\u{677F}", "\u{5B58}\u{5165}\u{5BF9}\u{7AEF}\u{526A}\u{8D34}\u{677F}"]
+            .contains { reply.localizedCaseInsensitiveContains($0) }
+    }
+
+    /// The Macs that answered the arming with a no, and why.
+    public var refusals: [(peer: String, miss: MissReason)] {
+        links.compactMap { link in link.armed ? nil : link.miss.map { (link.device.label, $0) } }
     }
 
     /// The text of the field that has the keyboard on the Mac that claimed the knock, split at
@@ -594,7 +700,7 @@ public final class RemoteReceiver {
     private var listener: NWListener?
     private var port = 0
     private var probe: (() -> (Bool, String))?
-    private var deliver: ((Request) throws -> String)?
+    private var deliver: ((Request) throws -> DeliveryOutcome)?
     private var context: (() -> (before: String, after: String)?)?
     private var armed: [Int: Channel] = [:]
     private var deadlines: [ObjectIdentifier: DispatchWorkItem] = [:]
@@ -608,7 +714,7 @@ public final class RemoteReceiver {
     /// `context` reads the text field that has the keyboard, for a Mac whose user spoke an editing command.
     public func start(port: Int, probe: @escaping () -> (Bool, String),
                       context: @escaping () -> (before: String, after: String)? = { nil },
-                      deliver: @escaping (Request) throws -> String) {
+                      deliver: @escaping (Request) throws -> DeliveryOutcome) {
         self.probe = probe; self.deliver = deliver; self.context = context
         if listener != nil && self.port == port { return }
         // Replace quietly: the new listener reports its own state, so a retry does not blink the status.
@@ -719,7 +825,10 @@ public final class RemoteReceiver {
             return (["ok": ok, "message": message, "name": name, "paired": true], .close)
         }
         if object["pair"] as? Bool == true { return await pair(object, on: channel, known: device) }
-        guard let device else { return refuse(tr("The other Mac has not added this Mac to its trusted list. Pair the two Macs first.")) }
+        guard let device else {
+            return (["ok": false, "message": tr("The other Mac has not added this Mac to its trusted list. Pair the two Macs first."),
+                     "miss": MissReason.notAllowed.rawValue], .close)
+        }
         if object["peers"] as? Bool == true {
             // A Mac with every permission turned off is told nothing.
             guard device.canWrite || device.canRead || device.canShelf else { return (["ok": true, "peers": [] as [Any]], .close) }
@@ -731,11 +840,14 @@ public final class RemoteReceiver {
             expire(channel.connection, after: nil)
             return (shelf.adopt(channel, hello: object), .handOver)
         }
-        guard device.canWrite else { return refuse(tr("The other Mac does not allow this Mac to type text there.")) }
+        guard device.canWrite else {
+            return (["ok": false, "message": tr("The other Mac does not allow this Mac to type text there."), "miss": MissReason.notAllowed.rawValue], .close)
+        }
         if let nonce = object["arm"] as? Int {
             guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of put. Update both to the same version.")) }
             let (ok, message) = probe?() ?? (false, tr("put on the other Mac is not ready."))
-            guard ok else { return refuse(message) }
+            // The app's probe says no only without Accessibility permission.
+            guard ok else { return (["ok": false, "message": message, "miss": MissReason.accessibility.rawValue], .close) }
             guard armed[nonce] == nil || armed[nonce] === channel else { return refuse(tr("The signal channel is busy. Try again.")) }
             armed[nonce] = channel
             expire(channel.connection, after: Self.armedLifetime)
@@ -750,11 +862,20 @@ public final class RemoteReceiver {
         let replace = (object["replace"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         let field = object["field"] as? String
         guard let text = object["text"] as? String, !text.isEmpty || replace != nil || field != nil else { return refuse(tr("No text was received.")) }
-        guard field == nil || device.canRead else { return refuse(tr("The other Mac does not allow changing its text field.")) }
+        guard field == nil || device.canRead else {
+            return (["ok": false, "message": tr("The other Mac does not allow changing its text field."), "miss": MissReason.notAllowed.rawValue], .close)
+        }
         let request = Request(text: text, mode: WritingMode(rawValue: object["mode"] as? String ?? "") ?? .dictate,
                               seconds: object["seconds"] as? Double ?? 0, replace: replace, field: field)
-        do { return (["ok": true, "message": try deliver?(request) ?? ""], .close) }
-        catch { return refuse(error.localizedDescription) }
+        do {
+            let outcome = try deliver?(request) ?? ""
+            // Said either way, so that the sending Mac never has to guess from the words.
+            var reply: [String: Any] = ["ok": true, "message": outcome.message, "clipboard": outcome.miss != nil]
+            if let miss = outcome.miss { reply["miss"] = miss.rawValue }
+            return (reply, .close)
+        } catch let problem as DeliveryProblem {
+            return (["ok": false, "message": problem.message, "miss": problem.miss.rawValue, "clipboard": problem.onClipboard], .close)
+        } catch { return refuse(error.localizedDescription) }
     }
 
     private func pair(_ object: [String: Any], on channel: Channel, known: TrustedDevice?) async -> ([String: Any], Next) {

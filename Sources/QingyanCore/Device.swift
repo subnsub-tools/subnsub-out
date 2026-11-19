@@ -190,8 +190,9 @@ final class Channel: @unchecked Sendable {
     func write(_ object: [String: Any]) async throws { try await write(try JSONSerialization.data(withJSONObject: object)) }
 
     /// Sends without waiting for it to leave; `failed` is called if it could not.
-    func send(_ object: [String: Any], failed: @escaping @Sendable (Error) -> Void) {
-        do { try enqueue(try JSONSerialization.data(withJSONObject: object)) { error in if let error { failed(error) } } }
+    /// `sent` is called once the frame has gone out, `failed` when it could not.
+    func send(_ object: [String: Any], sent: (@Sendable () -> Void)? = nil, failed: @escaping @Sendable (Error) -> Void) {
+        do { try enqueue(try JSONSerialization.data(withJSONObject: object)) { error in if let error { failed(error) } else { sent?() } } }
         catch { failed(error) }
     }
 

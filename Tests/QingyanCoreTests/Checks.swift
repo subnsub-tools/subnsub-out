@@ -948,7 +948,7 @@ struct Checks {
         // Chinese and English mixed, on two lines, with an emoji: "Line one, Chinese and English mixed." and "Line two".
         let text = "\u{7B2C}\u{4E00}\u{884C}\u{FF0C}\u{4E2D}\u{82F1} mixed\u{3002}\n\u{7B2C}\u{4E8C}\u{884C} 🙂"
         let outcome = try await session.send(to: 0, text: text, mode: .translate, seconds: 4.5)
-        try check(outcome == "Pasted into Notes", "sender learns what the claiming Mac did")
+        try check(outcome == SendReply(message: "Pasted into Notes", miss: nil, onClipboard: false), "sender learns what the claiming Mac did")
         try check(atStudy.count == 1 && atStudy[0].text == text && atStudy[0].mode == .translate && atOffice.isEmpty, "text reaches the claiming Mac only")
         try check(atStudy[0].replace == nil, "ordinary text replaces nothing")
         session.close()
@@ -1003,6 +1003,7 @@ struct Checks {
         let muted = makeSession([peers[0]])
         await muted.arm(timeout: 2)
         try check(muted.armedCount == 0 && muted.problems.first?.contains("does not allow") == true, "a Mac not allowed to write never arms, and is told why")
+        try check(muted.refusals.count == 1 && muted.refusals[0].miss == .notAllowed, "and why, as a code")
         muted.close()
         meAtStudy.canWrite = true
 
@@ -1013,6 +1014,33 @@ struct Checks {
             throw VoiceError("empty text without a replacement must be refused")
         } catch { try check(error.localizedDescription.contains("No text was received") && atStudy.count == 6, "empty text alone is refused") }
         empty.close()
+
+        // Why the text is not in a field there travels with it, as a code beside the words.
+        func answering(_ deliver: @escaping (RemoteReceiver.Request) throws -> DeliveryOutcome) async throws -> SendReply {
+            study.start(port: base, probe: { (true, "ready") }, context: { studyField }, deliver: deliver)
+            let asking = makeSession([peers[0]])
+            defer { asking.close() }
+            await asking.arm(timeout: 2)
+            return try await asking.send(to: 0, text: "Where does it go", mode: .dictate, seconds: 1)
+        }
+        let unfielded = try await answering { _ in DeliveryOutcome(message: "Sent to Finder · No text field found", miss: .noField) }
+        try check(unfielded.miss == .noField && unfielded.onClipboard, "the sender learns why the text is not in a field there, and that it is on that Mac's clipboard")
+        // A Mac of an earlier version says it in words only: its phrases are still understood.
+        try check(RemoteSession.mentionsClipboard("Sent to Finder · No text field found; the text stays on the clipboard (⌘V)")
+                  && RemoteSession.mentionsClipboard("A password field. The text is on the other Mac’s clipboard."),
+                  "the earlier English phrases are understood")
+        let named = try await answering { _ in "Inserted into Clipboard Editor" }
+        try check(named.miss == nil && !named.onClipboard, "an app with clipboard in its name is just where the text went")
+        try check(RemoteSession.mentionsClipboard("\u{5DF2}\u{53D1}\u{9001}\u{81F3} Finder \u{00B7} \u{6587}\u{672C}\u{5DF2}\u{4FDD}\u{7559}\u{5728}\u{526A}\u{8D34}\u{677F}")
+                  && !RemoteSession.mentionsClipboard("\u{526A}\u{8D34}\u{677F}\u{52A9}\u{624B}"), "the earlier Chinese phrase is understood, and no other mention of a clipboard")
+        do {
+            _ = try await answering { _ in throw DeliveryProblem(miss: .passwordField, message: "A password field. The text is on the other Mac’s clipboard.", onClipboard: true) }
+            throw VoiceError("a text the other Mac could not write must be refused")
+        } catch let refusal as RemoteRefusal {
+            try check(refusal.miss == .passwordField && refusal.onClipboard && refusal.peer != nil && refusal.description.contains("password field"),
+                      "a refusal says which Mac, why, and where the text is")
+        }
+        study.start(port: base, probe: { (true, "ready") }, context: { studyField }, deliver: { atStudy.append($0); return "Pasted into Notes" })
         try await Task.sleep(nanoseconds: 200_000_000)
         office.knocked(session.nonce); study.knocked(session.nonce)   // closed sessions leave nothing armed behind
 

@@ -756,6 +756,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             try await bar("bar-\(phase)")
             if phase == .recording || phase == .error { try await panel("panel-\(phase)") }
         }
+        controller.phase = .done; controller.result = "Preview: Discuss the new plan at 3 p.m. tomorrow."
+        controller.capsuleResult = .notWritten(DictationController.missTitle(.noField, peer: "Study"), DictationController.missLine(.noField, clipboard: .there))
+        try await bar("bar-not-typed")
+        controller.capsuleResult = .notWritten(DictationController.missTitle(.unreachable, peer: "Office"), DictationController.missLine(.unreachable, clipboard: .thisMac))
+        try await bar("bar-not-reached")
+        controller.capsuleResult = .inserted
         controller.phase = .recording; controller.connected = false; controller.partial = ""
         try await bar("bar-offline")
         controller.phase = .idle; controller.message = ""; controller.result = ""; settings.section = nil

@@ -1711,6 +1711,8 @@ private struct CapsuleSurface: View {
     let phase: DictationPhase
     @ObservedObject var meter: AudioMeter
     let glass: Bool
+    /// Done, but the text is not where it was meant to go: amber, not green.
+    var warning = false
 
     var body: some View {
         let boost = phase == .recording ? Double(meter.level) * 0.12 : 0
@@ -1728,7 +1730,8 @@ private struct CapsuleSurface: View {
                 )
             case .done:
                 LinearGradient(
-                    colors: [Color(red: 0.15, green: 0.74, blue: 0.36), Color(red: 0.10, green: 0.60, blue: 0.28)],
+                    colors: warning ? [Color(red: 0.86, green: 0.55, blue: 0.10), Color(red: 0.74, green: 0.43, blue: 0.06)]
+                        : [Color(red: 0.15, green: 0.74, blue: 0.36), Color(red: 0.10, green: 0.60, blue: 0.28)],
                     startPoint: .top,
                     endPoint: .bottom
                 ).opacity(0.95)
@@ -1813,7 +1816,7 @@ struct VoiceBar: View {
         .padding(.vertical, 5.5)
         .frame(minHeight: 28)
         .foregroundStyle(.white)
-        .background { CapsuleSurface(phase: controller.phase, meter: meter, glass: glass) }
+        .background { CapsuleSurface(phase: controller.phase, meter: meter, glass: glass, warning: notTyped) }
         .fixedSize()
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -1826,6 +1829,11 @@ struct VoiceBar: View {
         .preferredColorScheme(.dark)
         // A change of language builds the words again everywhere below.
         .id(settings.preferences.language)
+    }
+
+    private var notTyped: Bool {
+        if controller.phase == .done, case .notWritten = controller.capsuleResult { return true }
+        return false
     }
 
     private var hasTrailingButtons: Bool {
@@ -1849,9 +1857,15 @@ struct VoiceBar: View {
                 .font(.system(size: 12.5))
                 .foregroundStyle(.white)
         case .done, .idle:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12.5))
-                .foregroundStyle(.white)
+            if notTyped {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.white)
+            }
         }
     }
 
@@ -1880,6 +1894,20 @@ struct VoiceBar: View {
                     .help(tr("Click to copy the text recognized so far"))
                 }
             }
+        } else if controller.phase == .done, case let .notWritten(title, detail) = controller.capsuleResult {
+            // Which Mac, and why the text is not there: two short lines, the second may wrap once.
+            Button(action: copyFromCapsule) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Text(detail).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.86))
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: 210, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(tr("%@\nClick to copy", controller.message.isEmpty ? controller.capsuleSummary : controller.message))
         } else {
             let text = controller.capsuleSummary
             if !copyablePayload.isEmpty {

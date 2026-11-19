@@ -461,6 +461,17 @@ struct FocusMark {
 struct WriteResult {
     let summary: String
     var onClipboard = false
+    /// Why the text is not in a text field (it is then on the clipboard).
+    var miss: MissReason?
+    /// The other Mac the text went to, by name; nil when it was written on this Mac.
+    var peer: String?
+}
+
+/// Why the text could not be written in front, with the words for it.
+struct TargetProblem: LocalizedError {
+    let miss: MissReason
+    let message: String
+    var errorDescription: String? { message }
 }
 
 @MainActor
@@ -477,10 +488,10 @@ struct TextTarget {
     }
 
     static func capture() throws -> TextTarget {
-        guard AXIsProcessTrusted() else { throw VoiceError(tr("Accessibility permission is not granted. Allow put in System Settings.")) }
-        guard !IsSecureEventInputEnabled() else { throw VoiceError(tr("Secure input is on. No text is written while a password is being entered.")) }
+        guard AXIsProcessTrusted() else { throw TargetProblem(miss: .accessibility, message: tr("Accessibility permission is not granted. Allow put in System Settings.")) }
+        guard !IsSecureEventInputEnabled() else { throw TargetProblem(miss: .secureInput, message: tr("Secure input is on. No text is written while a password is being entered.")) }
         guard let app = NSWorkspace.shared.frontmostApplication else {
-            throw VoiceError(tr("No app is in focus. The text is saved in History."))
+            throw TargetProblem(miss: .noApp, message: tr("No app is in focus. The text is saved in History."))
         }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         guard let raw = attribute(appElement, kAXFocusedUIElementAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else {
@@ -488,7 +499,7 @@ struct TextTarget {
         }
         let element = unsafeBitCast(raw, to: AXUIElement.self)
         let subrole = attribute(element, kAXSubroleAttribute) as? String
-        guard subrole != kAXSecureTextFieldSubrole else { throw VoiceError(tr("To protect privacy, dictated text is not entered into a password field.")) }
+        guard subrole != kAXSecureTextFieldSubrole else { throw TargetProblem(miss: .passwordField, message: tr("To protect privacy, dictated text is not entered into a password field.")) }
         let role = attribute(element, kAXRoleAttribute) as? String ?? ""
         let range = attribute(element, kAXSelectedTextRangeAttribute)
         guard [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(role) || range != nil else {
@@ -513,14 +524,14 @@ struct TextTarget {
         let name = current.app.localizedName ?? tr("the target app")
         try paste(text, keep: !current.editable)
         if current.editable { return WriteResult(summary: tr("Inserted into %@", name)) }
-        return WriteResult(summary: tr("Sent to %@ · No text field found; the text stays on the clipboard (⌘V)", name), onClipboard: true)
+        return WriteResult(summary: tr("Sent to %@ · No text field found; the text stays on the clipboard (⌘V)", name), onClipboard: true, miss: .noField)
     }
 
     /// `keep`: the text stays on the clipboard afterwards.
     private static func paste(_ text: String, hold: TimeInterval = 0.9, keep: Bool = false) throws {
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else {
-            throw VoiceError(tr("Could not send the paste keystroke. Click the text to copy it."))
+            throw TargetProblem(miss: .pasteFailed, message: tr("Could not send the paste keystroke. Click the text to copy it."))
         }
         down.flags = .maskCommand; up.flags = .maskCommand
         PasteboardLease.general.supply(text, hold: hold, keep: keep) {
@@ -554,10 +565,10 @@ struct TextTarget {
             if text.isEmpty { backspace(1) } else { try paste(text) }
             return done
         }
-        guard !text.isEmpty else { throw VoiceError(tr("The cursor has moved and the previous text was not found. Nothing was deleted.")) }
+        guard !text.isEmpty else { throw TargetProblem(miss: .previousGone, message: tr("The cursor has moved and the previous text was not found. Nothing was deleted.")) }
         try paste(text, keep: !current.editable)
         if current.editable { return WriteResult(summary: tr("Previous text not found; new text added to %@", name)) }
-        return WriteResult(summary: tr("Previous text not found; new text added to %@ · The text stays on the clipboard", name), onClipboard: true)
+        return WriteResult(summary: tr("Previous text not found; new text added to %@ · The text stays on the clipboard", name), onClipboard: true, miss: .previousGone)
     }
 
     private static func focusedText(in app: NSRunningApplication) -> (AXUIElement, String)? {

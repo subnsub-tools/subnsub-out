@@ -103,7 +103,9 @@ final class DictationController: ObservableObject {
     /// What the status capsule names while processing, and once done. Each is set together with
     /// `message`, so the capsule never has to read the message's words.
     enum CapsuleStep { case recognizing, polishing, editing, sending, typing }
-    enum CapsuleResult { case inserted, onClipboard, savedToHistory, typed }
+    /// `notWritten`: the text did not go into a text field on the Mac it was meant for; a title naming
+    /// that Mac and a line saying why and where the text is.
+    enum CapsuleResult { case inserted, onClipboard, savedToHistory, typed, notWritten(String, String) }
     var capsuleStep = CapsuleStep.recognizing
     var capsuleResult = CapsuleResult.inserted
     var presentOverlay: (() -> Void)?
@@ -174,6 +176,7 @@ final class DictationController: ObservableObject {
             case .onClipboard: return tr("On the clipboard · ⌘V")
             case .savedToHistory: return tr("Saved to History")
             case .typed: return tr("Typed")
+            case .notWritten(let title, let detail): return tr("%@ · %@", title, detail)
             }
         case .error:
             return message.isEmpty ? tr("Not finished") : message
@@ -500,7 +503,7 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func receive(_ request: RemoteReceiver.Request) throws -> String {
+    private func receive(_ request: RemoteReceiver.Request) throws -> DeliveryOutcome {
         if !request.text.isEmpty && request.field == nil {
             do { try settings.addHistory(HistoryEntry(text: request.text, mode: request.mode, seconds: request.seconds)) }
             catch { settings.historyMessage = tr("Text from another Mac was received but could not be saved to History on this Mac. Check the disk space.") }
@@ -514,20 +517,23 @@ final class DictationController: ObservableObject {
             } else {
                 outcome = try request.replace.map { try TextTarget.replace($0, with: request.text, untouched: cursorUntouched(after: $0)) }
                     ?? TextTarget.insertAtFocus(request.text)
-                notePasted(request.text)
+                if outcome.miss == nil { notePasted(request.text) } else { pasted = nil }
             }
-            guard !busy else { return outcome.summary }
+            guard !busy else { return DeliveryOutcome(message: outcome.summary, miss: outcome.miss) }
             sessionID = id
             result = request.field == nil ? request.text : ""; latency = nil
-            phase = .done; capsuleResult = outcome.onClipboard ? .onClipboard : .inserted
+            phase = .done
+            if let miss = outcome.miss { capsuleResult = .notWritten(Self.missTitle(miss, peer: nil), Self.missLine(miss, clipboard: .here)) }
+            else { capsuleResult = outcome.onClipboard ? .onClipboard : .inserted }
             message = tr("From another Mac · %@ · Saved to History", outcome.summary)
             presentOverlay?()
+            let linger: UInt64 = outcome.miss == nil ? 2_200_000_000 : 5_000_000_000
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                try? await Task.sleep(nanoseconds: linger)
                 guard let self, self.sessionID == id, self.phase == .done else { return }
                 self.dismissOverlay?()
             }
-            return outcome.summary
+            return DeliveryOutcome(message: outcome.summary, miss: outcome.miss)
         } catch {
             let kept = keepOnClipboard(request.text)
             if !busy {
@@ -538,8 +544,9 @@ final class DictationController: ObservableObject {
                     : tr("Text from another Mac could not be written: %@", error.localizedDescription)
                 presentOverlay?()
             }
-            guard kept else { throw error }
-            throw VoiceError(tr("%@ The text is on the other Mac’s clipboard.", error.localizedDescription))
+            let miss = (error as? TargetProblem)?.miss ?? .other
+            guard kept else { throw DeliveryProblem(miss: miss, message: error.localizedDescription, onClipboard: false) }
+            throw DeliveryProblem(miss: miss, message: tr("%@ The text is on the other Mac’s clipboard.", error.localizedDescription), onClipboard: true)
         }
     }
 
@@ -674,17 +681,32 @@ final class DictationController: ObservableObject {
             case .field(let old): field = old
             case .previous(let previous): replace = previous
             }
-            let reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field)
-            lastDelivered = text.isEmpty || field != nil ? nil : Delivered(text: text, peer: id, mark: FocusMark.current(), at: Date())
-            return WriteResult(summary: tr("%@: %@", name, reply), onClipboard: Self.mentionsClipboard(reply))
+            let reply: SendReply
+            do { reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field) }
+            catch let refusal as RemoteRefusal { throw refusal }
+            catch is CancellationError { throw CancellationError() }
+            catch let error as RemoteUnreachable { throw RemoteRefusal(peer: name, miss: .unreachable, description: error.description) }
+            catch let error as DeliveryUnconfirmed { throw RemoteRefusal(peer: name, miss: .unconfirmed, description: error.localizedDescription) }
+            catch { throw RemoteRefusal(peer: name, miss: .other, description: error.localizedDescription) }
+            // A text that may not be in a field is nothing to take back by backspace later.
+            lastDelivered = text.isEmpty || field != nil || reply.miss != nil ? nil
+                : Delivered(text: text, peer: id, mark: FocusMark.current(), at: Date())
+            return WriteResult(summary: tr("%@: %@", name, reply.message), onClipboard: reply.onClipboard, miss: reply.miss, peer: name)
         }
         if let session, RemoteWire.showsAnotherScreen(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
             if session.armedCount == 0 {
                 let problems = session.problems.joined(separator: " ")
-                throw VoiceError(problems.isEmpty ? tr("A remote desktop window is in front, but none of the paired Macs can be reached.")
-                    : tr("A remote desktop window is in front, but none of the paired Macs can be reached. %@", problems))
+                // A Mac that said no, and why, before one that could not be reached.
+                if let refusal = session.refusals.first {
+                    throw RemoteRefusal(peer: refusal.peer, miss: refusal.miss,
+                                        description: tr("A remote desktop window is in front, but none of the paired Macs can be reached. %@", problems))
+                }
+                throw RemoteRefusal(peer: nil, miss: .unreachable,
+                                    description: problems.isEmpty ? tr("A remote desktop window is in front, but none of the paired Macs can be reached.")
+                                        : tr("A remote desktop window is in front, but none of the paired Macs can be reached. %@", problems))
             }
-            throw VoiceError(tr("A remote desktop window is in front, but no paired Mac answered. Make sure put is running on the other Mac and allows writing."))
+            throw RemoteRefusal(peer: nil, miss: .noAnswer,
+                                description: tr("A remote desktop window is in front, but no paired Mac answered. Make sure put is running on the other Mac and allows writing."))
         }
         let outcome: WriteResult
         switch plan {
@@ -697,16 +719,47 @@ final class DictationController: ObservableObject {
             lastDelivered = text.isEmpty ? nil : Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
         case .insert:
             outcome = try TextTarget.insertAtFocus(text)
-            notePasted(text)
-            lastDelivered = Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
+            if outcome.miss == nil {
+                notePasted(text)
+                lastDelivered = Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
+            } else { pasted = nil; lastDelivered = nil }
         }
         return outcome
     }
 
-    /// Whether another Mac's reply says the text was left on its clipboard. Its words are all the
-    /// reply carries: English, or Chinese from a Mac set to Chinese or running an earlier version.
-    private static func mentionsClipboard(_ reply: String) -> Bool {
-        reply.localizedCaseInsensitiveContains("clipboard") || reply.contains("\u{526A}\u{8D34}\u{677F}")
+    enum ClipboardPlace { case here, thisMac, there }
+
+    /// The capsule's first line. Pasted with no text field in sight, or sent with no answer back, the
+    /// text may still have gone in: that is not confirmed, rather than not typed.
+    static func missTitle(_ miss: MissReason, peer: String?) -> String {
+        let unsure = [MissReason.noField, .previousGone, .unconfirmed].contains(miss)
+        guard let peer else { return unsure ? tr("Not confirmed on this Mac") : tr("Not typed on this Mac") }
+        return unsure ? tr("Not confirmed on %@", peer) : tr("Not typed on %@", peer)
+    }
+
+    /// Why the text is not in a text field, and where it is, in few enough words for the capsule.
+    static func missLine(_ miss: MissReason, clipboard: ClipboardPlace?) -> String {
+        let why: String
+        switch miss {
+        case .noField: why = tr("No text field found")
+        case .previousGone: why = tr("The earlier text was not found")
+        case .secureInput: why = tr("Secure input is on")
+        case .passwordField: why = tr("A password field is in front")
+        case .noApp: why = tr("No app in front")
+        case .accessibility: why = tr("No Accessibility permission")
+        case .pasteFailed: why = tr("The paste keystroke failed")
+        case .notAllowed: why = tr("Typing from this Mac is not allowed")
+        case .unreachable: why = tr("Could not be reached")
+        case .noAnswer: why = tr("No paired Mac answered")
+        case .unconfirmed: why = tr("No answer after sending")
+        case .other: why = tr("The panel shows the reason")
+        }
+        switch clipboard {
+        case .here?: return tr("%@ · On the clipboard (⌘V)", why)
+        case .thisMac?: return tr("%@ · On this Mac’s clipboard (⌘V)", why)
+        case .there?: return tr("%@ · On its clipboard", why)
+        case nil: return why
+        }
     }
 
     // MARK: - Recording a new shortcut (user 2026-11-19)
@@ -915,6 +968,8 @@ final class DictationController: ObservableObject {
                     var outcome = ""
                     var onClipboard = false
                     var missed = false
+                    // Meant for another Mac and not typed there: said on the capsule at once, with why.
+                    var notTyped: (title: String, detail: String)?
                     do {
                         let written = try await self.deliver(final, plan: plan, resolved: resolved,
                                                              mode: request.mode, seconds: self.entry?.seconds ?? 0)
@@ -922,6 +977,9 @@ final class DictationController: ObservableObject {
                         parts.append(tr("Saved to History"))
                         outcome = parts.joined(separator: " · ")
                         onClipboard = written.onClipboard
+                        if let miss = written.miss, let peer = written.peer {
+                            notTyped = (Self.missTitle(miss, peer: peer), Self.missLine(miss, clipboard: .there))
+                        }
                     }
                     catch {
                         if Task.isCancelled || error is CancellationError { return }
@@ -932,16 +990,20 @@ final class DictationController: ObservableObject {
                         outcome = parts.joined(separator: " · ")
                         onClipboard = kept
                         missed = true
+                        if let refusal = error as? RemoteRefusal {
+                            notTyped = (refusal.peer.map { Self.missTitle(refusal.miss, peer: $0) } ?? tr("Not sent to another Mac"),
+                                        Self.missLine(refusal.miss, clipboard: kept ? .thisMac : (refusal.onClipboard ? .there : nil)))
+                        }
                     }
                     guard self.sessionID == id else { return }
-                    self.capsuleResult = onClipboard ? .onClipboard : .inserted
+                    self.capsuleResult = notTyped.map { .notWritten($0.title, $0.detail) } ?? (onClipboard ? .onClipboard : .inserted)
                     self.message = outcome
                     self.latency = self.stopTime.map { Date().timeIntervalSince($0) }
                     self.phase = .done
                     self.client = nil; self.audioFile = nil
                     self.clock?.cancel()
                     self.job = nil
-                    let linger: UInt64 = missed ? 5_000_000_000 : 2_000_000_000
+                    let linger: UInt64 = missed || notTyped != nil ? 5_000_000_000 : 2_000_000_000
                     Task { [weak self] in
                         try? await Task.sleep(nanoseconds: linger)
                         guard let self, self.sessionID == id, self.phase == .done else { return }
