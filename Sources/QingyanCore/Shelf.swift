@@ -319,6 +319,9 @@ public final class ShelfSync {
     private var tried: [String: Date] = [:]
     /// Who this Mac is to the others, and the port it listens on itself.
     public var identity = DeviceIdentity()
+    /// What the other Macs call this one, where that is not its key: helper:<agent id> through
+    /// the Monitor helper (HelperLink), for the tie-break between two calls.
+    public var selfID: String?
     public var listening = RemoteWire.defaultPort
     private var fetches: [UUID: Fetch] = [:]
     /// Macs that asked this one for bytes it is itself still fetching, and from where in the file.
@@ -421,7 +424,7 @@ public final class ShelfSync {
     /// other at the same moment keep the call made by the one with the smaller key, and since
     /// both apply the same rule they keep the same one. False when the new link was the one to go.
     private func settle(_ link: Link) -> Bool {
-        let mine = identity.publicKey
+        let mine = HelperLink.agent(of: link.key) != nil ? (selfID ?? identity.publicKey) : identity.publicKey
         func caller(_ link: Link) -> String { link.dialled ? mine : link.key }
         if let existing = links.first(where: { $0.key == link.key }) {
             if caller(existing) <= caller(link) { link.alive = false; link.channel.close(); return false }

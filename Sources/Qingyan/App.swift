@@ -684,25 +684,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.shortcutStatus = tr("Fn is taken over · A single press no longer switches the input source or opens emoji or dictation.")
         try await panel("remote-off", .remote)
         settings.preferences.linkEnabled = true
+        controller.helperState = .missing
+        try await panel("remote-no-helper", .remote)
+        controller.helperState = .ready
         try await panel("remote-empty", .remote)
-        let first = TrustedDevice(key: "preview-key-1", name: "Study Mac mini", host: "100.64.0.2", port: 18765)
-        var second = TrustedDevice(key: "preview-key-2", name: "Office MacBook", host: "", port: 18765)
-        second.canRead = false
+        let first = TrustedDevice(key: HelperLink.id("previewStudy"), name: "Study", host: HelperLink.id("previewStudy"), port: RemoteWire.defaultPort)
+        let second = TrustedDevice(key: HelperLink.id("previewOffice"), name: "Office", host: HelperLink.id("previewOffice"), port: RemoteWire.defaultPort)
         settings.preferences.devices = [first, second]
         controller.peerStatus = [first.key: "Preview: Ready to receive."]
         controller.peerReachable = [first.key: true]
-        controller.remoteListening = true; controller.remoteStatus = tr("Listening on port 18765 · Ready")
+        controller.remoteListening = true; controller.remoteStatus = tr("Ready to receive through the Monitor helper")
         try await panel("panel-sender")
         try await panel("panel-sender-dark", dark: true)
-        controller.found = [RemoteSender.Found(key: "preview-key-3", name: "Living room iMac", host: "100.64.0.9", port: 18765),
-                            RemoteSender.Found(key: "preview-key-4", name: "Old MacBook Air", host: "100.64.0.12", port: 18765)]
-        controller.pairing = ["100.64.0.12": tr("Waiting for the other Mac to confirm · code %@", "482 913")]
-        try await panel("remote-setup", .remote)
-        controller.pairRequests = [RemoteReceiver.PairRequest(device: TrustedDevice(key: "preview-key-5", name: "Workstation MacBook", host: "100.64.0.20", port: 18765),
-                                                              code: "305 771", answer: { _ in })]
-        try await panel("remote-request")
-        try await panel("remote-request-dark", dark: true)
-        controller.pairRequests = []; controller.found = []; controller.pairing = [:]
+        try await panel("remote-macs", .remote)
         settings.hasKey = false; settings.microphoneAllowed = false
         try await panel("panel-receiver-only")
         if let far = settings.preferences.devices.last {

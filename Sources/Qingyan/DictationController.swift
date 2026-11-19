@@ -24,25 +24,22 @@ final class DictationController: ObservableObject {
     @Published var shortcutStatus = tr("Waiting for Accessibility permission.")
     @Published var remoteListening = false
     @Published var remoteStatus = ""
-    @Published private(set) var tailnetAddress: String?
     /// Per paired Mac: the last test result, and which tests are running.
     @Published var peerStatus: [String: String] = [:]
     @Published var peerTesting: Set<String> = []
     /// Whether each paired Mac answered the last time it was asked; absent means not asked yet.
     @Published var peerReachable: [String: Bool] = [:]
     /// Other Macs asking to be trusted, waiting for an answer.
-    @Published var pairRequests: [RemoteReceiver.PairRequest] = []
     /// Macs running input that were found on the tailnet and are not trusted yet.
-    @Published var found: [RemoteSender.Found] = []
-    @Published var searching = false
-    @Published var searchNote = ""
     /// For each address this Mac asked to pair with: what is happening.
-    @Published var pairing: [String: String] = [:]
-    enum PairingStep { case connecting, confirming }
     /// The addresses in `pairing` whose pairing is still under way, and at which step.
-    @Published var pairingStep: [String: PairingStep] = [:]
     /// Why working with other Macs is not possible, when it is not.
     @Published var linkProblem = ""
+    /// The Monitor helper on this Mac, which carries put to the owner's other Macs (HelperLink).
+    enum HelperState: Equatable { case checking, missing, stopped, noTunnel, ready }
+    @Published var helperState = HelperState.checking
+    private var helperAsked = Date.distantPast
+    private var helperAsking = false
     /// Isolated live audio meter so waveform and clock updates only refresh the floating capsule.
     let meter = AudioMeter()
     /// Shared microphone monitor so opening Settings never blocks on CoreAudio enumeration.
@@ -58,7 +55,6 @@ final class DictationController: ObservableObject {
     /// This Mac's identity; nil when the keychain could not be read.
     private(set) var identity: DeviceIdentity?
     let deviceName = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? ProcessInfo.processInfo.hostName
-    private var legacyTried = Date.distantPast
     private var peersTested = Date.distantPast
     let settings: SettingsStore
     let shortcut = GlobalShortcut()
@@ -188,6 +184,9 @@ final class DictationController: ObservableObject {
         microphones = Microphones(preview: settings.preview)
         shelf = ShelfModel(preview: settings.preview)
         updater = Updater(settings: settings)
+        // Macs paired before put went through the Monitor helper are not the owner's Macs as the
+        // helper knows them: they go before anything dials them.
+        if !settings.preview { settings.preferences.devices.removeAll { HelperLink.agent(of: $0.host) == nil } }
         receiver.shelf = shelf.sync
         updater.isBusy = { [weak self] in self.map { $0.busy || $0.retryingID != nil } ?? false }
         shortcut.onToggle = { [weak self] in Task { @MainActor in self?.toggle() } }
@@ -214,17 +213,10 @@ final class DictationController: ObservableObject {
             if self.remoteStatus != self.receiver.status { self.remoteStatus = self.receiver.status }
         }
         receiver.name = deviceName
-        receiver.trusted = { [weak self] key in self?.settings.preferences.devices.first { $0.key == key } }
-        // Told to a trusted Mac that asks: the Macs this one sees through Tailscale, and the ones it
-        // is paired with, so that a Mac without Tailscale finds the others through this one.
-        receiver.peers = { [weak self] in await self?.sharedPeers() ?? [] }
-        receiver.onPairRequest = { [weak self] request in
-            self?.pairRequests.append(request)
-            self?.settings.section = .remote
-            self?.openSettings?()
+        receiver.trusted = { [weak self] key in
+            guard let self, self.settings.preferences.linkEnabled else { return nil }
+            return self.settings.preferences.devices.first { $0.key == key }
         }
-        receiver.onPairEnded = { [weak self] id in self?.pairRequests.removeAll { $0.id == id } }
-        receiver.onPaired = { [weak self] device, legacy in self?.trust(device, viaLegacyCode: legacy) }
         microphones.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &microphoneSubscriptions)
@@ -261,29 +253,17 @@ final class DictationController: ObservableObject {
                 receiver.identity = identity
                 shelf.sync?.identity = identity
             } catch { linkProblem = error.localizedDescription }
-            refreshTailnetAddress()
             network.pathUpdateHandler = { [weak self] path in
                 Task { @MainActor in
                     guard let self else { return }
                     let satisfied = path.status == .satisfied
                     let restored = !self.networkAvailable && satisfied
                     if self.networkAvailable != satisfied { self.networkAvailable = satisfied }
-                    self.refreshTailnetAddress()
                     if restored { self.retryAfter.removeAll() }
                     self.retryQueued()
                 }
             }
             network.start(queue: DispatchQueue(label: "local.hopo.qingyan.network"))
-        }
-    }
-
-    func refreshTailnetAddress() {
-        guard !settings.preview else { return }
-        Task.detached(priority: .utility) {
-            let address = RemoteWire.localTailnetAddress()
-            await MainActor.run { [weak self] in
-                if self?.tailnetAddress != address { self?.tailnetAddress = address }
-            }
         }
     }
 
@@ -310,7 +290,7 @@ final class DictationController: ObservableObject {
         syncRemote()
         shelf.sync?.listening = settings.preferences.remotePort
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
-        adoptLegacyPairings()
+        refreshHelper()
         retryQueued()
     }
 
@@ -321,9 +301,7 @@ final class DictationController: ObservableObject {
             if remoteListening { remoteListening = false }
             return
         }
-        receiver.legacyCode = settings.preferences.remoteRole == "receive" ? settings.preferences.remoteCode : ""
-        receiver.tailscaleOnly = settings.preferences.tailscaleOnly
-        receiver.start(port: settings.preferences.remotePort,
+        receiver.startHelper(
             probe: { AXIsProcessTrusted()
                 ? (true, tr("Ready to receive text."))
                 : (false, tr("Connected, but the other Mac has not granted Accessibility permission, so it cannot paste.")) },
@@ -336,172 +314,8 @@ final class DictationController: ObservableObject {
 
     // MARK: Trust
 
-    private func trust(_ device: TrustedDevice, viaLegacyCode: Bool = false) {
-        if let index = settings.preferences.devices.firstIndex(where: { $0.key == device.key }) {
-            if !device.name.isEmpty { settings.preferences.devices[index].name = device.name }
-            if !device.host.isEmpty { settings.preferences.devices[index].host = device.host; settings.preferences.devices[index].port = device.port }
-        } else {
-            settings.preferences.devices.append(device)
-        }
-        found.removeAll { $0.key == device.key }
-        if viaLegacyCode && settings.preferences.remoteRole == "receive" { settings.preferences.remoteCode = ""; settings.preferences.remoteRole = "off" }
-        peersTested = .distantPast
-        refresh()
-        testPeers()
-    }
-
-    func removeDevice(_ key: String) {
-        settings.preferences.devices.removeAll { $0.key == key }
-        peerStatus[key] = nil; peerReachable[key] = nil
-        refresh()
-    }
-
-    func answer(_ request: RemoteReceiver.PairRequest, agree: Bool) {
-        pairRequests.removeAll { $0.id == request.id }
-        request.answer(agree)
-    }
-
-    func pair(host: String, port: Int, legacyCode: String? = nil, key: String? = nil) {
-        guard let identity, pairingStep[host] != .confirming else { return }
-        pairing[host] = tr("Connecting…"); pairingStep[host] = .connecting
-        let name = deviceName, listening = settings.preferences.remotePort
-        Task { [weak self] in
-            do {
-                let device = try await RemoteSender.pair(host: host, port: port, identity: identity, name: name, listening: listening,
-                                                         legacyCode: legacyCode, expecting: key) { code in
-                    Task { @MainActor in
-                        guard legacyCode == nil else { return }
-                        self?.pairing[host] = tr("Waiting for the other Mac to confirm · code %@", code)
-                        self?.pairingStep[host] = .confirming
-                    }
-                }
-                guard let self else { return }
-                self.pairing[host] = nil; self.pairingStep[host] = nil
-                self.trust(device)
-                if legacyCode != nil {
-                    self.settings.preferences.remotePeers.removeAll { $0.host == host }
-                    if self.settings.preferences.remotePeers.isEmpty { self.settings.preferences.remoteRole = "off"; self.settings.preferences.remoteHost = "" }
-                }
-            } catch {
-                guard let self else { return }
-                self.pairing[host] = legacyCode == nil ? error.localizedDescription : nil
-                self.pairingStep[host] = nil
-            }
-        }
-    }
-
-    private func adoptLegacyPairings() {
-        guard settings.preferences.linkEnabled, identity != nil, !settings.preferences.remotePeers.isEmpty,
-              Date().timeIntervalSince(legacyTried) > 20 else { return }
-        legacyTried = Date()
-        for peer in settings.preferences.remotePeers where !peer.host.isEmpty && !peer.code.isEmpty {
-            pair(host: peer.host, port: peer.port, legacyCode: peer.code)
-        }
-    }
-
     /// The Macs running put that this one sees through Tailscale, told to a trusted Mac that asks: one
     /// lookup at a time, kept for 30 seconds, and only Macs that answered as put at a Tailscale address.
-    private var peerDirectory: (at: Date, list: [[String: Any]])?
-    private var peerLookup: Task<[[String: Any]], Never>?
-
-    private func sharedPeers() async -> [[String: Any]] {
-        if let cached = peerDirectory, Date().timeIntervalSince(cached.at) < 30 { return cached.list }
-        if let peerLookup { return await peerLookup.value }
-        guard let identity else { return [] }
-        let name = deviceName, port = settings.preferences.remotePort
-        let lookup = Task { () -> [[String: Any]] in
-            let nodes = await TailscalePeers.online()
-            let answers = await Self.identifyAll(nodes.map { RemoteSender.Peer(name: $0.name, host: $0.address, port: port) },
-                                                 identity: identity, name: name, listening: port)
-            return answers.filter { RemoteWire.isTailnetAddress($0.host) && $0.key != identity.publicKey }
-                .map { ["name": $0.name, "host": $0.host, "port": $0.port] }
-        }
-        peerLookup = lookup
-        let list = await lookup.value
-        peerLookup = nil
-        peerDirectory = (Date(), list)
-        return list
-    }
-
-    /// Asks each place who is there, eight at a time.
-    nonisolated static func identifyAll(_ places: [RemoteSender.Peer], identity: DeviceIdentity, name: String, listening: Int) async -> [RemoteSender.Found] {
-        await withTaskGroup(of: RemoteSender.Found?.self, returning: [RemoteSender.Found].self) { group in
-            var answers: [RemoteSender.Found] = []
-            var next = places.makeIterator()
-            func start(_ place: RemoteSender.Peer) {
-                group.addTask { try? await RemoteSender.identify(host: place.host, port: place.port, identity: identity, name: name, listening: listening) }
-            }
-            for _ in 0..<8 { guard let place = next.next() else { break }; start(place) }
-            while let answer = await group.next() {
-                if let answer { answers.append(answer) }
-                if let place = next.next() { start(place) }
-            }
-            return answers
-        }
-    }
-
-    func discover() {
-        guard let identity, !searching, !settings.preview else { return }
-        searching = true; searchNote = ""
-        refreshTailnetAddress()
-        let name = deviceName, port = settings.preferences.remotePort
-        let paired = settings.preferences.devices
-        Task { [weak self] in
-            // This Mac's Tailscale first: its Macs are asked as soon as the list is there.
-            let local = await TailscalePeers.online().map { RemoteSender.Peer(name: $0.name, host: $0.address, port: port) }
-            async let localAnswers = Self.identifyAll(local, identity: identity, name: name, listening: port)
-            // Then every paired Mac's word on the Macs it sees, for a Mac with no Tailscale of its own
-            // (behind a router that has it). A paired Mac points this one at numeric Tailscale
-            // addresses on ports from 1024 and nowhere else, 64 places at most in all.
-            let told = await withTaskGroup(of: [RemoteSender.Peer].self, returning: [RemoteSender.Peer].self) { group in
-                for device in paired {
-                    group.addTask { (try? await RemoteSender.peers(of: device, identity: identity, name: name, listening: port)) ?? [] }
-                }
-                var all: [RemoteSender.Peer] = []
-                for await list in group { all += list }
-                return all
-            }
-            var places = Set(local.map { "\($0.host):\($0.port)" })
-            let referred = Array(told.filter {
-                RemoteWire.isTailnetAddress($0.host) && $0.port >= 1024 && places.insert("\($0.host):\($0.port)").inserted
-            }.prefix(64))
-            let answers = await localAnswers + Self.identifyAll(referred, identity: identity, name: name, listening: port)
-            let candidates = local.count + referred.count
-            // One row per Mac: by key, a Tailscale address found here before one a paired Mac told of.
-            let localHosts = Set(local.map(\.host))
-            var byKey: [String: RemoteSender.Found] = [:]
-            for answer in answers where answer.key != identity.publicKey {
-                if let have = byKey[answer.key], localHosts.contains(have.host) || !localHosts.contains(answer.host) { continue }
-                byKey[answer.key] = answer
-            }
-            guard let self else { return }
-            let known = Dictionary(self.settings.preferences.devices.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-            // A paired Mac's saved address changes only when the saved one no longer answers, and the Mac
-            // at the new one proves its key over the encrypted channel (a who-are-you alone proves nothing).
-            for (key, answer) in byKey {
-                guard let saved = known[key], saved.host != answer.host || saved.port != answer.port else { continue }
-                if (try? await RemoteSender.ping(saved, identity: identity, name: name, listening: port)) != nil { continue }
-                var moved = saved
-                moved.host = answer.host; moved.port = answer.port
-                if (try? await RemoteSender.ping(moved, identity: identity, name: name, listening: port)) != nil {
-                    self.trust(TrustedDevice(key: key, name: answer.name, host: answer.host, port: answer.port))
-                }
-            }
-            self.found = byKey.values.filter { known[$0.key] == nil }.sorted { $0.name < $1.name }
-            self.searching = false
-            if candidates == 0 {
-                self.searchNote = !TailscalePeers.installed && paired.isEmpty
-                    ? tr("This Mac has no Tailscale and no paired Mac to ask. Enter the address of a Mac running put below; once the two are paired, the others are found through it.")
-                    : tr("Tailscale reported no devices online. Enter an address below to pair by hand.")
-            } else if !self.found.isEmpty {
-                self.searchNote = ""
-            } else if candidates == 1 {
-                self.searchNote = tr("Scanned 1 online Mac. No unpaired Mac running put was found.")
-            } else {
-                self.searchNote = tr("Scanned %ld online Macs. No unpaired Mac running put was found.", candidates)
-            }
-        }
-    }
 
     private func receive(_ request: RemoteReceiver.Request) throws -> DeliveryOutcome {
         if !request.text.isEmpty && request.field == nil {
@@ -557,6 +371,37 @@ final class DictationController: ObservableObject {
         return true
     }
 
+    /// Asks the helper on this Mac for the owner's other Macs, at most every 15 seconds; they are
+    /// the devices put works with. Without a helper there are none: put works across Macs only
+    /// through it.
+    func refreshHelper(force: Bool = false) {
+        guard !settings.preview, !helperAsking, force || Date().timeIntervalSince(helperAsked) > 15 else { return }
+        helperAsking = true; helperAsked = Date()
+        Task { [weak self] in
+            var next: HelperState = .ready
+            var roster: HelperLink.Roster?
+            do { roster = try await HelperLink.roster() }
+            catch HelperLink.Absence.notInstalled { next = .missing }
+            catch { next = .stopped }
+            guard let self else { return }
+            self.helperAsking = false
+            if let roster, !roster.tunnel { next = .noTunnel }
+            if self.helperState != next { self.helperState = next }
+            if let roster { self.shelf.sync?.selfID = HelperLink.id(roster.agent) }
+            // A helper that is down for a moment keeps the Macs it named; one that is not there has none.
+            guard roster != nil || next == .missing else { return }
+            let devices = (roster?.peers ?? []).map { peer -> TrustedDevice in
+                TrustedDevice(key: HelperLink.id(peer.agent), name: peer.name, host: HelperLink.id(peer.agent), port: RemoteWire.defaultPort)
+            }
+            if self.settings.preferences.devices != devices {
+                self.settings.preferences.devices = devices
+                self.peersTested = .distantPast
+                self.shelf.sync?.maintain(devices: self.settings.preferences.linkEnabled && self.identity != nil ? devices : [])
+                self.testPeers()
+            }
+        }
+    }
+
     func linkChanged() {
         remoteStatus = ""; peerStatus = [:]; peerReachable = [:]; peersTested = .distantPast
         refresh()
@@ -589,6 +434,7 @@ final class DictationController: ObservableObject {
     private func remember(_ names: [String: String]) {
         for (key, name) in names {
             guard let index = settings.preferences.devices.firstIndex(where: { $0.key == key }),
+                  HelperLink.agent(of: settings.preferences.devices[index].host) == nil,
                   settings.preferences.devices[index].name != name else { continue }
             settings.preferences.devices[index].name = name
         }
@@ -693,20 +539,28 @@ final class DictationController: ObservableObject {
                 : Delivered(text: text, peer: id, mark: FocusMark.current(), at: Date())
             return WriteResult(summary: tr("%@: %@", name, reply.message), onClipboard: reply.onClipboard, miss: reply.miss, peer: name)
         }
-        if let session, RemoteWire.showsAnotherScreen(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
+        if settings.preferences.linkEnabled, RemoteWire.showsAnotherScreen(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier),
+           session != nil || helperState != .ready || !settings.preferences.devices.isEmpty {
+            // A remote desktop in front, and Macs to send to (or a helper that should name them): the
+            // text is for the Mac behind it, never this one.
+            guard let session else {
+                throw RemoteRefusal(peer: nil, miss: .unreachable,
+                                    description: helperState == .ready ? tr("A remote desktop window is in front, but none of your other Macs can be reached.")
+                                        : tr("A remote desktop window is in front, but the Monitor helper on this Mac cannot reach your other Macs."))
+            }
             if session.armedCount == 0 {
                 let problems = session.problems.joined(separator: " ")
                 // A Mac that said no, and why, before one that could not be reached.
                 if let refusal = session.refusals.first {
                     throw RemoteRefusal(peer: refusal.peer, miss: refusal.miss,
-                                        description: tr("A remote desktop window is in front, but none of the paired Macs can be reached. %@", problems))
+                                        description: tr("A remote desktop window is in front, but none of your other Macs can be reached. %@", problems))
                 }
                 throw RemoteRefusal(peer: nil, miss: .unreachable,
-                                    description: problems.isEmpty ? tr("A remote desktop window is in front, but none of the paired Macs can be reached.")
-                                        : tr("A remote desktop window is in front, but none of the paired Macs can be reached. %@", problems))
+                                    description: problems.isEmpty ? tr("A remote desktop window is in front, but none of your other Macs can be reached.")
+                                        : tr("A remote desktop window is in front, but none of your other Macs can be reached. %@", problems))
             }
             throw RemoteRefusal(peer: nil, miss: .noAnswer,
-                                description: tr("A remote desktop window is in front, but no paired Mac answered. Make sure put is running on the other Mac and allows writing."))
+                                description: tr("A remote desktop window is in front, but none of your other Macs answered. Make sure put is running on the Mac you are controlling."))
         }
         let outcome: WriteResult
         switch plan {
@@ -750,7 +604,7 @@ final class DictationController: ObservableObject {
         case .pasteFailed: why = tr("The paste keystroke failed")
         case .notAllowed: why = tr("Typing from this Mac is not allowed")
         case .unreachable: why = tr("Could not be reached")
-        case .noAnswer: why = tr("No paired Mac answered")
+        case .noAnswer: why = tr("None of your other Macs answered")
         case .unconfirmed: why = tr("No answer after sending")
         case .other: why = tr("The panel shows the reason")
         }

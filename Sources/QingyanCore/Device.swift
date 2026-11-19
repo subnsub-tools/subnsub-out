@@ -122,17 +122,30 @@ final class Channel: @unchecked Sendable {
     }
 
     /// Calls another Mac and shakes hands. `port` is the port this Mac itself listens on.
+    /// A host of the form helper:<agent id> is one of the owner's Macs reached through the
+    /// Monitor helper (HelperLink); the channel then goes by that name rather than by its key,
+    /// since the helpers vouch for the Mac and put's own key may change with a reinstall.
     static func open(host: String, port: Int, identity: DeviceIdentity, name: String, listening: Int,
                      queue: DispatchQueue = .main, timeout: TimeInterval = 4) async throws -> Channel {
-        let (endpointHost, endpointPort, label) = try RemoteIO.endpoint(host: host, port: port)
-        let connection = NWConnection(host: endpointHost, port: endpointPort, using: ShelfSync.parameters)
+        let helperAgent = HelperLink.agent(of: host)
+        let connection: NWConnection
+        let label: String
+        if let helperAgent {
+            // The helper's own dial can take a few seconds the first time; it is bounded there.
+            connection = try await HelperLink.open(agent: helperAgent, name: "")
+            label = host
+        } else {
+            let (endpointHost, endpointPort, endpointLabel) = try RemoteIO.endpoint(host: host, port: port)
+            connection = NWConnection(host: endpointHost, port: endpointPort, using: ShelfSync.parameters)
+            label = endpointLabel
+        }
         let deadline = Task {
             try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             connection.cancel()
         }
         defer { deadline.cancel() }
         do {
-            try await RemoteIO.ready(connection, queue: queue)
+            if helperAgent == nil { try await RemoteIO.ready(connection, queue: queue) }
             let oneTime = Curve25519.KeyAgreement.PrivateKey()
             try await RemoteIO.write(connection, try RemoteWire.frame(["v": 2, "hello": greeting(identity: identity, oneTime: oneTime, name: name, port: listening)]))
             let reply = try await RemoteIO.readFrame(connection)
@@ -140,26 +153,28 @@ final class Channel: @unchecked Sendable {
                 throw VoiceError(reply["message"] as? String ?? tr("The other Mac runs a different version of put. Update both to the same version."))
             }
             let keys = try keys(identity: identity, oneTime: oneTime, peerIdentity: theirs.key, peerOneTime: theirs.once, initiator: true)
-            return Channel(connection: connection, peerKey: theirs.key.base64EncodedString(), peerName: theirs.name, peerPort: theirs.port,
-                           sendKey: keys.toResponder, receiveKey: keys.toInitiator)
+            return Channel(connection: connection, peerKey: helperAgent.map(HelperLink.id) ?? theirs.key.base64EncodedString(),
+                           peerName: theirs.name, peerPort: theirs.port, sendKey: keys.toResponder, receiveKey: keys.toInitiator)
         } catch {
             connection.cancel()
             if Task.isCancelled { throw CancellationError() }
             if error is VoiceError { throw error }
+            if helperAgent != nil { throw VoiceError(tr("The connection to the other Mac through the Monitor helper was lost.")) }
             throw RemoteIO.unreachable(label, port)
         }
     }
 
     /// The answering side: given the caller's hello, the reply to send in the clear and the channel.
+    /// `helperAgent`: the caller came through the Monitor helper, which says who it is.
     static func answer(_ connection: NWConnection, hello: [String: Any], identity: DeviceIdentity, name: String,
-                       listening: Int) -> (reply: [String: Any], channel: Channel)? {
+                       listening: Int, helperAgent: String? = nil) -> (reply: [String: Any], channel: Channel)? {
         guard let theirs = parse(hello) else { return nil }
         let oneTime = Curve25519.KeyAgreement.PrivateKey()
         guard let keys = try? keys(identity: identity, oneTime: oneTime, peerIdentity: theirs.key, peerOneTime: theirs.once, initiator: false) else { return nil }
         var reply = greeting(identity: identity, oneTime: oneTime, name: name, port: listening)
         reply["ok"] = true
-        return (reply, Channel(connection: connection, peerKey: theirs.key.base64EncodedString(), peerName: theirs.name, peerPort: theirs.port,
-                               sendKey: keys.toInitiator, receiveKey: keys.toResponder))
+        return (reply, Channel(connection: connection, peerKey: helperAgent.map(HelperLink.id) ?? theirs.key.base64EncodedString(),
+                               peerName: theirs.name, peerPort: theirs.port, sendKey: keys.toInitiator, receiveKey: keys.toResponder))
     }
 
     private static func nonce(_ counter: UInt64) -> ChaChaPoly.Nonce {

@@ -113,6 +113,10 @@ struct Checks {
         catch { failed += 1; print("FAIL History: \(error.localizedDescription)") }
         do { try await channel(); print("PASS Encrypted channel over real TCP: both ends prove their keys, frames round-trip, a forged or replayed frame ends the connection") }
         catch { failed += 1; print("FAIL Channel: \(error.localizedDescription)") }
+        if ProcessInfo.processInfo.environment["QINGYAN_FAKE_HELPER"] != nil {
+            do { try await throughHelper(); print("PASS Through the Monitor helper: roster, ping, knock armed, text delivered") }
+            catch { failed += 1; print("FAIL Through the Monitor helper: \(error.localizedDescription)") }
+        }
         do { try await trust(); print("PASS Trust between Macs: who-are-you, pairing by consent with matching check codes, refusal, earlier pairing code, impostor at a known address, old version, unreachable") }
         catch { failed += 1; print("FAIL Trust: \(error.localizedDescription)") }
         do { try await shelfStore(); print("PASS Shelf on disk: text, image and file, restart, removal remembered, name safety, count limit, large items as cards, fetched copies let go by use") }
@@ -178,6 +182,34 @@ struct Checks {
         _ = fn.flagsChanged(isDown: true, hasOtherModifiers: false)
         fn.reset()
         try check(!fn.flagsChanged(isDown: false, hasOtherModifiers: false), "stale key release")
+    }
+
+    /// put's road through the helper: the roster, a stream opened and one taken, text sent and
+    /// delivered, the knock armed. Runs against a stand-in for the helper's put.sock when
+    /// QINGYAN_FAKE_HELPER names one (helper/go/put_test.go covers the helper's side).
+    @MainActor static func throughHelper() async throws {
+        guard let path = ProcessInfo.processInfo.environment["QINGYAN_FAKE_HELPER"] else { return }
+        HelperLink.socketOverride = path
+        defer { HelperLink.socketOverride = nil }
+        let roster = try await HelperLink.roster()
+        try check(roster.tunnel && roster.peers == [HelperLink.Peer(agent: "selfMac", name: "Self")], "the helper lists the owner's Macs")
+        let receiver = RemoteReceiver()
+        receiver.name = "Self"
+        receiver.trusted = { key in key == HelperLink.id("selfMac") ? TrustedDevice(key: key, name: "Self", host: key, port: RemoteWire.defaultPort) : nil }
+        var got: [String] = []
+        receiver.startHelper(probe: { (true, "ready") }, deliver: { request in got.append(request.text); return DeliveryOutcome(message: "Inserted into Notes") })
+        try await settle("the receiver waits at the helper") { receiver.listening }
+        let device = TrustedDevice(key: HelperLink.id("selfMac"), name: "Self", host: HelperLink.id("selfMac"), port: RemoteWire.defaultPort)
+        let reply = try await RemoteSender.ping(device, identity: DeviceIdentity(), name: "Laptop", listening: RemoteWire.defaultPort)
+        try check(reply.ok && reply.paired, "a ping goes through the helper and the Mac knows who calls")
+        let session = RemoteSession(devices: [device], identity: DeviceIdentity(), name: "Laptop", listening: RemoteWire.defaultPort)
+        await session.arm(timeout: 4)
+        try check(session.armedCount == 1, "the knock is armed through the helper")
+        let sent = try await session.send(to: 0, text: "Through the helper", mode: .dictate, seconds: 1)
+        try check(sent.message == "Inserted into Notes" && got == ["Through the helper"], "text sent through the helper is delivered")
+        session.close()
+        receiver.stop()
+        try check(!receiver.listening, "stopped, it waits no more")
     }
 
     static func shortcuts() throws {
@@ -425,21 +457,6 @@ struct Checks {
         try check(asked[0].code == seen.code && seen.code == DeviceIdentity.checkCode(laptop.publicKey, home.identity.publicKey), "both screens show the same check code")
         try check(trusted[laptop.publicKey]?.canWrite == true && ended == [asked[0].id], "consent adds the Mac with full permissions and closes the request")
         stranger = paired
-        home.peers = { [["name": "Office", "host": "100.64.0.9", "port": 18765], ["name": "Office again", "host": "100.64.0.9", "port": 18765],
-                        ["name": "No address", "host": "", "port": 18765], ["name": "Bad port", "host": "10.0.0.2", "port": 0], ["junk": 1]] }
-        let told = try await RemoteSender.peers(of: paired, identity: laptop, name: "Laptop", listening: 30001)
-        try check(told == [RemoteSender.Peer(name: "Office", host: "100.64.0.9", port: 18765)],
-                  "a trusted Mac learns the Macs the other one sees, each once; entries that are no address are dropped")
-        let unknown = TrustedDevice(key: home.identity.publicKey, name: "Study", host: "127.0.0.1", port: port)
-        let untold = try await RemoteSender.peers(of: unknown, identity: DeviceIdentity(), name: "Stranger", listening: 30009)
-        try check(untold.isEmpty, "a Mac that is not trusted is told nothing about the others")
-        let full = trusted[laptop.publicKey]!
-        trusted[laptop.publicKey]?.canWrite = false; trusted[laptop.publicKey]?.canRead = false; trusted[laptop.publicKey]?.canShelf = false
-        let barred = try await RemoteSender.peers(of: paired, identity: laptop, name: "Laptop", listening: 30001)
-        try check(barred.isEmpty, "a paired Mac with every permission turned off is told nothing either")
-        trusted[laptop.publicKey] = full
-        try check(RemoteSender.parsePeers((0..<100).map { ["host": "10.0.0.\($0)", "port": 18765] }).count == 64
-                  && RemoteSender.parsePeers([["host": "a b", "port": 1], ["host": "x/y", "port": 1]]).isEmpty, "at most 64, and no host with a space or a slash")
         do {
             _ = try await RemoteSender.pair(host: "127.0.0.1", port: port, identity: DeviceIdentity(), name: "Picked", listening: 30010,
                                             expecting: DeviceIdentity().publicKey)

@@ -1156,7 +1156,7 @@ struct MainView: View {
         settings.preferences.foldedBlocks.contains(String(describing: section))
     }
 
-    private func blockHeader(_ section: PanelSection, title: String, detail: String, more: String, less: String) -> some View {
+    private func blockHeader(_ section: PanelSection, title: String, detail: String, more: String? = nil, less: String = "") -> some View {
         let folded = isFolded(section)
         return HStack(spacing: 7) {
             Button {
@@ -1180,7 +1180,7 @@ struct MainView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain).help(folded ? tr("Expand") : tr("Collapse")).accessibilityLabel(folded ? tr("Expand %@", title) : tr("Collapse %@", title))
-            if !folded {
+            if !folded, let more {
                 Button(settings.section == section ? less : more) { settings.section = settings.section == section ? nil : section }
                     .buttonStyle(QuietButton())
             }
@@ -1189,16 +1189,17 @@ struct MainView: View {
 
     private var remoteSummary: String {
         guard settings.preferences.linkEnabled else { return tr("This Mac only") }
+        if [.missing, .stopped, .noTunnel].contains(controller.helperState) { return tr("No helper") }
         let count = settings.preferences.devices.count
-        return count == 0 ? tr("Not paired") : count == 1 ? tr("1 device") : tr("%ld devices", count)
+        return count == 0 ? tr("No other Mac") : count == 1 ? tr("1 Mac") : tr("%ld Macs", count)
     }
 
     private var remoteCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 0) {
-                blockHeader(.remote, title: tr("Multiple Macs"), detail: remoteSummary, more: tr("Manage"), less: tr("Done"))
+                blockHeader(.remote, title: tr("Multiple Macs"), detail: remoteSummary)
                 Reveal(open: !isFolded(.remote)) {
-                    RemoteSection(settings: settings, controller: controller, shelf: controller.shelf, editing: settings.section == .remote)
+                    RemoteSection(settings: settings, controller: controller, shelf: controller.shelf)
                         .disabled(controller.busy)
                         .padding(.top, 8)
                 }
@@ -1270,274 +1271,72 @@ struct MicrophoneOptionRow: View {
     }
 }
 
-private struct RemoteDeviceRowHeader: View {
-    let label: String
-    let statusText: String
-    let ok: Bool?
-    let oneWay: Bool
-    let expanded: Bool
-    let helpText: String
-    let toggle: () -> Void
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(Palette.muted)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .frame(width: 8)
-                    .animation(Motion.standard, value: expanded)
-                Circle()
-                    .fill(ok == true ? Palette.accent : ok == false ? Color.orange : Palette.muted.opacity(0.5))
-                    .frame(width: 6, height: 6)
-                    .animation(Motion.quick, value: ok)
-                Text(label)
-                    .font(.system(size: 12, weight: expanded ? .semibold : .regular))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                Text(statusText)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(ok == false || oneWay ? Color.orange : Palette.muted)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4.5)
-            .background(
-                Color.primary.opacity(hovered ? 0.075 : (expanded ? 0.045 : 0)),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
-        .help(helpText.isEmpty ? (expanded ? tr("Click to hide the device's details") : tr("Click to show the device's details and permissions")) : helpText)
-    }
-}
-
+/// Multiple Macs: on or off, and the owner's other Macs as the Monitor helper on this Mac lists
+/// them (HelperLink). Nothing is paired here: the Macs are the ones on the owner's Monitor page,
+/// which tells their helpers about each other.
 struct RemoteSection: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var controller: DictationController
     @ObservedObject var shelf: ShelfModel
-    var editing: Bool
-    @State private var manual = ""
-    @State private var expandedDevices: Set<String> = []
 
     var body: some View {
-        let usable = controller.linkProblem.isEmpty
+        let on = settings.preferences.linkEnabled
         return VStack(alignment: .leading, spacing: 0) {
-            Row(tr("Work across Macs"), info: tr("When on, this Mac connects with encryption to the Macs paired with it, types text on the one you are using by remote desktop, and keeps the Shelf in sync.")) {
+            Row(tr("Work across Macs"), info: tr("When on, put on this Mac reaches put on your other Macs through the Monitor helper, types text on the one you are controlling by remote desktop, and keeps the Shelf in sync. The Macs are the ones on your Monitor page; nothing is paired here.")) {
                 Toggle(tr("Work across Macs"), isOn: $settings.preferences.linkEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                     .onChange(of: settings.preferences.linkEnabled) { _, _ in controller.linkChanged() }
             }
-            Reveal(open: !usable) {
+            Reveal(open: on && !(problem ?? "").isEmpty) {
                 HStack(alignment: .top, spacing: 5) {
                     Image(systemName: "exclamationmark.shield").font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 2)
-                    CopyableText(controller.linkProblem, font: .system(size: 11), color: .orange)
+                    CopyableText(problem ?? "", font: .system(size: 11), color: .orange)
                 }.padding(.top, 8)
             }
-            Reveal(open: usable && settings.preferences.linkEnabled) {
+            Reveal(open: on && problem == nil) {
                 VStack(alignment: .leading, spacing: 0) {
-                    requests
-                    devices
-                    Reveal(open: editing, animated: true) { VStack(alignment: .leading, spacing: 8) { setup }.padding(.top, 8) }
+                    ForEach(settings.preferences.devices) { device in row(device) }
+                    if settings.preferences.devices.isEmpty {
+                        caption(tr("No other Mac with put is on your Monitor page yet. Open the Monitor page once: while it is open, it tells your Macs about each other.")).padding(.top, 8)
+                    }
                 }
             }
-            Reveal(open: usable && !settings.preferences.linkEnabled) {
+            Reveal(open: !on) {
                 caption(tr("Text is typed on this Mac only. When on, results go to the Mac you are controlling by remote desktop, and the Shelf is shared.")).padding(.top, 8)
             }
         }
-        .onAppear { controller.testPeers() }
-        .onChange(of: editing) { _, now in if now && controller.found.isEmpty { controller.discover() } }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in controller.testPeers() }
-    }
-
-    @ViewBuilder private var requests: some View {
-        ForEach(controller.pairRequests) { request in
-            VStack(alignment: .leading, spacing: 6) {
-                CopyableText(tr("“%@” asks to pair with this Mac", request.device.label), copyValue: request.device.label,
-                             font: .system(size: 12, weight: .medium))
-                CopyableText(tr("Code %@ · Check that the other Mac shows the same", request.code), copyValue: request.code,
-                             font: .system(size: 10.5, design: .monospaced), color: Palette.muted)
-                HStack(spacing: 6) {
-                    Button(tr("Allow")) { controller.answer(request, agree: true) }.buttonStyle(SolidButton())
-                    Button(tr("Decline")) { controller.answer(request, agree: false) }.buttonStyle(QuietButton())
-                }
-            }
-            .padding(9).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .padding(.top, 8)
+        .onAppear { controller.refreshHelper(force: true); controller.testPeers() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            controller.refreshHelper(); controller.testPeers()
         }
     }
 
-    @ViewBuilder private var devices: some View {
-        Reveal(open: settings.preferences.devices.isEmpty) {
-            caption(tr("No paired devices yet. Click “Manage” at the top right to scan the local network or enter an address to pair.")).padding(.top, 8)
-        }
-        ForEach($settings.preferences.devices) { $device in
-            let called = controller.peerReachable[device.key], calledIn = shelf.linkedKeys.contains(device.key)
-            let ok: Bool? = calledIn ? true : called
-            let oneWay = calledIn && called == false
-            let deviceOpen = editing || expandedDevices.contains(device.key)
-            let statusLabel = connectionLabel(device.key, ok: ok, oneWay: oneWay, reachable: device.reachable)
-            VStack(alignment: .leading, spacing: 0) {
-                RemoteDeviceRowHeader(
-                    label: device.label,
-                    statusText: statusLabel,
-                    ok: ok,
-                    oneWay: oneWay,
-                    expanded: deviceOpen,
-                    helpText: calledIn && called != true
-                        ? tr("One-way connection: the other Mac can type on this Mac and sync the Shelf, but this Mac cannot reach its address, so it cannot send text to it.")
-                        : controller.peerStatus[device.key] ?? ""
-                ) {
-                    if editing {
-                        settings.section = nil
-                        expandedDevices.remove(device.key)
-                    } else if expandedDevices.contains(device.key) {
-                        expandedDevices.remove(device.key)
-                    } else {
-                        expandedDevices.insert(device.key)
-                        settings.detailOpened.send()
-                    }
-                }
-                Reveal(open: oneWay) {
-                    caption(tr("One-way connection: the other Mac can type on this Mac and sync the Shelf; this Mac cannot reach the other Mac's address."))
-                        .padding(.horizontal, 6)
-                        .padding(.top, 4)
-                }
-                Reveal(open: deviceOpen, animated: true) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            CopyableText(device.label, font: .system(size: 11, weight: .medium), color: Palette.muted, lineLimit: 1)
-                            if !device.host.isEmpty {
-                                Text("·").font(.system(size: 10)).foregroundStyle(Palette.muted)
-                                CopyableText("\(device.host):\(device.port)", copyValue: device.host,
-                                             font: .system(size: 11, design: .monospaced), color: Palette.muted, lineLimit: 1)
-                            }
-                        }
-                        HStack(spacing: 5) {
-                            TextField(tr("IP or host name"), text: $device.host).glassField(mono: true)
-                            TextField(tr("Port"), value: $device.port, format: .number.grouping(.never)).glassField(mono: true).frame(width: 58)
-                        }
-                        HStack(spacing: 10) {
-                            permission(tr("Typing"), tr("Lets this device type text at the cursor on this Mac."), $device.canWrite)
-                            permission(tr("Shared Shelf"), tr("Keeps the Shelf in sync with this device."), $device.canShelf)
-                            permission(tr("Voice edits"), tr("Lets this device read and update the text field on this Mac during voice edits."), $device.canRead)
-                        }
-                        HStack(spacing: 6) {
-                            Button(controller.peerTesting.contains(device.key) ? tr("Checking…") : tr("Test connection")) { controller.testRemote(device.key) }
-                                .buttonStyle(QuietButton()).disabled(controller.peerTesting.contains(device.key))
-                            Button(tr("Remove")) {
-                                expandedDevices.remove(device.key)
-                                controller.removeDevice(device.key)
-                            }.buttonStyle(QuietButton())
-                            Spacer()
-                        }
-                        if let status = controller.peerStatus[device.key], !status.isEmpty {
-                            CopyableText(status, font: .system(size: 10.5), color: Palette.muted)
-                        }
-                        Divider()
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 6)
-                }
-            }
-            .padding(.top, 6)
-        }
-        Reveal(open: !editing && !settings.preferences.devices.isEmpty, animated: true) {
-            caption(tr("Text is typed on whichever Mac the remote desktop has in focus; when you record in a window on this Mac, it is typed on this Mac.")).padding(.top, 8)
+    /// What stands in the way, if anything: this Mac's keys, or its helper.
+    private var problem: String? {
+        if !controller.linkProblem.isEmpty { return controller.linkProblem }
+        switch controller.helperState {
+        case .missing: return tr("put works across Macs through the Monitor helper. Install it on this Mac from the Monitor page, or update it if it is installed.")
+        case .stopped: return tr("The Monitor helper on this Mac is not running.")
+        case .noTunnel: return tr("The Monitor helper on this Mac has no direct connection. Install it from the Monitor page with direct connections on.")
+        case .checking, .ready: return nil
         }
     }
 
-    private func permission(_ title: String, _ help: String, _ value: Binding<Bool>) -> some View {
-        Toggle(isOn: value) { Text(title).font(.system(size: 10.5)) }.toggleStyle(.checkbox).help(help)
-    }
-
-    @ViewBuilder private var setup: some View {
-        HStack(spacing: 6) {
-            Text(tr("Devices on the network")).font(.system(size: 11, weight: .semibold))
-            Spacer()
-            Button(controller.searching ? tr("Scanning…") : tr("Scan")) { controller.discover() }.buttonStyle(QuietButton()).disabled(controller.searching)
+    private func row(_ device: TrustedDevice) -> some View {
+        let called = controller.peerReachable[device.key], calledIn = shelf.linkedKeys.contains(device.key)
+        let ok: Bool? = calledIn ? true : called
+        let status = controller.peerTesting.contains(device.key) ? tr("Checking…")
+            : ok == true ? tr("Online") : ok == false ? tr("Not connected") : tr("Not checked")
+        return HStack(spacing: 6) {
+            Circle().fill(ok == true ? Palette.accent : ok == false ? Color.orange : Palette.muted.opacity(0.5))
+                .frame(width: 6, height: 6)
+            CopyableText(device.label, font: .system(size: 12))
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(status).font(.system(size: 10.5)).foregroundStyle(ok == false ? Color.orange : Palette.muted).lineLimit(1).fixedSize()
         }
-        ForEach(controller.found) { other in
-            HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 1.5) {
-                    CopyableText(other.name.isEmpty ? other.host : other.name, font: .system(size: 12), lineLimit: 1)
-                    CopyableText(controller.pairing[other.host] ?? other.host, font: .system(size: 10.5), color: Palette.muted)
-                }
-                Spacer(minLength: 4)
-                Button(tr("Pair")) { controller.pair(host: other.host, port: other.port, key: other.key) }.buttonStyle(SolidButton())
-                    .disabled(pairingUnderWay(other.host))
-            }
-        }
-        if !controller.searchNote.isEmpty { caption(controller.searchNote) }
-        HStack(spacing: 5) {
-            TextField(tr("Enter an IP or host name to pair"), text: $manual).glassField(mono: true)
-                .onSubmit { addManual() }
-            Button(tr("Pair")) { addManual() }.buttonStyle(QuietButton()).disabled(manual.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-        if let status = controller.pairing[manual.trimmingCharacters(in: .whitespaces)], !controller.found.contains(where: { $0.host == manual.trimmingCharacters(in: .whitespaces) }) {
-            caption(status)
-        }
-        Divider()
-        HStack(alignment: .top, spacing: 5) {
-            Image(systemName: controller.remoteListening ? "checkmark.shield" : "exclamationmark.shield")
-                .font(.system(size: 11)).foregroundStyle(controller.remoteListening ? Palette.accent : .orange).padding(.top, 2)
-            CopyableText(controller.remoteStatus.isEmpty ? tr("Starting to listen for other Macs…") : controller.remoteStatus,
-                         font: .system(size: 11), color: controller.remoteListening ? Palette.accent : .orange)
-        }
-        if !settings.accessibilityAllowed {
-            HStack {
-                Label(tr("Accessibility permission is off, so received text cannot be typed"), systemImage: "exclamationmark.shield")
-                    .font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Button(tr("Grant access")) { settings.requestAccessibility() }.buttonStyle(QuietButton())
-            }
-        }
-        Row(tr("This Mac's name")) {
-            CopyableText(controller.deviceName, font: .system(size: 11), lineLimit: 1)
-        }
-        Row(tr("Tailscale address")) {
-            CopyableText(
-                controller.tailnetAddress ?? tr("Tailscale not connected"),
-                copyValue: controller.tailnetAddress ?? "",
-                font: .system(size: 12, design: .monospaced),
-                color: controller.tailnetAddress == nil ? Palette.muted : Palette.ink,
-                enabled: controller.tailnetAddress != nil
-            )
-        }
-        Row(tr("Listening port")) {
-            TextField(tr("Port"), value: $settings.preferences.remotePort, format: .number.grouping(.never)).glassField(mono: true).frame(width: 64)
-        }
-        Row(tr("Tailscale connections only"), info: tr("When on, only connections from Tailscale addresses or through the Tailscale network interface are answered. When off, paired Macs on the same local network can also connect, with encryption.")) {
-            Toggle(tr("Tailscale connections only"), isOn: $settings.preferences.tailscaleOnly).toggleStyle(.switch).labelsHidden().controlSize(.mini)
-        }
-    }
-
-    private func addManual() {
-        let host = manual.trimmingCharacters(in: .whitespaces)
-        guard !host.isEmpty else { return }
-        controller.pair(host: host, port: settings.preferences.remotePort)
-    }
-
-    /// What a paired Mac's row says about its connection.
-    private func connectionLabel(_ key: String, ok: Bool?, oneWay: Bool, reachable: Bool) -> String {
-        if controller.peerTesting.contains(key) { return tr("Checking…") }
-        if oneWay { return tr("One-way connection") }
-        if ok == true { return tr("Online") }
-        if ok == false { return tr("Not connected") }
-        return reachable ? tr("Not checked") : tr("Awaiting connection")
-    }
-
-    /// Whether pairing with `host` is under way: connecting, or waiting for the other Mac to confirm.
-    /// The controller keeps only the words it shows for a host, so the two it shows meanwhile are
-    /// what is matched here, in the language in use.
-    private func pairingUnderWay(_ host: String) -> Bool {
-        controller.pairingStep[host] != nil
+        .padding(.horizontal, 6).padding(.vertical, 4.5)
+        .help(controller.peerStatus[device.key] ?? "")
+        .padding(.top, 6)
     }
 }
 

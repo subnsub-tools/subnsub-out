@@ -394,7 +394,7 @@ struct ShelfBar: View {
                 CopyableText(shelf.notice, font: .system(size: 10.5), color: Palette.muted)
             }
             if shelf.items.isEmpty {
-                Text(tr("Drop files, images or text here to keep them on the Shelf, in step with paired Macs."))
+                Text(tr("Drop files, images or text here to keep them on the Shelf, in sync with your other Macs."))
                     .font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineSpacing(2)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(9)
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.muted.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
@@ -412,7 +412,7 @@ struct ShelfBar: View {
         .contentTransition(.identity)
         .animation(Motion.quick, value: shelf.targeted)
         .animation(Motion.quick, value: hovered)
-        .alert(tr("Clear everything on the Shelf? The Shelf on paired Macs is cleared too."), isPresented: $confirm) {
+        .alert(tr("Clear everything on the Shelf? The Shelf on your other Macs will be cleared too."), isPresented: $confirm) {
             Button(tr("Cancel"), role: .cancel) {}
             Button(tr("Clear"), role: .destructive) { shelf.clear() }
         }
