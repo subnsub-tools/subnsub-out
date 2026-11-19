@@ -588,5 +588,6 @@
  "1 Mac": "1 台 Mac",
  "%ld Macs": "%ld 台 Mac",
  "The other Mac": "对方 Mac",
- "A remote desktop window is in front, but the Monitor helper on this Mac cannot reach your other Macs.": "当前为远程桌面窗口，但这台 Mac 上的 Monitor 探针无法连接其他 Mac。"
+ "A remote desktop window is in front, but the Monitor helper on this Mac cannot reach your other Macs.": "当前为远程桌面窗口，但这台 Mac 上的 Monitor 探针无法连接其他 Mac。",
+ "Install the helper on the Monitor page": "在 Monitor 页面安装探针"
 }

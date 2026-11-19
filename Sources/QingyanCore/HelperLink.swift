@@ -10,6 +10,10 @@ import Network
 /// The helper answers on a unix socket, put.sock in its config directory: one JSON line asks and
 /// one JSON line answers; for open and accept the socket then is the stream.
 public enum HelperLink {
+    /// The Monitor page's Install window with put's switch on (monitor.js, ?install=put): the line
+    /// there installs the helper for this account, with direct connections, and put after it.
+    public static let installPage = URL(string: "https://dashboard.subnsub.com/?install=put#monitor")!
+
     /// A device reached through the helper is called this, followed by its agent id.
     public static let prefix = "helper:"
 

@@ -101,7 +101,7 @@ With Polish on, you can speak an editing command without selecting anything: put
 On each Mac, install put, and install the Monitor helper from the Monitor page with direct connections on. Under Multiple Macs on the panel, turn on Work across Macs. There is nothing to pair: put works with the Macs on your Monitor page.
 
 1. While the Monitor page is open in a browser your Macs trust, it tells each Mac's helper about your other Macs with put: their names, their tunnel addresses and the keys they connect from. It sends this over each Mac's own tunnel, signed with the key the Mac trusts, and only to Macs that verify the signature.
-2. put on each Mac asks its helper for that list, and the Macs appear under Multiple Macs. A Mac without the helper, or with an older version, takes no part, and the panel says so.
+2. put on each Mac asks its helper for that list, and the Macs appear under Multiple Macs. A Mac without the helper, or with an older version, takes no part, and the panel says so. Its button opens the Monitor page's Install window with "Also install put" switched on. The install line there installs the helper for your account with what put needs — direct connections and remote updates (through which the page reaches the Mac) — and then installs put.
 3. From then on press Fn on either Mac as usual. Where the text goes is not chosen by hand: a knock decides (see below).
 
 **How the Macs reach each other**

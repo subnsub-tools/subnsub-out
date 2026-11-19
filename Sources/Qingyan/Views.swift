@@ -1287,9 +1287,17 @@ struct RemoteSection: View {
                     .onChange(of: settings.preferences.linkEnabled) { _, _ in controller.linkChanged() }
             }
             Reveal(open: on && !(problem ?? "").isEmpty) {
-                HStack(alignment: .top, spacing: 5) {
-                    Image(systemName: "exclamationmark.shield").font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 2)
-                    CopyableText(problem ?? "", font: .system(size: 11), color: .orange)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.shield").font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 2)
+                        CopyableText(problem ?? "", font: .system(size: 11), color: .orange)
+                    }
+                    // The helper is installed from the Monitor page, whose line carries the account and the
+                    // key the Macs trust: its Install window opens with put's switch on.
+                    if controller.linkProblem.isEmpty && [.missing, .stopped, .noTunnel].contains(controller.helperState) {
+                        Button(tr("Install the helper on the Monitor page")) { NSWorkspace.shared.open(HelperLink.installPage) }
+                            .buttonStyle(QuietButton())
+                    }
                 }.padding(.top, 8)
             }
             Reveal(open: on && problem == nil) {
