@@ -7,10 +7,15 @@
 # Without the secret (a fork) a run checks and builds the code with an ad-hoc signature and
 # publishes nothing.
 #
-# Builds are assets of one standing release, "builds": put-0.1.<build>.zip and put.json
-# (version, file, size, sha256), the zip uploaded first and put.json last, the ten newest zips
-# kept. Each build is also put-0.1.<build>.dmg (the app and a link to Applications), for a Mac
-# that has no put yet; the updater never reads it. The ten newest are kept. Its tag was made once by a maintainer; the repository lets no workflow create or move tags.
+# Each build is a release of its own, v0.1.<build> on the commit it was built from, holding
+# put-0.1.<build>.dmg (the app and a link to Applications, to install from) and
+# put-0.1.<build>.zip (the same app, for updates). The repository's tag rules let anyone who can
+# write create a v* tag, this workflow included, and nobody but its publishers move or delete one;
+# every other tag is theirs alone.
+#
+# The update feed is the standing pre-release "builds", whose tag a maintainer made once: put.json
+# (version, file, size, sha256) and the three newest zips beside it, the zip uploaded first and
+# put.json last. A build's own release is made before put.json names it.
 #
 # The app was called input before. Copies installed then read latest.json and take only
 # input-<version>.zip holding input.app, so the first build named put was also published that way,
@@ -65,6 +70,11 @@ jobs:
           set -euo pipefail
           released=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '[.assets[].name | capture("^(input|put)-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0' 2>/dev/null || echo 0)
+          # And the version tags: a run that made v<n> but stopped before the feed named it must not
+          # try to make v<n> again. Not knowing them stops the run.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1." \
+            --jq '[.[].ref | capture("^refs/tags/v0\\.1\\.(?<n>[0-9]+)$").n | tonumber] | max // 0') \
+            || { echo "::error::the version tags could not be read, so the next build number is unknown"; exit 1; }
           # What the feed names: put.json (missing until the first build named put) and latest.json.
           # Retried: a runner's resolver sometimes misses a name for a moment.
           served=0
@@ -76,9 +86,10 @@ jobs:
             n=$(python3 -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["version"].rsplit(".", 1)[1]))' "$RUNNER_TEMP/feed.json")
             served=$(( n > served ? n : served ))
           done
-          build=$(( (released > served ? released : served) + 1 ))
+          build=$(( released > served ? released : served ))
+          build=$(( (build > tagged ? build : tagged) + 1 ))
           echo "INPUT_BUILD=$build" >> "$GITHUB_ENV"
-          echo "Build $build (newest here $released, feed $served)"
+          echo "Build $build (newest in the feed's release $released, feed $served, version tags $tagged)"
 
       - name: Signing identity
         env:
@@ -207,19 +218,53 @@ jobs:
           BRIDGE: ${{ steps.package.outputs.bridge }}
         run: |
           set -euo pipefail
-          # The zip first, then the manifest that names it, so the file it names is always there.
-          gh release upload builds "$ZIP" "$OUT/put-$VERSION.dmg" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload builds "$RUNNER_TEMP/put.json" --repo "$GITHUB_REPOSITORY" --clobber
+          # This build's own release, on the commit it was built from, marked the latest.
+          {
+            printf 'put %s, built by GitHub Actions from %s and signed with the input signing certificate (named before the app was renamed put).\n\n' "$VERSION" "$GITHUB_SHA"
+            printf 'To install put on a Mac that has none, open put-%s.dmg and drag put onto Applications, then open it once and allow it under System Settings → Privacy & Security (the build is not notarized). Installed copies update themselves; put-%s.zip is the same app, for those updates.\n\n' "$VERSION" "$VERSION"
+            printf 'Where a file was built: gh attestation verify put-%s.dmg --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
+            git log -1 --format=%B "$GITHUB_SHA"
+          } > "$RUNNER_TEMP/notes.md"
+          # The tag first, on the commit that was built: creating a ref that is there already fails,
+          # so this build is never attached to a tag someone else made meanwhile.
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+          gh release create "v$VERSION" "$OUT/put-$VERSION.dmg" "$ZIP" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "put $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          # Then the update feed: the zip first, then the manifest that names it, so the file it names
+          # is always there. A manifest is replaced without the moment in which an upload with
+          # --clobber leaves it missing (the old one is deleted first): the new one goes up under a
+          # temporary name, the old one steps aside, the new one takes the name, and only then does
+          # the old one go; if taking the name fails, the old one gets it back.
+          asset_id() { gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" --jq ".assets[] | select(.name == \"$1\") | .id"; }
+          rename_asset() { gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$1" -f name="$2" >/dev/null; }
+          delete_asset() { gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$1"; }
+          replace() {  # replace <name> <file>
+            local name="$1" staged="$1.next" aside="$1.prev" id new old
+            for id in $(asset_id "$staged") $(asset_id "$aside"); do delete_asset "$id"; done  # left by a run that stopped halfway
+            cp "$2" "$RUNNER_TEMP/$staged"
+            gh release upload builds "$RUNNER_TEMP/$staged" --repo "$GITHUB_REPOSITORY"
+            new=$(asset_id "$staged"); old=$(asset_id "$name")
+            [ -n "$new" ] || { echo "::error::$staged did not arrive"; return 1; }
+            if [ -n "$old" ]; then rename_asset "$old" "$aside"; fi
+            if ! rename_asset "$new" "$name"; then
+              if [ -n "$old" ]; then rename_asset "$old" "$name"; fi
+              echo "::error::$name could not be replaced; the previous one is back"; return 1
+            fi
+            if [ -n "$old" ]; then delete_asset "$old"; fi
+          }
+          gh release upload builds "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+          replace put.json "$RUNNER_TEMP/put.json"
           if [ "$BRIDGE" = true ]; then
             gh release upload builds "$OUT/input-$VERSION.zip" --repo "$GITHUB_REPOSITORY" --clobber
-            gh release upload builds "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
+            replace latest.json "$RUNNER_TEMP/latest.json"
           fi
-          gh release edit builds --repo "$GITHUB_REPOSITORY" --title "put builds" \
-            --notes "The newest is put $VERSION, built by GitHub Actions from $GITHUB_SHA and signed with the input signing certificate (named before the app was renamed put). To install it on a Mac that has no put yet, open put-$VERSION.dmg and drag put onto Applications. Installed copies of put update to it by themselves; put.json names it. latest.json names the one build that copies installed while the app was called input update to; it moves them to put. Each zip has a build provenance attestation: gh attestation verify put-$VERSION.zip --repo $GITHUB_REPOSITORY"
-          # The ten newest put zips stay, and the ten newest disk images. The input zips (the bridge,
-          # and builds from before it) are left.
-          for kind in zip dmg; do
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
-              --jq "[.assets[] | select(.name | test(\"^put-0\\\\.1\\\\.[0-9]+\\\\.$kind\$\")) | {id, n: (.name | capture(\"0\\\\.1\\\\.(?<n>[0-9]+)\").n | tonumber)}] | sort_by(.n) | reverse | .[10:] | .[].id" |
-              while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
-          done
+          gh release edit builds --repo "$GITHUB_REPOSITORY" --prerelease --title "put update feed" \
+            --notes "Where installed copies of put look for updates. To download put, take the newest release instead: https://github.com/$GITHUB_REPOSITORY/releases/latest. put.json names the newest build, put $VERSION, and the zip it names lies beside it. latest.json names the one build that copies installed while the app was called input update to; it moves them to put."
+          # The feed keeps the three newest put zips (a Mac that read put.json a moment ago still
+          # finds the zip it named) and no disk images, which are in the builds' own releases. The
+          # input zips (the bridge, and builds from before it) are left.
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \
+            --jq '[.assets[] | select(.name | test("^put-0\\.1\\.[0-9]+\\.zip$")) | {id, n: (.name | capture("0\\.1\\.(?<n>[0-9]+)").n | tonumber)}] | sort_by(.n) | reverse | .[3:] | .[].id' |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" --jq '.assets[] | select(.name | test("^put-0\\.1\\.[0-9]+\\.dmg$")) | .id' |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
