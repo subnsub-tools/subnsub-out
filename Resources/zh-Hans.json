@@ -523,5 +523,7 @@
   "Typing did not start: another window came to the front.": "未开始输入：另一个窗口切换至前台。",
   "Could not select a keyboard layout to type with. Select ABC or another keyboard layout, then try again.": "无法选择用于输入的键盘布局。请选择 ABC 或其他键盘布局后重试。",
   "Typing stopped after %ld of %ld characters: a click or key press occurred.": "输入 %ld / %ld 个字符后已停止：期间有点击或按键。",
-  "Typing stopped after %ld of %ld characters: the input source changed.": "输入 %ld / %ld 个字符后已停止：输入法已切换。"
+  "Typing stopped after %ld of %ld characters: the input source changed.": "输入 %ld / %ld 个字符后已停止：输入法已切换。",
+  "This Mac has no Tailscale and no paired Mac to ask. Enter the address of a Mac running put below; once the two are paired, the others are found through it.": "这台 Mac 没有安装 Tailscale，也没有可以询问的已配对 Mac。请在下方输入一台运行 put 的 Mac 的地址；两台配对后，会通过它找到其他 Mac。",
+  "A different Mac answers at this address now. Search again before pairing.": "这个地址现在响应的是另一台 Mac。请重新搜索后再配对。"
 }

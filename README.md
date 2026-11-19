@@ -100,7 +100,7 @@ In Dictate mode with Polish on, you can speak an editing command without selecti
 
 Install the same put on each Mac. Under Multiple Macs on the panel, turn on working with other Macs, then pair:
 
-1. Click Manage. put asks this Mac's Tailscale for the list of online devices and asks each one who it is; those running put appear in the list. Without Tailscale there is no list, and an address can be entered by hand.
+1. Click Manage. put asks this Mac's Tailscale for the list of online devices, and asks each paired Mac for the Macs running put that it sees through Tailscale. It then asks each one to identify itself, and those running put appear in the list. On a Mac without Tailscale of its own, such as one behind a router with Tailscale, enter the address of one Mac running put manually once; after the two are paired, the others are found through it. A Mac shares its list of Macs running put only with paired Macs, and put follows only the Tailscale addresses on it.
 2. Click Pair. The other Mac's panel shows "xxx wants to pair with this Mac", both show the same six-digit code, and clicking Allow there adds each Mac to the other's trust list.
 3. From then on press Fn on either Mac as usual. Where the text goes is not chosen by hand: a knock decides (see below).
 

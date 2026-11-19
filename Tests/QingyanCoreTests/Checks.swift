@@ -386,6 +386,29 @@ struct Checks {
         try check(asked[0].code == seen.code && seen.code == DeviceIdentity.checkCode(laptop.publicKey, home.identity.publicKey), "both screens show the same check code")
         try check(trusted[laptop.publicKey]?.canWrite == true && ended == [asked[0].id], "consent adds the Mac with full permissions and closes the request")
         stranger = paired
+        home.peers = { [["name": "Office", "host": "100.64.0.9", "port": 18765], ["name": "Office again", "host": "100.64.0.9", "port": 18765],
+                        ["name": "No address", "host": "", "port": 18765], ["name": "Bad port", "host": "10.0.0.2", "port": 0], ["junk": 1]] }
+        let told = try await RemoteSender.peers(of: paired, identity: laptop, name: "Laptop", listening: 30001)
+        try check(told == [RemoteSender.Peer(name: "Office", host: "100.64.0.9", port: 18765)],
+                  "a trusted Mac learns the Macs the other one sees, each once; entries that are no address are dropped")
+        let unknown = TrustedDevice(key: home.identity.publicKey, name: "Study", host: "127.0.0.1", port: port)
+        let untold = try await RemoteSender.peers(of: unknown, identity: DeviceIdentity(), name: "Stranger", listening: 30009)
+        try check(untold.isEmpty, "a Mac that is not trusted is told nothing about the others")
+        let full = trusted[laptop.publicKey]!
+        trusted[laptop.publicKey]?.canWrite = false; trusted[laptop.publicKey]?.canRead = false; trusted[laptop.publicKey]?.canShelf = false
+        let barred = try await RemoteSender.peers(of: paired, identity: laptop, name: "Laptop", listening: 30001)
+        try check(barred.isEmpty, "a paired Mac with every permission turned off is told nothing either")
+        trusted[laptop.publicKey] = full
+        try check(RemoteSender.parsePeers((0..<100).map { ["host": "10.0.0.\($0)", "port": 18765] }).count == 64
+                  && RemoteSender.parsePeers([["host": "a b", "port": 1], ["host": "x/y", "port": 1]]).isEmpty, "at most 64, and no host with a space or a slash")
+        do {
+            _ = try await RemoteSender.pair(host: "127.0.0.1", port: port, identity: DeviceIdentity(), name: "Picked", listening: 30010,
+                                            expecting: DeviceIdentity().publicKey)
+            throw VoiceError("pairing must stop when another Mac answers than the one picked")
+        } catch { try check(error.localizedDescription.contains("A different Mac") && asked.count == 1, "pairing pins the Mac picked from a search, before anything is asked") }
+        try check(["100.64.0.1", "100.127.255.254", "fd7a:115c:a1e0::9"].allSatisfy(RemoteWire.isTailnetAddress)
+                  && !["100.128.0.1", "100.63.255.255", "127.0.0.1", "::1", "192.168.8.193", "10.0.0.2", "example.com", "100.64.0.1.example.com", ""].contains(where: RemoteWire.isTailnetAddress),
+                  "only a numeric Tailscale address counts, not loopback, a LAN address or a name")
         let after = try await RemoteSender.ping(stranger, identity: laptop, name: "Laptop", listening: 30001)
         try check(after.ok && after.paired && after.message == "ready" && after.name == "Study", "a trusted Mac is told whether this one can paste")
         _ = try await RemoteSender.pair(host: "127.0.0.1", port: port, identity: laptop, name: "Laptop", listening: 30001)

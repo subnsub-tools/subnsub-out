@@ -92,6 +92,17 @@ public enum RemoteWire {
         }
     }
 
+    /// A numeric Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48), not loopback and not a name:
+    /// the only places a paired Mac's word sends this one to on its own.
+    public static func isTailnetAddress(_ host: String) -> Bool {
+        if let v4 = IPv4Address(host) {
+            let bytes = Array(v4.rawValue)
+            return bytes.count == 4 && bytes[0] == 100 && bytes[1] & 0xc0 == 64
+        }
+        if let v6 = IPv6Address(host) { return Array(v6.rawValue.prefix(6)) == [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0] }
+        return false
+    }
+
     private static func trusted(v4 bytes: [UInt8]) -> Bool {
         bytes.count == 4 && (bytes[0] == 127 || (bytes[0] == 100 && bytes[1] & 0xc0 == 64))
     }
@@ -297,15 +308,60 @@ public enum RemoteSender {
         catch { throw RemoteIO.unreachable(device.label, device.port) }
     }
 
+    /// A Mac another one says it can see: where to ask it who it is.
+    public struct Peer: Equatable, Sendable {
+        public let name: String
+        public let host: String
+        public let port: Int
+        public init(name: String, host: String, port: Int) { self.name = name; self.host = host; self.port = port }
+    }
+
+    /// The entries of a `peers` answer that are addresses at all; at most 64, none repeated.
+    public static func parsePeers(_ list: [Any]) -> [Peer] {
+        var peers: [Peer] = [], seen = Set<String>()
+        for case let entry as [String: Any] in list {
+            guard let host = (entry["host"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !host.isEmpty, host.count <= 253, !host.contains(where: { $0.isWhitespace || $0 == "/" }),
+                  let port = entry["port"] as? Int, (1...65_535).contains(port),
+                  seen.insert("\(host):\(port)").inserted else { continue }
+            let name = String((entry["name"] as? String ?? host).prefix(100))
+            peers.append(Peer(name: name, host: host, port: port))
+            if peers.count == 64 { break }
+        }
+        return peers
+    }
+
+    /// Asks a paired Mac which Macs it can see, for a Mac with no Tailscale of its own (behind a
+    /// router that has it): its Tailscale's online Macs and the Macs it is paired with. A Mac that
+    /// does not trust this one says nothing.
+    public static func peers(of device: TrustedDevice, identity: DeviceIdentity, name: String, listening: Int,
+                             timeout: TimeInterval = 6) async throws -> [Peer] {
+        let channel = try await Channel.open(host: device.host, port: device.port, identity: identity, name: name, listening: listening,
+                                             queue: DispatchQueue(label: "local.hopo.qingyan.remote.peers"), timeout: timeout)
+        defer { channel.close() }
+        guard channel.peerKey == device.key else { throw VoiceError(tr("A different Mac answers at this address, not the paired “%@”.", device.label)) }
+        let deadline = Task {
+            try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            channel.close()
+        }
+        defer { deadline.cancel() }
+        try await channel.write(["peers": true])
+        let reply = try await channel.readObject()
+        guard reply["ok"] as? Bool == true, let list = reply["peers"] as? [Any] else { return [] }
+        return parsePeers(list)
+    }
+
     /// Asks the Mac at an address to trust this one, and waits for its user to answer.
     /// `legacyCode` is the pairing code of the version before device keys; a Mac that still
     /// remembers that code agrees without asking.
     public static func pair(host: String, port: Int, identity: DeviceIdentity, name: String, listening: Int,
-                            legacyCode: String? = nil, timeout: TimeInterval = 120,
+                            legacyCode: String? = nil, expecting key: String? = nil, timeout: TimeInterval = 120,
                             onCode: @Sendable @escaping (String) -> Void = { _ in }) async throws -> TrustedDevice {
         let channel = try await Channel.open(host: host, port: port, identity: identity, name: name, listening: listening,
                                              queue: DispatchQueue(label: "local.hopo.qingyan.remote.pair"))
         defer { channel.close() }
+        // The Mac the user picked from a search, and no other that answers at that address now.
+        if let key, channel.peerKey != key { throw VoiceError(tr("A different Mac answers at this address now. Search again before pairing.")) }
         onCode(DeviceIdentity.checkCode(identity.publicKey, channel.peerKey))
         let deadline = Task {
             try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
@@ -520,6 +576,8 @@ public final class RemoteReceiver {
     public var name = ""
     /// Looks a calling Mac up among the trusted ones.
     public var trusted: (String) -> TrustedDevice? = { _ in nil }
+    /// The Macs this one can see (name, host, port), told to a trusted Mac that asks.
+    public var peers: (() async -> [[String: Any]])?
     public var onPairRequest: ((PairRequest) -> Void)?
     /// A request went away unanswered: the caller gave up or time ran out.
     public var onPairEnded: ((UUID) -> Void)?
@@ -662,6 +720,12 @@ public final class RemoteReceiver {
         }
         if object["pair"] as? Bool == true { return await pair(object, on: channel, known: device) }
         guard let device else { return refuse(tr("The other Mac has not added this Mac to its trusted list. Pair the two Macs first.")) }
+        if object["peers"] as? Bool == true {
+            // A Mac with every permission turned off is told nothing.
+            guard device.canWrite || device.canRead || device.canShelf else { return (["ok": true, "peers": [] as [Any]], .close) }
+            let list = await peers?() ?? []
+            return (["ok": true, "peers": list], .close)
+        }
         if object["shelf"] as? String == "hello" {
             guard device.canShelf, let shelf else { return refuse(tr("The other Mac has not allowed Shelf sharing.")) }
             expire(channel.connection, after: nil)

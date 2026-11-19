@@ -208,6 +208,9 @@ final class DictationController: ObservableObject {
         }
         receiver.name = deviceName
         receiver.trusted = { [weak self] key in self?.settings.preferences.devices.first { $0.key == key } }
+        // Told to a trusted Mac that asks: the Macs this one sees through Tailscale, and the ones it
+        // is paired with, so that a Mac without Tailscale finds the others through this one.
+        receiver.peers = { [weak self] in await self?.sharedPeers() ?? [] }
         receiver.onPairRequest = { [weak self] request in
             self?.pairRequests.append(request)
             self?.settings.section = .remote
@@ -351,13 +354,14 @@ final class DictationController: ObservableObject {
         request.answer(agree)
     }
 
-    func pair(host: String, port: Int, legacyCode: String? = nil) {
+    func pair(host: String, port: Int, legacyCode: String? = nil, key: String? = nil) {
         guard let identity, pairingStep[host] != .confirming else { return }
         pairing[host] = tr("Connecting…"); pairingStep[host] = .connecting
         let name = deviceName, listening = settings.preferences.remotePort
         Task { [weak self] in
             do {
-                let device = try await RemoteSender.pair(host: host, port: port, identity: identity, name: name, listening: listening, legacyCode: legacyCode) { code in
+                let device = try await RemoteSender.pair(host: host, port: port, identity: identity, name: name, listening: listening,
+                                                         legacyCode: legacyCode, expecting: key) { code in
                     Task { @MainActor in
                         guard legacyCode == nil else { return }
                         self?.pairing[host] = tr("Waiting for the other Mac to confirm · code %@", code)
@@ -388,35 +392,106 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// The Macs running put that this one sees through Tailscale, told to a trusted Mac that asks: one
+    /// lookup at a time, kept for 30 seconds, and only Macs that answered as put at a Tailscale address.
+    private var peerDirectory: (at: Date, list: [[String: Any]])?
+    private var peerLookup: Task<[[String: Any]], Never>?
+
+    private func sharedPeers() async -> [[String: Any]] {
+        if let cached = peerDirectory, Date().timeIntervalSince(cached.at) < 30 { return cached.list }
+        if let peerLookup { return await peerLookup.value }
+        guard let identity else { return [] }
+        let name = deviceName, port = settings.preferences.remotePort
+        let lookup = Task { () -> [[String: Any]] in
+            let nodes = await TailscalePeers.online()
+            let answers = await Self.identifyAll(nodes.map { RemoteSender.Peer(name: $0.name, host: $0.address, port: port) },
+                                                 identity: identity, name: name, listening: port)
+            return answers.filter { RemoteWire.isTailnetAddress($0.host) && $0.key != identity.publicKey }
+                .map { ["name": $0.name, "host": $0.host, "port": $0.port] }
+        }
+        peerLookup = lookup
+        let list = await lookup.value
+        peerLookup = nil
+        peerDirectory = (Date(), list)
+        return list
+    }
+
+    /// Asks each place who is there, eight at a time.
+    nonisolated static func identifyAll(_ places: [RemoteSender.Peer], identity: DeviceIdentity, name: String, listening: Int) async -> [RemoteSender.Found] {
+        await withTaskGroup(of: RemoteSender.Found?.self, returning: [RemoteSender.Found].self) { group in
+            var answers: [RemoteSender.Found] = []
+            var next = places.makeIterator()
+            func start(_ place: RemoteSender.Peer) {
+                group.addTask { try? await RemoteSender.identify(host: place.host, port: place.port, identity: identity, name: name, listening: listening) }
+            }
+            for _ in 0..<8 { guard let place = next.next() else { break }; start(place) }
+            while let answer = await group.next() {
+                if let answer { answers.append(answer) }
+                if let place = next.next() { start(place) }
+            }
+            return answers
+        }
+    }
+
     func discover() {
         guard let identity, !searching, !settings.preview else { return }
         searching = true; searchNote = ""
         refreshTailnetAddress()
         let name = deviceName, port = settings.preferences.remotePort
+        let paired = settings.preferences.devices
         Task { [weak self] in
-            let nodes = await TailscalePeers.online()
-            var answers: [RemoteSender.Found] = []
-            await withTaskGroup(of: RemoteSender.Found?.self) { group in
-                for node in nodes {
-                    group.addTask { try? await RemoteSender.identify(host: node.address, port: port, identity: identity, name: name, listening: port) }
+            // This Mac's Tailscale first: its Macs are asked as soon as the list is there.
+            let local = await TailscalePeers.online().map { RemoteSender.Peer(name: $0.name, host: $0.address, port: port) }
+            async let localAnswers = Self.identifyAll(local, identity: identity, name: name, listening: port)
+            // Then every paired Mac's word on the Macs it sees, for a Mac with no Tailscale of its own
+            // (behind a router that has it). A paired Mac points this one at numeric Tailscale
+            // addresses on ports from 1024 and nowhere else, 64 places at most in all.
+            let told = await withTaskGroup(of: [RemoteSender.Peer].self, returning: [RemoteSender.Peer].self) { group in
+                for device in paired {
+                    group.addTask { (try? await RemoteSender.peers(of: device, identity: identity, name: name, listening: port)) ?? [] }
                 }
-                for await answer in group { if let answer { answers.append(answer) } }
+                var all: [RemoteSender.Peer] = []
+                for await list in group { all += list }
+                return all
+            }
+            var places = Set(local.map { "\($0.host):\($0.port)" })
+            let referred = Array(told.filter {
+                RemoteWire.isTailnetAddress($0.host) && $0.port >= 1024 && places.insert("\($0.host):\($0.port)").inserted
+            }.prefix(64))
+            let answers = await localAnswers + Self.identifyAll(referred, identity: identity, name: name, listening: port)
+            let candidates = local.count + referred.count
+            // One row per Mac: by key, a Tailscale address found here before one a paired Mac told of.
+            let localHosts = Set(local.map(\.host))
+            var byKey: [String: RemoteSender.Found] = [:]
+            for answer in answers where answer.key != identity.publicKey {
+                if let have = byKey[answer.key], localHosts.contains(have.host) || !localHosts.contains(answer.host) { continue }
+                byKey[answer.key] = answer
             }
             guard let self else { return }
-            let known = Set(self.settings.preferences.devices.map(\.key))
-            for answer in answers where known.contains(answer.key) {
-                self.trust(TrustedDevice(key: answer.key, name: answer.name, host: answer.host, port: answer.port))
+            let known = Dictionary(self.settings.preferences.devices.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+            // A paired Mac's saved address changes only when the saved one no longer answers, and the Mac
+            // at the new one proves its key over the encrypted channel (a who-are-you alone proves nothing).
+            for (key, answer) in byKey {
+                guard let saved = known[key], saved.host != answer.host || saved.port != answer.port else { continue }
+                if (try? await RemoteSender.ping(saved, identity: identity, name: name, listening: port)) != nil { continue }
+                var moved = saved
+                moved.host = answer.host; moved.port = answer.port
+                if (try? await RemoteSender.ping(moved, identity: identity, name: name, listening: port)) != nil {
+                    self.trust(TrustedDevice(key: key, name: answer.name, host: answer.host, port: answer.port))
+                }
             }
-            self.found = answers.filter { !known.contains($0.key) && $0.key != identity.publicKey }.sorted { $0.name < $1.name }
+            self.found = byKey.values.filter { known[$0.key] == nil }.sorted { $0.name < $1.name }
             self.searching = false
-            if nodes.isEmpty {
-                self.searchNote = tr("Tailscale reported no devices online. Enter an address below to pair by hand.")
+            if candidates == 0 {
+                self.searchNote = !TailscalePeers.installed && paired.isEmpty
+                    ? tr("This Mac has no Tailscale and no paired Mac to ask. Enter the address of a Mac running put below; once the two are paired, the others are found through it.")
+                    : tr("Tailscale reported no devices online. Enter an address below to pair by hand.")
             } else if !self.found.isEmpty {
                 self.searchNote = ""
-            } else if nodes.count == 1 {
+            } else if candidates == 1 {
                 self.searchNote = tr("Scanned 1 online Mac. No unpaired Mac running put was found.")
             } else {
-                self.searchNote = tr("Scanned %ld online Macs. No unpaired Mac running put was found.", nodes.count)
+                self.searchNote = tr("Scanned %ld online Macs. No unpaired Mac running put was found.", candidates)
             }
         }
     }

@@ -8,6 +8,11 @@ enum TailscalePeers {
         let address: String
     }
 
+    private static let tools = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]
+
+    /// Whether this Mac has Tailscale to ask at all.
+    static var installed: Bool { tools.contains { FileManager.default.isExecutableFile(atPath: $0) } }
+
     static func online() async -> [Node] {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: load()) }
@@ -15,7 +20,6 @@ enum TailscalePeers {
     }
 
     private static func load() -> [Node] {
-        let tools = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]
         for path in tools where FileManager.default.isExecutableFile(atPath: path) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)

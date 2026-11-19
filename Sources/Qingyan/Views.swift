@@ -1435,7 +1435,7 @@ struct RemoteSection: View {
                     CopyableText(controller.pairing[other.host] ?? other.host, font: .system(size: 10.5), color: Palette.muted)
                 }
                 Spacer(minLength: 4)
-                Button(tr("Pair")) { controller.pair(host: other.host, port: other.port) }.buttonStyle(SolidButton())
+                Button(tr("Pair")) { controller.pair(host: other.host, port: other.port, key: other.key) }.buttonStyle(SolidButton())
                     .disabled(pairingUnderWay(other.host))
             }
         }
