@@ -74,7 +74,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var statusItem: NSStatusItem?
     private var timer: Timer?
     private var observations: [NSObjectProtocol] = []
-    private var phaseSubscription: AnyCancellable?
     private var languageSubscription: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -158,37 +157,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func installStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // The word alone, and any click opens the menu (its Show Main Panel opens the panel).
         if let button = statusItem?.button {
-            button.title = " put"
-            button.imagePosition = .imageLeading
-            button.target = self
-            button.action = #selector(statusItemClicked(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.title = "put"
+            button.image = nil
         }
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem?.menu = menu
         labelStatusItem()
-        phaseSubscription = controller.$phase.removeDuplicates().sink { [weak self] phase in
-            let symbol = phase == .recording ? "mic.fill" : phase == .processing ? "ellipsis" : "waveform"
-            self?.statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "put")
-        }
     }
 
     /// The status item's tooltip and spoken name, in the chosen language.
     private func labelStatusItem() {
         guard let button = statusItem?.button else { return }
-        button.toolTip = tr("put · Click to show the panel · Right-click for the menu")
-        button.setAccessibilityLabel(tr("put, opens the main panel"))
-    }
-
-    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            let menu = NSMenu()
-            menu.delegate = self
-            menuNeedsUpdate(menu)
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
-        } else {
-            showWindow()
-        }
+        button.toolTip = tr("put · Click for the menu")
+        button.setAccessibilityLabel(tr("put, opens its menu"))
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
