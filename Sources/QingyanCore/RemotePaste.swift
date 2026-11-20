@@ -76,6 +76,38 @@ public enum RemoteWire {
         return id.hasPrefix("com.p5sys.jump") && !id.hasPrefix("com.p5sys.jump.connect")
     }
 
+    /// Which Mac a remote desktop window's title names, given each Mac's names: the place of the
+    /// Mac with a name that is a run of whole words of the title ("mini" in "Mac mini – Screen
+    /// Sharing", "mbp" in "mbp-14"), ignoring case, width and accents. The name with the most
+    /// words wins; nil when no name fits, or two Macs fit equally well. Only a first guess: the
+    /// knock still has to be claimed.
+    public static func named(in title: String, among names: [[String]]) -> Int? {
+        let said = words(title)
+        guard !said.isEmpty else { return nil }
+        var best = 0, found: Int?, tied = false
+        for (index, candidates) in names.enumerated() {
+            var fit = 0
+            for name in candidates.map(words) where name.count > fit && contains(said, run: name) { fit = name.count }
+            guard fit > 0 else { continue }
+            if fit > best { best = fit; found = index; tied = false }
+            else if fit == best, found != index { tied = true }
+        }
+        return tied ? nil : found
+    }
+
+    /// Whether `run` appears in `words`, word for word and in order.
+    static func contains(_ words: [String], run: [String]) -> Bool {
+        guard !run.isEmpty, run.count <= words.count else { return false }
+        for start in 0...(words.count - run.count) where Array(words[start..<(start + run.count)]) == run { return true }
+        return false
+    }
+
+    /// The words of a name or title: runs of letters and digits, folded for comparison.
+    static func words(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .widthInsensitive, .diacriticInsensitive], locale: nil)
+            .split { !($0.isLetter || $0.isNumber) }.map(String.init)
+    }
+
     /// Tailscale's 100.64.0.0/10 and fd7a:115c:a1e0::/48, plus loopback for local checks.
     public static func isTrustedPeer(_ host: NWEndpoint.Host) -> Bool {
         switch host {
@@ -434,19 +466,23 @@ public final class RemoteSession {
         var seen: Date?
         var elapsed: TimeInterval = 0
         var reply: Once<[String: Any]>?
+        /// Arming was tried, and whether a channel to the Mac opened at all.
+        var tried = false
+        var opened = false
         init(_ device: TrustedDevice) { self.device = device }
     }
 
-    public let nonce = Knock.newNonce()
+    public let nonce: Int
     private let links: [Link]
     private let identity: DeviceIdentity
     private let name: String
     private let listening: Int
     private var closed = false
 
-    public init(devices: [TrustedDevice], identity: DeviceIdentity, name: String, listening: Int) {
+    /// `nonce`: the knock's combination, random unless a check needs a known one.
+    public init(devices: [TrustedDevice], identity: DeviceIdentity, name: String, listening: Int, nonce: Int = Knock.newNonce()) {
         links = devices.filter(\.reachable).map(Link.init)
-        self.identity = identity; self.name = name; self.listening = listening
+        self.identity = identity; self.name = name; self.listening = listening; self.nonce = nonce
     }
 
     public var armedCount: Int { links.filter(\.armed).count }
@@ -456,8 +492,12 @@ public final class RemoteSession {
     public var names: [String: String] {
         Dictionary(links.filter { !$0.name.isEmpty }.map { ($0.device.key, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
-    /// After arming: which trusted Macs answered.
-    public var reachable: [String: Bool] { Dictionary(links.map { ($0.device.key, $0.armed) }, uniquingKeysWith: { first, _ in first }) }
+    /// After arming: which of the Macs tried answered. A Mac not tried is not in it.
+    public var reachable: [String: Bool] {
+        Dictionary(links.filter(\.tried).map { ($0.device.key, $0.armed) }, uniquingKeysWith: { first, _ in first })
+    }
+    /// The Macs tried that no channel reached at all: off, asleep, out of reach, or without put.
+    public var unopened: Set<String> { Set(links.filter { $0.tried && !$0.opened }.map(\.device.key)) }
     /// Why each unreachable Mac could not be armed.
     public var problems: [String] { links.filter { !$0.armed && !$0.problem.isEmpty }.map { tr("%@: %@", $0.device.label, $0.problem) } }
     /// How long to wait for a claim after the knock: the slowest armed link's round trip plus the
@@ -469,17 +509,63 @@ public final class RemoteSession {
 
     /// Connects to every Mac at once. Unreachable ones are simply left out.
     public func arm(timeout: TimeInterval = 3) async {
-        let tasks = links.map { link in Task { @MainActor [weak self] in await self?.arm(link, timeout: timeout) } }
+        await arm(Array(links.indices), timeout: timeout, dial: HelperLink.longestDial)
+    }
+
+    /// Connects at once to the Macs at these places not tried yet. `dial`: how long the helper may
+    /// take to reach each.
+    public func arm(_ indices: [Int], timeout: TimeInterval, dial: TimeInterval) async {
+        let fresh = indices.filter { links.indices.contains($0) && !links[$0].tried }.map { links[$0] }
+        let tasks = fresh.map { link in Task { @MainActor [weak self] in await self?.arm(link, timeout: timeout, dial: dial) } }
         for task in tasks { await task.value }
     }
 
-    private func arm(_ link: Link, timeout: TimeInterval) async {
-        guard !closed else { return }
+    /// The Mac a remote desktop window's title names, by the name the Monitor page gave it or the
+    /// one put on it gave (`learned`, by key), as `RemoteWire.named` matches them.
+    public func index(namedIn title: String, learned: [String: String] = [:]) -> Int? {
+        RemoteWire.named(in: title, among: links.map { link in
+            [link.device.name, link.name, learned[link.device.key] ?? ""].filter { !$0.isEmpty }
+        })
+    }
+
+    /// Finds the Mac the front window shows, in stages, each one armed and then knocked at: `first`
+    /// (the one the window's title names), then the others, then the `doubtful` ones (by key: no
+    /// channel reached them last time). The first knock may be claimed by any armed Mac; a later
+    /// one only by a Mac that has just armed, since a Mac knocked at before has had its knock, and
+    /// its late answer to it must not be taken for one to this knock (every knock of a session is
+    /// the same combination). The first claim ends the search. So the Mac being looked at answers
+    /// without waiting for the rest, and one that is out of reach holds up only a search that comes
+    /// to it. `knock` types the knock and says whether it did: false (the window in front is no
+    /// longer a remote desktop) ends the search with no Mac.
+    public func find(first: Int?, doubtful: Set<String> = [], timeout: TimeInterval, dial: TimeInterval,
+                     knock: @MainActor () async -> Bool) async -> Int? {
+        let others = links.indices.filter { $0 != first }
+        let stages = [first.map { [$0] } ?? [],
+                      others.filter { !doubtful.contains(links[$0].device.key) },
+                      others.filter { doubtful.contains(links[$0].device.key) }]
+        var knocked = false
+        for stage in stages {
+            let fresh = stage.filter { links.indices.contains($0) && !links[$0].tried }
+            if !fresh.isEmpty { await arm(fresh, timeout: timeout, dial: dial) }
+            guard !closed else { return nil }
+            let among = knocked ? Set(fresh.filter { links[$0].armed }) : Set(links.indices.filter { links[$0].armed })
+            guard !among.isEmpty else { continue }
+            knocked = true
+            guard let outcome = await claim(among: among, knock: knock) else { return nil }
+            if let found = outcome { return found }
+        }
+        return nil
+    }
+
+    private func arm(_ link: Link, timeout: TimeInterval, dial: TimeInterval) async {
+        guard !closed, !link.tried else { return }
+        link.tried = true
         let started = Date()
         do {
             let channel = try await Channel.open(host: link.device.host, port: link.device.port, identity: identity, name: name,
-                                                 listening: listening, timeout: timeout)
+                                                 listening: listening, timeout: timeout, dial: dial)
             link.channel = channel
+            link.opened = true
             guard channel.peerKey == link.device.key else { throw VoiceError(tr("A different Mac is at this address now. Pair again.")) }
             let deadline = Task {
                 try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
@@ -521,13 +607,23 @@ public final class RemoteSession {
     /// Types the knock (through `knock`) and waits for one armed Mac to say it saw it.
     /// Nil means the front window belongs to this Mac, or to a Mac that is not trusted.
     public func locate(knock: @MainActor () async -> Void) async -> Int? {
-        guard !closed, armedCount > 0 else { return nil }
+        guard armedCount > 0 else { return nil }
+        let outcome = await claim(among: Set(links.indices)) { await knock(); return true }
+        return outcome ?? nil
+    }
+
+    /// Types the knock and waits for one of the armed Macs at these places to claim it: the place,
+    /// .some(nil) when none did, nil when `knock` typed nothing.
+    private func claim(among: Set<Int>, knock: @MainActor () async -> Bool) async -> Int?? {
+        guard !closed else { return .some(nil) }
         let started = Date()
-        await knock()
+        guard await knock() else { return nil }
         let deadline = Date().addingTimeInterval(patience)
         while true {
-            if let index = links.firstIndex(where: { $0.armed && ($0.seen ?? .distantPast) >= started }) { return index }
-            if closed || Date() >= deadline { return nil }
+            if let index = links.indices.first(where: { among.contains($0) && links[$0].armed && (links[$0].seen ?? .distantPast) >= started }) {
+                return .some(index)
+            }
+            if closed || Date() >= deadline { return .some(nil) }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }

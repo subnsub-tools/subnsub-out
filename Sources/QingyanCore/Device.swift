@@ -125,14 +125,17 @@ final class Channel: @unchecked Sendable {
     /// A host of the form helper:<agent id> is one of the owner's Macs reached through the
     /// Monitor helper (HelperLink); the channel then goes by that name rather than by its key,
     /// since the helpers vouch for the Mac and put's own key may change with a reinstall.
+    /// `dial`: how long the helper may take to reach the other Mac, before `timeout` for the
+    /// handshake starts; the helper's own limit when not given.
     static func open(host: String, port: Int, identity: DeviceIdentity, name: String, listening: Int,
-                     queue: DispatchQueue = .main, timeout: TimeInterval = 4) async throws -> Channel {
+                     queue: DispatchQueue = .main, timeout: TimeInterval = 4,
+                     dial: TimeInterval = HelperLink.longestDial) async throws -> Channel {
         let helperAgent = HelperLink.agent(of: host)
         let connection: NWConnection
         let label: String
         if let helperAgent {
             // The helper's own dial can take a few seconds the first time; it is bounded there.
-            connection = try await HelperLink.open(agent: helperAgent, name: "")
+            connection = try await HelperLink.open(agent: helperAgent, name: "", within: dial)
             label = host
         } else {
             let (endpointHost, endpointPort, endpointLabel) = try RemoteIO.endpoint(host: host, port: port)

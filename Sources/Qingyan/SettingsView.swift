@@ -19,7 +19,7 @@ struct SettingsPage: View {
                 PolishSwitch(settings: settings)
                 if polishing {
                     PolishChoice(settings: settings)
-                    Row(tr("Text before the cursor"), info: tr("When on, each dictation sends up to 1,000 characters written before the cursor in the current field to the polishing service with the transcript, so names, terms and misheard words can be put right. Nothing is read in password fields, terminals or fields over 6,000 characters, or while Work across Macs has other Macs to send to.")) {
+                    Row(tr("Text before the cursor"), info: tr("When on, each dictation sends up to 1,000 characters written before the cursor in the current field to the polishing service with the transcript, so names, terms and misheard words can be put right. Nothing is read in password fields, terminals or fields over 6,000 characters, or in a remote desktop window while Work across Macs has other Macs to send to.")) {
                         GlassSegments(label: tr("Text before the cursor"), selection: $settings.preferences.fieldContext,
                                       options: [(false, tr("Off")), (true, tr("On"))], compact: true)
                     }

@@ -127,7 +127,7 @@ struct Checks {
         catch { failed += 1; print("FAIL Shelf store: \(error.localizedDescription)") }
         do { try await shelfSync(); print("PASS Shelf between Macs over real TCP: both directions, multi-frame file intact, removal, catching up, relay, large items as cards fetched on demand, resume, fetch through a third Mac, untrusted Mac, two Macs calling each other") }
         catch { failed += 1; print("FAIL Shelf sync: \(error.localizedDescription)") }
-        do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions") }
+        do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
         do { try await platformCalls(); print("PASS Other platforms over real HTTP: nothing sent until the recording ends, upload and reply, hint only where taken, no key no header, short and cancelled recordings, tidying through chat and through Responses, cut-off replies refused, model list, errors without the reply's text") }
         catch { failed += 1; print("FAIL Platform calls: \(error.localizedDescription)") }
@@ -936,8 +936,8 @@ struct Checks {
         var meAtStudy = TrustedDevice(key: me.publicKey, name: "Laptop", host: "", port: 30001)
         study.trusted = { $0 == me.publicKey ? meAtStudy : nil }
         office.trusted = { $0 == me.publicKey ? TrustedDevice(key: me.publicKey, name: "Laptop", host: "", port: 30001) : nil }
-        func makeSession(_ devices: [TrustedDevice], as identity: DeviceIdentity? = nil) -> RemoteSession {
-            RemoteSession(devices: devices, identity: identity ?? me, name: "Laptop", listening: 30001)
+        func makeSession(_ devices: [TrustedDevice], as identity: DeviceIdentity? = nil, nonce: Int = Knock.newNonce()) -> RemoteSession {
+            RemoteSession(devices: devices, identity: identity ?? me, name: "Laptop", listening: 30001, nonce: nonce)
         }
         study.start(port: base, probe: { (true, "ready") }, context: { studyField },
                     deliver: { atStudy.append($0); return "Pasted into Notes" })
@@ -965,6 +965,7 @@ struct Checks {
         try check(foreign == nil, "someone else's knock is not claimed")
         let second = await session.locate { study.knocked(session.nonce) }
         try check(second == 0, "a later knock can land on a different Mac")
+
 
         // Chinese and English mixed, on two lines, with an emoji: "Line one, Chinese and English mixed." and "Line two".
         let text = "\u{7B2C}\u{4E00}\u{884C}\u{FF0C}\u{4E2D}\u{82F1} mixed\u{3002}\n\u{7B2C}\u{4E8C}\u{884C} 🙂"
@@ -1097,6 +1098,75 @@ struct Checks {
             try check(one.armedCount + two.armedCount == 1, "a colliding nonce is refused rather than shared")
         }
         one.close(); two.close()
+
+        // The title of a remote desktop window as a first guess.
+        let macs = [["mini"], ["m1"], ["mbp"]]
+        try check(RemoteWire.named(in: "Mac mini \u{2013} Screen Sharing", among: macs) == 0 && RemoteWire.named(in: "mbp-14", among: macs) == 2
+                  && RemoteWire.named(in: "M1", among: macs) == 1, "a title names a Mac by whole words, in any case")
+        try check(RemoteWire.named(in: "m2", among: macs) == nil && RemoteWire.named(in: "minimal", among: macs) == nil
+                  && RemoteWire.named(in: "100.73.217.68", among: macs) == nil && RemoteWire.named(in: "", among: macs) == nil,
+                  "a title naming none of them, a name inside a longer word, or an address is no guess")
+        try check(RemoteWire.named(in: "hopo's Mac mini", among: [["mini"], ["Mac"]]) == nil
+                  && RemoteWire.named(in: "hopo\u{2019}s Mac mini", among: [["mini"], ["Mac", "hopo\u{2019}s Mac mini"]]) == 1,
+                  "two names that fit equally well are no guess; the name with more words wins")
+        // "Study - Screen Sharing", among "Study" and "Office", in Chinese.
+        try check(RemoteWire.named(in: "\u{4E66}\u{623F} - \u{5C4F}\u{5E55}\u{5171}\u{4EAB}", among: [["\u{4E66}\u{623F}"], ["\u{529E}\u{516C}\u{5BA4}"]]) == 0,
+                  "a name in Chinese is a word of its own")
+        let titled = makeSession(peers)
+        try check(titled.index(namedIn: "Offline") == 2 && titled.index(namedIn: "Study") == nil
+                  && titled.index(namedIn: "Study", learned: [peers[0].key: "Study"]) == 0,
+                  "a session guesses by the Monitor name, or by the name put on that Mac gave before")
+        titled.close()
+
+        // Looking in stages, each session with a knock no earlier session here used, so a receiver
+        // still closing an earlier one cannot refuse it as taken.
+        var used: Set<Int> = [session.nonce, one.nonce, two.nonce]
+        func freshSession() -> RemoteSession {
+            let nonce = (0..<(1 << Knock.bits)).first { !used.contains($0) }!
+            used.insert(nonce)
+            return makeSession(peers, nonce: nonce)
+        }
+        let guessed = freshSession()
+        let right = await guessed.find(first: 1, timeout: 2, dial: 3) { office.knocked(guessed.nonce); return true }
+        try check(right == 1 && guessed.armedCount == 1 && guessed.reachable == [peers[1].key: true],
+                  "the Mac the title names claims the knock before any other Mac is called")
+        guessed.close()
+        let misguessed = freshSession()
+        var knocks = 0
+        let later = await misguessed.find(first: 0, timeout: 2, dial: 3) {
+            knocks += 1
+            if knocks > 1 { office.knocked(misguessed.nonce) }
+            return true
+        }
+        try check(later == 1 && knocks == 2 && misguessed.unopened == [peers[2].key],
+                  "a wrong guess costs one knock, then the others are armed and knocked at")
+        misguessed.close()
+        let late = freshSession()
+        var rounds = 0
+        let stale = await late.find(first: 0, timeout: 2, dial: 3) {
+            rounds += 1
+            // The guessed Mac answers only during the second knock, as a late answer to the first would.
+            if rounds > 1 { study.knocked(late.nonce) }
+            return true
+        }
+        try check(stale == nil && rounds == 2, "a Mac knocked at before cannot claim a later stage's knock")
+        late.close()
+        let wary = freshSession()
+        let early = await wary.find(first: nil, doubtful: [peers[2].key], timeout: 2, dial: 3) { study.knocked(wary.nonce); return true }
+        try check(early == 0 && wary.reachable[peers[2].key] == nil, "a Mac not reached last time is not called while another claims")
+        wary.close()
+        let unclaimed = freshSession()
+        var tries = 0
+        let none = await unclaimed.find(first: nil, doubtful: [peers[2].key], timeout: 2, dial: 3) { tries += 1; return true }
+        try check(none == nil && tries == 1 && unclaimed.reachable[peers[2].key] == false,
+                  "when nobody claims, the doubtful Mac is tried last, and a stage with nobody new is not knocked again")
+        unclaimed.close()
+        let left = freshSession()
+        let started = Date()
+        let local = await left.find(first: 1, timeout: 2, dial: 3) { false }
+        try check(local == nil && left.armedCount == 1 && Date().timeIntervalSince(started) < 2.5 && left.reachable.count == 1,
+                  "with no remote desktop in front any more, no knock is typed and the search ends")
+        left.close()
 
         study.stop(); office.stop()
     }

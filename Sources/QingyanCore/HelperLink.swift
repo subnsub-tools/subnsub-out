@@ -94,11 +94,22 @@ public enum HelperLink {
         return object
     }
 
+    /// Set when a wait ran out, read after it.
+    final class Expiry: @unchecked Sendable {
+        private let lock = NSLock()
+        private var hit = false
+        func set() { lock.lock(); hit = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return hit }
+    }
+
     /// Runs `body` on the connection, cancelling the connection when `seconds` pass or the task is
-    /// cancelled: a helper that takes the question and never answers holds nothing up.
-    static func bounded<T>(_ connection: NWConnection, _ seconds: TimeInterval, _ body: () async throws -> T) async throws -> T {
+    /// cancelled: a helper that takes the question and never answers holds nothing up. `expiry` is
+    /// set when it was the time that ran out.
+    static func bounded<T>(_ connection: NWConnection, _ seconds: TimeInterval, expiry: Expiry? = nil,
+                           _ body: () async throws -> T) async throws -> T {
         let deadline = Task {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            expiry?.set()
             connection.cancel()
         }
         defer { deadline.cancel() }
@@ -125,14 +136,20 @@ public enum HelperLink {
                       tunnel: answer["tunnel"] as? Bool == true, version: answer["version"] as? String ?? "")
     }
 
+    /// The longest the helper itself dials another Mac, and a little more for its answer.
+    public static let longestDial: TimeInterval = 25
+
     /// A stream to put on the owner's Mac with this agent id, once the other side has taken it.
-    static func open(agent: String, name: String) async throws -> NWConnection {
+    /// `within`: how long to wait for it; the helper dials for up to 20 seconds, and a caller that
+    /// cannot wait that long (finding the Mac behind a remote desktop) gives up sooner, with the
+    /// other Mac counted as out of reach.
+    static func open(agent: String, name: String, within seconds: TimeInterval = longestDial) async throws -> NWConnection {
         let connection: NWConnection
         do { connection = try await connect() }
         catch let absence as Absence { throw VoiceError(sentence(absence)) }
+        let expiry = Expiry()
         do {
-            // The helper dials the other Mac for up to 20 seconds.
-            let answer = try await bounded(connection, 25) {
+            let answer = try await bounded(connection, min(seconds, longestDial), expiry: expiry) {
                 try await ask(connection, ["op": "open", "agent": agent])
                 return try await readLine(connection)
             }
@@ -144,6 +161,8 @@ public enum HelperLink {
         } catch let error as VoiceError { throw error }
         catch {
             connection.cancel()
+            // The helper was still dialing when the caller's wait ran out.
+            if expiry.isSet && seconds < longestDial { throw VoiceError(refusal("unreachable", name: name)) }
             throw VoiceError(tr("The helper on this Mac stopped answering. Check that it is running."))
         }
     }

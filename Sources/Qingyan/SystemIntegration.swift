@@ -449,6 +449,15 @@ struct FocusMark {
         return FocusMark(pid: app.processIdentifier, window: window)
     }
 
+    /// The window's title: in a remote desktop, usually the name of the computer it shows.
+    var title: String {
+        guard let window else { return "" }
+        AXUIElementSetMessagingTimeout(window, 0.25)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &value) == .success else { return "" }
+        return value as? String ?? ""
+    }
+
     /// An unknown window never counts as the same one.
     func same(as other: FocusMark?) -> Bool {
         guard let other, pid == other.pid, let window, let theirs = other.window else { return false }
