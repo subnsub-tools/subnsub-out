@@ -751,7 +751,7 @@ public final class RemoteReceiver {
     private var listener: NWListener?
     private var port = 0
     private var probe: (() -> (Bool, String))?
-    private var deliver: ((Request) throws -> DeliveryOutcome)?
+    private var deliver: ((Request) async throws -> DeliveryOutcome)?
     private var context: (() -> (before: String, after: String)?)?
     private var armed: [Int: Channel] = [:]
     private var deadlines: [ObjectIdentifier: DispatchWorkItem] = [:]
@@ -765,7 +765,7 @@ public final class RemoteReceiver {
     /// `context` reads the text field that has the keyboard, for a Mac whose user spoke an editing command.
     public func start(port: Int, probe: @escaping () -> (Bool, String),
                       context: @escaping () -> (before: String, after: String)? = { nil },
-                      deliver: @escaping (Request) throws -> DeliveryOutcome) {
+                      deliver: @escaping (Request) async throws -> DeliveryOutcome) {
         self.probe = probe; self.deliver = deliver; self.context = context
         if listener != nil && self.port == port { return }
         // Replace quietly: the new listener reports its own state, so a retry does not blink the status.
@@ -815,7 +815,7 @@ public final class RemoteReceiver {
     /// answered like a call, by the Mac the helper says it is from.
     public func startHelper(probe: @escaping () -> (Bool, String),
                             context: @escaping () -> (before: String, after: String)? = { nil },
-                            deliver: @escaping (Request) throws -> DeliveryOutcome) {
+                            deliver: @escaping (Request) async throws -> DeliveryOutcome) {
         self.probe = probe; self.deliver = deliver; self.context = context
         listener?.cancel(); listener = nil; port = 0
         guard helperLoops.isEmpty else { return }
@@ -978,7 +978,7 @@ public final class RemoteReceiver {
         let request = Request(text: text, mode: WritingMode(rawValue: object["mode"] as? String ?? "") ?? .dictate,
                               seconds: object["seconds"] as? Double ?? 0, replace: replace, field: field)
         do {
-            let outcome = try deliver?(request) ?? ""
+            let outcome = try await deliver?(request) ?? ""
             // Said either way, so that the sending Mac never has to guess from the words.
             var reply: [String: Any] = ["ok": true, "message": outcome.message, "clipboard": outcome.miss != nil]
             if let miss = outcome.miss { reply["miss"] = miss.rawValue }

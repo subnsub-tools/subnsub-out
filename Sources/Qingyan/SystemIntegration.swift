@@ -504,7 +504,6 @@ struct TextTarget {
         }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         guard let raw = attribute(appElement, kAXFocusedUIElementAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else {
-            revealFields(appElement)
             return TextTarget(app: app, selectedText: "")
         }
         let element = unsafeBitCast(raw, to: AXUIElement.self)
@@ -519,21 +518,53 @@ struct TextTarget {
                           editable: writable(element, in: app))
     }
 
-    /// Text may soon be written in front: a recording starts here, or another Mac knocked here.
+    /// Electron apps (Visual Studio Code, Cursor, Devin, Slack…) show no focused element, text
+    /// fields included, until AXManualAccessibility is set on them, and then only after a 2-second
+    /// timer that every further set starts again (2.1–2.2 s measured, VS Code and Devin, 2026-11-21).
+    /// Text pasted into one was reported as not in a text field. Other apps refuse the attribute.
+    /// Set once per process, at the first moment text may be coming (a recording starts here, a
+    /// knock from another Mac arrives) so that the timer has run by the time the text is written.
+    /// When each app was asked; an app that refuses (any native one) is never asked again.
+    private static var revealed: [pid_t: Date] = [:]
+    private static let revealDelay: TimeInterval = 2.5
+
     static func prepareFront() {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return }
+        _ = reveal(app)
+    }
+
+    /// Asks `app` to show its fields, once per process, if it shows no focused element now.
+    /// Returns until when its fields may still be on their way (nil: not asked, or refused).
+    private static func reveal(_ app: NSRunningApplication) -> Date? {
+        let pid = app.processIdentifier
+        if let asked = revealed[pid] { return asked.addingTimeInterval(revealDelay) }
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        guard attribute(appElement, kAXFocusedUIElementAttribute) == nil else { return nil }
+        let running = Set(NSWorkspace.shared.runningApplications.map(\.processIdentifier))
+        revealed = revealed.filter { running.contains($0.key) }
+        let now = Date()
+        revealed[pid] = now
+        let result = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        // A native app answers that it has no such attribute: it is asked once and never waited for.
+        guard result == .success else { revealed[pid] = .distantPast; return nil }
+        return now.addingTimeInterval(revealDelay)
+    }
+
+    /// Right before text is written in front: when the app there shows no focused element and its
+    /// fields may still be on their way (it was asked to show them less than 2.5 seconds ago, or is
+    /// asked now), waits for them, up to that moment. An app that shows a focused element, or one
+    /// asked long ago, is not waited for.
+    static func awaitFocus() async {
         guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(appElement, 0.25)
-        if attribute(appElement, kAXFocusedUIElementAttribute) == nil { revealFields(appElement) }
-    }
-
-    /// Electron apps (Visual Studio Code, Cursor, Slack…) show no focused element, text fields
-    /// included, until AXManualAccessibility is set on them, and then take about two seconds to
-    /// (VS Code, 2026-11-21). Text pasted into one was reported as not in a text field. Other apps
-    /// ignore the attribute.
-    private static func revealFields(_ appElement: AXUIElement) {
-        AXUIElementSetMessagingTimeout(appElement, 0.25)
-        AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard attribute(appElement, kAXFocusedUIElementAttribute) == nil, let deadline = reveal(app) else { return }
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { return }
+            if attribute(appElement, kAXFocusedUIElementAttribute) != nil { return }
+        }
     }
 
     private static func writable(_ element: AXUIElement, in app: NSRunningApplication) -> Bool {

@@ -338,6 +338,7 @@ final class DictationController: ObservableObject {
             context: { TextTarget.field() },
             deliver: { [weak self] request in
                 guard let self else { throw VoiceError(tr("out is quitting on the other Mac.")) }
+                if request.field == nil { await TextTarget.awaitFocus() }
                 return try self.receive(request)
             })
     }
@@ -647,6 +648,7 @@ final class DictationController: ObservableObject {
             notePasted(text)
             lastDelivered = text.isEmpty ? nil : Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
         case .insert:
+            await TextTarget.awaitFocus()
             outcome = try TextTarget.insertAtFocus(text)
             if outcome.miss == nil {
                 notePasted(text)

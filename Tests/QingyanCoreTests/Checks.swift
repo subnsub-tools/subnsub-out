@@ -1038,7 +1038,7 @@ struct Checks {
         empty.close()
 
         // Why the text is not in a field there travels with it, as a code beside the words.
-        func answering(_ deliver: @escaping (RemoteReceiver.Request) throws -> DeliveryOutcome) async throws -> SendReply {
+        func answering(_ deliver: @escaping (RemoteReceiver.Request) async throws -> DeliveryOutcome) async throws -> SendReply {
             study.start(port: base, probe: { (true, "ready") }, context: { studyField }, deliver: deliver)
             let asking = makeSession([peers[0]])
             defer { asking.close() }
@@ -1047,6 +1047,13 @@ struct Checks {
         }
         let unfielded = try await answering { _ in DeliveryOutcome(message: "Sent to Finder · No text field found", miss: .noField) }
         try check(unfielded.miss == .noField && unfielded.onClipboard, "the sender learns why the text is not in a field there, and that it is on that Mac's clipboard")
+        // The receiving Mac may wait up to 2.5 s for an app's text field to appear before it writes.
+        let patient = try await answering { _ in
+            try await Task.sleep(nanoseconds: 2_600_000_000)
+            return DeliveryOutcome(message: "Inserted into Visual Studio Code")
+        }
+        try check(patient.miss == nil && !patient.onClipboard && patient.message.contains("Visual Studio Code"),
+                  "a receiving Mac that waits for the text field still answers within the sender's limit")
         // A Mac of an earlier version says it in words only: its phrases are still understood.
         try check(RemoteSession.mentionsClipboard("Sent to Finder · No text field found; the text stays on the clipboard (⌘V)")
                   && RemoteSession.mentionsClipboard("A password field. The text is on the other Mac’s clipboard."),
