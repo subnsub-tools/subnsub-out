@@ -31,14 +31,16 @@ public struct CustomStyle: Codable, Equatable, Identifiable, Sendable {
 /// Between the stored preference id and the style itself.
 public enum StyleChoice {
     /// Preference ids: "raw", "polish", "structured", "formal", or a custom style's id.uuidString.
-    /// The switch this replaces was a Bool: on was Polish, off was Raw.
-    public static func legacyID(polish: Bool) -> String { polish ? "polish" : "raw" }
+    /// Raw is the default, and what settings saved before styles are read as, whatever their old
+    /// on/off said: put does not polish unless a style is chosen in Settings, and the choice is
+    /// never on the panel (user 2026-11-20).
+    public static let standard = "raw"
 
     /// What a stored id names: the built-ins map directly; a usable custom style is found by its
-    /// id; anything else — an unknown, deleted or unfinished id — is Polish, the old default.
+    /// id; anything else — an unknown, deleted or unfinished id — is Raw, the default.
     public static func resolve(_ id: String, customs: [CustomStyle]) -> DictationStyle {
         switch id {
-        case "raw": return .raw
+        case "polish": return .polish
         case "structured": return .structured
         case "formal": return .formal
         default:
@@ -46,7 +48,7 @@ public enum StyleChoice {
                 return .custom(name: custom.name.trimmingCharacters(in: .whitespacesAndNewlines),
                                prompt: custom.prompt.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            return .polish
+            return .raw
         }
     }
 }

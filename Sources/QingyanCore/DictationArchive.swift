@@ -15,8 +15,9 @@ public struct SavedDictation: Codable {
     public var speechPlatform: String?
     public var textPlatform: String?
 
-    /// The style this recording is written in: its own, or what its old on/off meant.
-    public var writing: DictationStyle { style ?? (polish ? .polish : .raw) }
+    /// The style this recording is written in: its own, or Raw for a recording from before styles,
+    /// whatever its old on/off said — put polishes only once a style is chosen in Settings (user 2026-11-20).
+    public var writing: DictationStyle { style ?? .raw }
 
     public init(mode: WritingMode, polish: Bool, targetLanguage: String, speechModel: String,
                 textModel: String, dictionary: [String], selection: String,

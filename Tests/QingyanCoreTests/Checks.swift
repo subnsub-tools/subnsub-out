@@ -99,7 +99,7 @@ struct Checks {
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
             ("Model Studio: address forms, realtime session shape, transcript joining, resampling, thinking off", alibaba),
             ("This Mac on the device: wire, menus, no key, piece joining, language names", onDevice),
-            ("Output styles: the old switch reads as its style, ids resolve, each style's instructions reach the request, only Polish screens", styles),
+            ("Output styles: Raw is the default and the fallback, ids resolve, each style's instructions reach the request, only Polish screens", styles),
             ("Corrections: the field's text goes along only for a polished dictation, and a corrected word is offered only when the write itself changed", corrections),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
@@ -1490,8 +1490,8 @@ struct Checks {
     }
 
     static func styles() throws {
-        try check(StyleChoice.legacyID(polish: true) == "polish" && StyleChoice.legacyID(polish: false) == "raw",
-                  "the old switch reads as its style")
+        try check(StyleChoice.standard == "raw" && StyleChoice.resolve(StyleChoice.standard, customs: []) == .raw,
+                  "Raw is the default style, and what settings from before styles read as")
         try check(StyleChoice.resolve("raw", customs: []) == .raw && StyleChoice.resolve("polish", customs: []) == .polish
                   && StyleChoice.resolve("structured", customs: []) == .structured && StyleChoice.resolve("formal", customs: []) == .formal,
                   "the built-in ids name their styles")
@@ -1499,22 +1499,26 @@ struct Checks {
         try check(StyleChoice.resolve(custom.id.uuidString, customs: [custom]) == .custom(name: "Chat", prompt: "Write it as a short chat message."),
                   "a usable custom style resolves, trimmed")
         custom.prompt = "   "
-        try check(StyleChoice.resolve(custom.id.uuidString, customs: [custom]) == .polish
-                  && StyleChoice.resolve(UUID().uuidString, customs: [custom]) == .polish
-                  && StyleChoice.resolve("anything-else", customs: []) == .polish,
-                  "an unfinished, deleted or unknown id falls back to Polish")
+        try check(StyleChoice.resolve(custom.id.uuidString, customs: [custom]) == .raw
+                  && StyleChoice.resolve(UUID().uuidString, customs: [custom]) == .raw
+                  && StyleChoice.resolve("anything-else", customs: []) == .raw,
+                  "an unfinished, deleted or unknown id falls back to Raw")
         try check(!CustomStyle().usable && !CustomStyle(name: "n").usable && CustomStyle(name: "n", prompt: "p").usable
                   && CustomStyle.maxCount == 12 && CustomStyle.maxName == 40 && CustomStyle.maxPrompt == 4000,
                   "a custom style is offered only with a name and instructions")
 
-        // Recordings from before styles keep their on/off; a custom style round-trips inside one.
+        // Recordings from before styles are written Raw, on or off; a custom style round-trips inside one.
         let decoder = JSONDecoder()
         let legacy = """
         {"mode":"dictate","polish":%@,"targetLanguage":"English","speechModel":"m","textModel":"m","dictionary":[],"selection":""}
         """
-        let polished = try decoder.decode(SavedDictation.self, from: Data(legacy.replacingOccurrences(of: "%@", with: "true").utf8))
-        let raw = try decoder.decode(SavedDictation.self, from: Data(legacy.replacingOccurrences(of: "%@", with: "false").utf8))
-        try check(polished.writing == .polish && raw.writing == .raw, "recordings from before styles keep their polish setting")
+        let wasOn = try decoder.decode(SavedDictation.self, from: Data(legacy.replacingOccurrences(of: "%@", with: "true").utf8))
+        let wasOff = try decoder.decode(SavedDictation.self, from: Data(legacy.replacingOccurrences(of: "%@", with: "false").utf8))
+        try check(wasOn.writing == .raw && wasOff.writing == .raw, "recordings from before styles are written Raw, whatever their old switch said")
+        let chosen = SavedDictation(mode: .dictate, polish: true, targetLanguage: "", speechModel: "m", textModel: "m",
+                                    dictionary: [], selection: "", style: .polish)
+        try check(try decoder.decode(SavedDictation.self, from: try JSONEncoder().encode(chosen)).writing == .polish,
+                  "a recording made with Polish chosen keeps it")
         let stored = SavedDictation(mode: .dictate, polish: false, targetLanguage: "", speechModel: "m", textModel: "m",
                                     dictionary: [], selection: "", style: .custom(name: "Chat", prompt: "p"))
         let again = try decoder.decode(SavedDictation.self, from: try JSONEncoder().encode(stored))

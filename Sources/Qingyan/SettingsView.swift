@@ -95,10 +95,10 @@ private struct CustomStylesGroup: View {
         }
     }
 
-    /// Removing the style that is chosen puts the choice back to Polish.
+    /// Removing the style that is chosen puts the choice back to Raw.
     private func remove(_ id: UUID) {
         settings.preferences.customStyles.removeAll { $0.id == id }
-        if settings.preferences.style == id.uuidString { settings.preferences.style = "polish" }
+        if settings.preferences.style == id.uuidString { settings.preferences.style = StyleChoice.standard }
     }
 }
 
@@ -254,14 +254,18 @@ private struct KeyGroup: View {
             do {
                 let service = try await settings.serviceAsync(id)
                 let prefs = settings.preferences
-                let speechHere = prefs.speechPlatform == id, textHere = prefs.textPlatform == id
+                // With Raw nothing is polished, so the polishing model is not looked for in the list.
+                let speechHere = prefs.speechPlatform == id
+                let textHere = prefs.textPlatform == id && prefs.dictationStyle != .raw
                 // Model Studio proves the key and the speech model over its realtime socket;
                 // the speech model's name is not looked up in the model list.
                 if platform.wire == .alibaba && speechHere {
                     try await QwenRealtimeTranscriber.probe(key: service.key,
                         endpoint: Platform.realtimeURL(base: service.base, model: prefs.speechModel))
                 }
-                if platform.wire == .alibaba && !textHere {
+                // Proven by the socket and nothing else wanted; a key kept only for polishing is
+                // still checked against the model list below.
+                if platform.wire == .alibaba && speechHere && !textHere {
                     settings.keyMessages[id] = tr("The API key is valid, and the chosen models are available."); return
                 }
                 guard let models = try await service.models() else {

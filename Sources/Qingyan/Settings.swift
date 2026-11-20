@@ -22,8 +22,9 @@ struct LegacyPeer: Codable, Equatable {
 
 struct Preferences: Codable, Equatable {
     var mode: WritingMode = .dictate
-    /// How the dictated text is written: "raw", "polish", "structured", "formal", or a custom style's id.
-    var style = "polish"
+    /// How the dictated text is written: "raw" (the default), "polish", "structured", "formal", or a
+    /// custom style's id. Chosen only in Settings (see `StyleChoice.standard`).
+    var style = StyleChoice.standard
     /// Styles the user wrote in Settings, offered under Style once they have a name and instructions.
     var customStyles: [CustomStyle] = []
     var targetLanguage = "English"
@@ -78,13 +79,8 @@ struct Preferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         mode = try values.decodeIfPresent(WritingMode.self, forKey: .mode) ?? mode
-        if let stored = try values.decodeIfPresent(String.self, forKey: .style) {
-            style = stored
-        } else {
-            // Saved before styles: the old on/off switch, on when absent.
-            let old = try decoder.container(keyedBy: LegacyKeys.self)
-            style = StyleChoice.legacyID(polish: try old.decodeIfPresent(Bool.self, forKey: .polish) ?? true)
-        }
+        // Saved before styles, by a version whose panel had the old on/off switch: Raw, whatever it said.
+        style = try values.decodeIfPresent(String.self, forKey: .style) ?? StyleChoice.standard
         customStyles = try values.decodeIfPresent([CustomStyle].self, forKey: .customStyles) ?? customStyles
         targetLanguage = Preferences.englishTarget(try values.decodeIfPresent(String.self, forKey: .targetLanguage) ?? targetLanguage)
         speechModel = try values.decodeIfPresent(String.self, forKey: .speechModel) ?? speechModel
@@ -118,9 +114,6 @@ struct Preferences: Codable, Equatable {
         // A Mac that sent or received before keeps working with the others.
         linkEnabled = try values.decodeIfPresent(Bool.self, forKey: .linkEnabled) ?? (remoteRole != "off")
     }
-
-    /// The on/off switch this `style` replaced; read only when `style` is absent.
-    private enum LegacyKeys: String, CodingKey { case polish }
 
     /// The style the stored id names, unfinished and deleted custom ids included (see `StyleChoice`).
     var dictationStyle: DictationStyle { StyleChoice.resolve(style, customs: customStyles) }

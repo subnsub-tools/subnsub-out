@@ -458,7 +458,8 @@ struct GlassSegments<Value: Hashable>: View {
     }
 }
 
-/// How a dictation is written before it is entered, as a choice that says what it is.
+/// How a dictation is written before it is entered, as a choice that says what it is. Only in
+/// Settings: the panel never shows it (user 2026-11-20).
 struct PolishChoice: View {
     @ObservedObject var settings: SettingsStore
     var body: some View {
@@ -469,8 +470,8 @@ struct PolishChoice: View {
         Row(tr("Style"), info: tr("Raw enters the recognized text as is.\nPolish adds punctuation and paragraph breaks and removes filler words and spoken repetitions. Nothing is shortened, rewritten or translated; if the model strays from what was said, the original transcript is kept. With Polish you can also edit the text in the current field by voice (for example “change Wednesday to Thursday” or “clear everything”); the field's text is read only when what you said is taken as an edit command.\nStructured turns what you said into a clear prompt for an AI assistant: what you want first, then the details as numbered points.\nFormal rewrites it as formal written prose.\nA custom style follows the instructions written for it in Settings.\nStructured, Formal and custom styles change the wording, so their result is not compared with what was said, and editing by voice is not available with them.")) {
             GlassMenu(label: tr("Style"),
                       selection: Binding(
-                        // An id that is not offered — a deleted or unfinished custom style — shows Polish.
-                        get: { options.contains { $0.value == settings.preferences.style } ? settings.preferences.style : "polish" },
+                        // An id that is not offered — a deleted or unfinished custom style — shows Raw.
+                        get: { options.contains { $0.value == settings.preferences.style } ? settings.preferences.style : StyleChoice.standard },
                         set: { settings.preferences.style = $0 }),
                       options: options)
         }
@@ -893,8 +894,8 @@ struct MainView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // No Style here: polishing is chosen only in Settings (user 2026-11-20).
             recordStrip
-            polishCard.padding(.top, 8)
             Reveal(open: !receiving) { microphoneCard.padding(.top, 8) }
             Reveal(open: !missing.isEmpty) { setupCard.padding(.top, 8) }
             Reveal(open: controller.learnedWord != nil) { learnedCard.padding(.top, 8) }
@@ -1075,12 +1076,6 @@ struct MainView: View {
                 }
             }
         }
-    }
-
-    /// Dictate / Translate / Rewrite are hidden for now (user 2026-11-19):
-    /// put always dictates, and only Polish is left of that block.
-    private var polishCard: some View {
-        Card { PolishChoice(settings: settings).frame(height: 26) }.disabled(controller.busy)
     }
 
     private struct Step: Identifiable {
