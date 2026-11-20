@@ -100,6 +100,7 @@ struct Checks {
             ("Model Studio: address forms, realtime session shape, transcript joining, resampling, thinking off", alibaba),
             ("This Mac on the device: wire, menus, no key, piece joining, language names", onDevice),
             ("Output styles: the old switch reads as its style, ids resolve, each style's instructions reach the request, only Polish screens", styles),
+            ("Corrections: the field's text goes along only for a polished dictation, and a corrected word is offered only when the write itself changed", corrections),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
@@ -1534,6 +1535,67 @@ struct Checks {
                   "only Polish screens for an editing command")
         try check([structured, formal, customBody].allSatisfy { $0["input"] as? String == #"{"transcript":"t"}"# },
                   "the input is the transcript for every style")
+    }
+
+    static func corrections() throws {
+        // `before`/`after` are the field a second after the write, split at the cursor; the write
+        // is anchored by the cursor sitting right after it.
+        func suggest(_ before: String, _ after: String, _ written: String, _ current: String) -> String? {
+            CorrectionLearning.suggestion(before: before, after: after, written: written, current: current)
+        }
+        try check(suggest("Meeting with Jon tomorrow.", "", "Meeting with Jon tomorrow.",
+                          "Meeting with John tomorrow.") == "John", "a name corrected in the written text is offered")
+        try check(suggest("the quik fox", "", "the quik fox", "the quick fox") == "quick",
+                  "a word fixed inside the written text is offered")
+        try check(suggest("\u{6211}\u{4EEC}\u{7528}\u{9752}\u{5CA9}\u{6253}\u{5B57}", "", "\u{6211}\u{4EEC}\u{7528}\u{9752}\u{5CA9}\u{6253}\u{5B57}",
+                          "\u{6211}\u{4EEC}\u{7528}\u{8F7B}\u{8A00}\u{6253}\u{5B57}") == "\u{8F7B}\u{8A00}",
+                  "an ideographic change is the word itself")
+        try check(suggest("Hi. Jon came.", "", "Jon came.", "Hello. Jon came.") == nil,
+                  "an edit before what was written is not a correction")
+        try check(suggest("the quick fox", "", "the quick fox", "the fox") == nil, "deleting a word is not a correction")
+        try check(suggest("Jon came.", "", "Jon came.", "Jon came. See you.") == nil,
+                  "typing on after the written text is not a correction")
+        try check(suggest("and everything else that was said", "", "and everything else that was said", "and x") == nil,
+                  "a change of more than 20 characters is not a word")
+        try check(suggest("line one", "", "line one", "line\none") == nil, "a newline inside is not a word")
+        try check(suggest("Hello.", "", "Hello.", "Hello!") == nil, "punctuation alone is not a word")
+        try check(suggest("Hello Jon. Jon", " came.", "Jon", "Hello Jon. John came.") == "John",
+                  "the text where the cursor put it is the one watched")
+        try check(suggest("Hello Jon. Jon", " came.", "Jon", "Hello John. Jon came.") == nil,
+                  "an earlier lookalike is not the write")
+        try check(suggest("\u{9752}\u{5CA9}", "", "\u{9752}\u{5CA9}", "\u{8F7B}\u{5CA9}") == nil,
+                  "one ideograph is too short for an entry")
+        try check(suggest("Jon Jon", "", "Jon", "Jan Jon") == nil,
+                  "changing a pre-existing lookalike before the insertion point is not a correction")
+        try check(suggest("Jon Jon", "", "Jon", "Jon Jan") == "Jan", "changing the inserted word is a correction")
+        try check(suggest("the bad thing", "", "the bad thing", "the good idea") == nil,
+                  "a suggestion is one token")
+        try check(suggest("Hello", "", "Hello", "Hello, world") == nil, "typed-on text is not a correction")
+        try check(suggest("emial", "", "emial", "e-mail") == "e-mail", "a joiner inside a word is kept")
+        try check(suggest("Jon Jon", "", "Jon", "Jon Jon") == nil, "no change is no correction")
+        try check(suggest("Jon and more", "", "Jon", "Jon and more") == nil,
+                  "a cursor no longer after the write is not anchored")
+
+        // Text before the cursor goes along with the request only for a polished dictation.
+        func request(_ context: String, screening: Bool = false, style: DictationStyle = .polish,
+                     mode: WritingMode = .dictate) throws -> [String: Any] {
+            try OpenAIWire.responseBody(transcript: "t", mode: mode, targetLanguage: "English", selection: "",
+                                      model: "m", style: style, screening: screening, context: context)
+        }
+        let sent = try [request("Dear Jon,"), request("Dear Jon,", screening: true),
+                        request("Dear Jon,", style: .structured),
+                        request("Dear Jon,", style: .custom(name: "n", prompt: "be brief"))]
+        for body in sent {
+            try check((body["input"] as? String ?? "").contains("text_before_cursor")
+                      && (body["input"] as? String ?? "").contains("Dear Jon,")
+                      && (body["instructions"] as? String ?? "").contains("`text_before_cursor` is what is already written"),
+                      "the field's text goes along and the instructions say what it is")
+        }
+        for body in try [request(""), request("Dear Jon,", style: .raw), request("Dear Jon,", mode: .translate)] {
+            try check(!(body["input"] as? String ?? "").contains("text_before_cursor")
+                      && !(body["instructions"] as? String ?? "").contains("text_before_cursor"),
+                      "nothing is read with no context, with Raw, or not dictating")
+        }
     }
 
     static func keystrokes() throws {

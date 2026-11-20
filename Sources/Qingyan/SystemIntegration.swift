@@ -609,13 +609,20 @@ struct TextTarget {
 
     private static let fieldLimit = 6000
 
-    static func field() -> (before: String, after: String)? {
+    /// Like `field()` but also names the focused element, so a caller can tell whether it is still
+    /// the same field at the next read. Same refusals: no Accessibility, secure input, terminals
+    /// and fields over 6000 characters.
+    static func fieldWithElement() -> (element: AXUIElement, before: String, after: String)? {
         guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), let app = NSWorkspace.shared.frontmostApplication,
               !terminals.contains(app.bundleIdentifier ?? ""), let (element, value) = focusedText(in: app) else { return nil }
         let whole = value as NSString
         guard whole.length <= fieldLimit else { return nil }
         let cursor = selectedRange(element).map { max(0, min(whole.length, $0.location)) } ?? whole.length
-        return (whole.substring(to: cursor), whole.substring(from: cursor))
+        return (element, whole.substring(to: cursor), whole.substring(from: cursor))
+    }
+
+    static func field() -> (before: String, after: String)? {
+        fieldWithElement().map { ($0.before, $0.after) }
     }
 
     static func rewriteField(from old: String, to new: String) throws -> WriteResult {

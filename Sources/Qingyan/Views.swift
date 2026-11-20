@@ -897,6 +897,7 @@ struct MainView: View {
             polishCard.padding(.top, 8)
             Reveal(open: !receiving) { microphoneCard.padding(.top, 8) }
             Reveal(open: !missing.isEmpty) { setupCard.padding(.top, 8) }
+            Reveal(open: controller.learnedWord != nil) { learnedCard.padding(.top, 8) }
             Reveal(open: resultOpen) { resultCard.padding(.top, 8) }
             remoteCard.padding(.top, 8)
         }
@@ -1106,6 +1107,21 @@ struct MainView: View {
             steps.append(Step(id: "shortcut", title: tr("Turn on the shortcut"), detail: tr("Takes over the key so it does not trigger system actions"), buttonTitle: tr("Set up")) { settings.reveal(.keyboard) })
         }
         return steps
+    }
+
+    /// Learn from corrections: a word the user changed after put wrote it, offered for the
+    /// personal dictionary; nothing is added without tapping Add.
+    private var learnedCard: some View {
+        Card {
+            HStack(spacing: 8) {
+                Circle().fill(Color.orange).frame(width: 5.5, height: 5.5)
+                Text(tr("Corrected after dictation: add “%@” to the personal dictionary?", controller.learnedWord ?? ""))
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 4)
+                Button(tr("Add")) { controller.acceptLearned() }.buttonStyle(SolidButton())
+                Button(tr("Don't add")) { controller.declineLearned() }.buttonStyle(QuietButton())
+            }
+        }
     }
 
     private var setupCard: some View {

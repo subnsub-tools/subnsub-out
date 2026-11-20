@@ -44,6 +44,14 @@ struct Preferences: Codable, Equatable {
     var microphone = ""
     var microphoneName = ""
     var dictionary: [String] = []
+    /// Send up to 1,000 characters already written before the cursor along with the transcript to
+    /// the polishing service, so names and terms come out right: off by default.
+    var fieldContext = false
+    /// After a dictation is written, watch the field for a word the user corrected and offer it for
+    /// the personal dictionary: off by default.
+    var learnCorrections = false
+    /// Words the user declined to add, so they are not offered again; at most 200, oldest dropped.
+    var declinedWords: [String] = []
     /// Work with other Macs at all: answer their calls, send text to the one being operated, share the shelf.
     var linkEnabled = false
     /// The Macs this one trusts, each by its key, with what it may do here.
@@ -90,6 +98,9 @@ struct Preferences: Codable, Equatable {
         microphone = try values.decodeIfPresent(String.self, forKey: .microphone) ?? microphone
         microphoneName = try values.decodeIfPresent(String.self, forKey: .microphoneName) ?? microphoneName
         dictionary = try values.decodeIfPresent([String].self, forKey: .dictionary) ?? dictionary
+        fieldContext = try values.decodeIfPresent(Bool.self, forKey: .fieldContext) ?? fieldContext
+        learnCorrections = try values.decodeIfPresent(Bool.self, forKey: .learnCorrections) ?? learnCorrections
+        declinedWords = try values.decodeIfPresent([String].self, forKey: .declinedWords) ?? declinedWords
         remoteRole = try values.decodeIfPresent(String.self, forKey: .remoteRole) ?? remoteRole
         remoteHost = try values.decodeIfPresent(String.self, forKey: .remoteHost) ?? remoteHost
         remotePort = try values.decodeIfPresent(Int.self, forKey: .remotePort) ?? remotePort

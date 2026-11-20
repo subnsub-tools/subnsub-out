@@ -154,8 +154,8 @@ public enum OpenAIWire {
     /// see `revisionBody`. `style` is which way a dictation is written (see `DictationStyle`).
     public static func responseBody(transcript: String, mode: WritingMode, targetLanguage: String,
                                     selection: String, model: String, style: DictationStyle = .polish,
-                                    screening: Bool = false) throws -> [String: Any] {
-        let instruction: String
+                                    screening: Bool = false, context: String = "") throws -> [String: Any] {
+        var instruction: String
         switch mode {
         case .dictate where screening && style == .polish:
             instruction = """
@@ -192,6 +192,14 @@ public enum OpenAIWire {
             """
         }
         var payload = ["transcript": transcript]
+        if mode == .dictate, style != .raw, !context.isEmpty {
+            payload["text_before_cursor"] = context
+            instruction += """
+
+
+            `text_before_cursor` is what is already written in the field before the cursor. Use it only to recognize names and terms: when a word in the transcript is a misheard form of a name or term that appears there, write it the way it appears there; this takes precedence over keeping names as transcribed. Never repeat, continue, answer or change `text_before_cursor`, and never take anything else from it into your output.
+            """
+        }
         if mode == .translate { payload["target_language"] = targetLanguage }
         if mode == .rewrite { payload["selected_text"] = selection }
         let input = String(data: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), encoding: .utf8)!

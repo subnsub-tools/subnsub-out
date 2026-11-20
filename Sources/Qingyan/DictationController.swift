@@ -19,6 +19,8 @@ final class DictationController: ObservableObject {
     @Published var connected = false
     @Published var networkAvailable = true
     @Published var retryingID: UUID?
+    /// A word the user corrected after a dictation, offered for the personal dictionary (Learn from corrections).
+    @Published var learnedWord: String?
     @Published var latency: Double?
     @Published var hotkeyInstalled = false
     @Published var shortcutStatus = tr("Waiting for Accessibility permission.")
@@ -75,6 +77,21 @@ final class DictationController: ObservableObject {
     private var retryAfter: [UUID: Date] = [:]
     private var sessionID = UUID()
     private var stopTime: Date?
+    /// A write watched for a correction (Learn from corrections), bound to the very field it went
+    /// into by the focused AX element captured right after the write; `before`/`after` are the
+    /// baseline read one second later, split at the cursor.
+    private struct CorrectionWatch {
+        let id: UUID
+        var written: String
+        var before: String?
+        var after: String?
+        var mark: FocusMark?
+        var element: AXUIElement?
+        var at: Date
+    }
+    private var correctionWatch: CorrectionWatch?
+    private var watchJob: Task<Void, Never>?
+    private var checkJob: Task<Void, Never>?
     private var hadSignal = false
     private let receiver = RemoteReceiver()
     /// Sender side, one dictation: the armed links, and the knock typed when recording stopped.
@@ -577,9 +594,90 @@ final class DictationController: ObservableObject {
             if outcome.miss == nil {
                 notePasted(text)
                 lastDelivered = Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
+                if settings.preferences.learnCorrections { startWatch(written: text) }
             } else { pasted = nil; lastDelivered = nil }
         }
         return outcome
+    }
+
+    /// "Learn from corrections": after the text landed in a field on this Mac, keep the write, the
+    /// window and the field it went to. One second later the field is read once — before the user
+    /// can have reacted — as `before`/`after` at the cursor; 30 seconds after the write it is read
+    /// again for a correction. A new write replaces the watch; nothing read ever leaves this Mac.
+    private func startWatch(written: String) {
+        watchJob?.cancel(); checkJob?.cancel()
+        let watch = CorrectionWatch(id: UUID(), written: written, before: nil, after: nil,
+                                  mark: FocusMark.current(), element: TextTarget.fieldWithElement()?.element, at: Date())
+        correctionWatch = watch
+        let id = watch.id
+        watchJob = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            guard let self, !Task.isCancelled, self.correctionWatch?.id == id else { return }
+            guard let live = self.boundField(), live.before.hasSuffix(watch.written) else {
+                self.correctionWatch = nil; return
+            }
+            self.correctionWatch?.before = live.before
+            self.correctionWatch?.after = live.after
+        }
+        checkJob = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            guard let self, !Task.isCancelled, self.correctionWatch?.id == id else { return }
+            self.checkCorrection()
+        }
+    }
+
+    /// The field the watch is bound to, read now, or nil when another window or field is in front.
+    private func boundField() -> (before: String, after: String)? {
+        guard let watch = correctionWatch,
+              let mark = watch.mark, mark.same(as: FocusMark.current()),
+              let element = watch.element,
+              let live = TextTarget.fieldWithElement(), CFEqual(element, live.element) else { return nil }
+        return (live.before, live.after)
+    }
+
+    /// Whether the watched write was corrected: only while the same window and field are still in
+    /// front and within ten minutes of the write, and only a word that is not already in the
+    /// dictionary, was not declined before, and still fits it. Offered once; the watch is then
+    /// cleared — as it is when the window or field no longer matches.
+    private func checkCorrection() {
+        guard let watch = correctionWatch, let before = watch.before, let after = watch.after else { return }
+        guard Date().timeIntervalSince(watch.at) < 600, let field = boundField() else {
+            correctionWatch = nil; return
+        }
+        correctionWatch = nil
+        guard let word = CorrectionLearning.suggestion(before: before, after: after, written: watch.written,
+                                                       current: field.before + field.after),
+              OpenAIWire.cleanDictionary([word]).contains(word),
+              !settings.preferences.dictionary.contains(word),
+              !settings.preferences.declinedWords.contains(word),
+              settings.preferences.dictionary.count < 80 else { return }
+        learnedWord = word
+    }
+
+    /// The offered correction joins the personal dictionary.
+    func acceptLearned() {
+        guard let word = learnedWord else { return }
+        learnedWord = nil
+        if settings.preferences.dictionary.count < 80, !settings.preferences.dictionary.contains(word) {
+            settings.preferences.dictionary.append(word)
+        }
+    }
+
+    /// The offered correction is declined and not offered again; at most 200 are kept.
+    func declineLearned() {
+        guard let word = learnedWord else { return }
+        learnedWord = nil
+        if !settings.preferences.declinedWords.contains(word) {
+            settings.preferences.declinedWords.append(word)
+            if settings.preferences.declinedWords.count > 200 {
+                settings.preferences.declinedWords.removeFirst(settings.preferences.declinedWords.count - 200)
+            }
+        }
+    }
+
+    /// Learn from corrections switched off: the pending watch and offer go with it.
+    func clearLearned() {
+        correctionWatch = nil; watchJob?.cancel(); checkJob?.cancel(); learnedWord = nil
     }
 
     enum ClipboardPlace { case here, thisMac, there }
@@ -698,6 +796,7 @@ final class DictationController: ObservableObject {
     }
 
     private func begin() {
+        checkCorrection()
         endShortcutRecording()
         settings.refreshPermissions()
         guard settings.microphoneAllowed else {
@@ -795,7 +894,11 @@ final class DictationController: ObservableObject {
                     let polishing = request.mode == .dictate && request.writing == .polish
                     self.capsuleStep = polishing ? .polishing : .writing
                     self.message = polishing ? tr("Polishing the text…") : tr("Writing the text…")
-                    let screened = try await self.edit(transcript, request: request,
+                    // Read right before the request, only for a live dictation on this Mac.
+                    let context = prefs.fieldContext && remoteSession == nil && settings.accessibilityAllowed
+                        && request.mode == .dictate && request.writing != .raw
+                        ? String((TextTarget.field()?.before ?? "").suffix(1000)) : ""
+                    let screened = try await self.edit(transcript, request: request, context: context,
                                                        screening: request.mode == .dictate && request.writing == .polish)
                     try Task.checkCancellation()
                     guard self.sessionID == id else { return }
@@ -902,14 +1005,14 @@ final class DictationController: ObservableObject {
         return service.platform.streams(model: request.speechModel) ? RealtimeTranscriber(key: service.key) : UploadTranscriber(service: service)
     }
 
-    private func edit(_ transcript: String, request: SavedDictation,
+    private func edit(_ transcript: String, request: SavedDictation, context: String = "",
                       screening: Bool = false) async throws -> (text: String, maybe: Bool, asSaid: Bool) {
         if request.mode == .dictate && request.writing == .raw { return (transcript, false, false) }
         let service = try await settings.serviceAsync(request.textPlatform)
         guard !request.textModel.isEmpty else { throw VoiceError(tr("The text polishing model name is empty. Enter it in Settings.")) }
         let output = try await TextClient(service: service).edit(transcript: transcript, mode: request.mode,
             targetLanguage: request.targetLanguage, selection: request.selection, model: request.textModel,
-            style: request.writing, screening: screening)
+            style: request.writing, screening: screening, context: context)
         guard request.mode == .dictate else { return (output, false, false) }
         // The rewriting styles are used as returned; only Polish is held to the words that were said.
         guard request.writing == .polish else { return (output, false, false) }

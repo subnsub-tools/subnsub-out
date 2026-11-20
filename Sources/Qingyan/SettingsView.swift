@@ -15,6 +15,10 @@ struct SettingsPage: View {
                 ModelRows(settings: settings, speech: true)
                 Divider()
                 PolishChoice(settings: settings)
+                Row(tr("Text before the cursor"), info: tr("When on, each dictation sends up to 1,000 characters written before the cursor in the current field to the polishing service with the transcript, so names, terms and misheard words can be put right. Nothing is read in password fields, terminals or fields over 6,000 characters, while Work across Macs has other Macs to send to, or with the Raw style.")) {
+                    GlassSegments(label: tr("Text before the cursor"), selection: $settings.preferences.fieldContext,
+                                  options: [(false, tr("Off")), (true, tr("On"))], compact: true)
+                }
                 ModelRows(settings: settings, speech: false)
             }
             CustomStylesGroup(settings: settings)
@@ -26,7 +30,7 @@ struct SettingsPage: View {
                 }
             }
             InputGroup(settings: settings, controller: controller, microphones: controller.microphones)
-            DictionaryGroup(settings: settings)
+            DictionaryGroup(settings: settings, controller: controller)
             GeneralGroup(settings: settings, updater: controller.updater)
         }
         .disabled(controller.busy)
@@ -373,6 +377,7 @@ private struct InputGroup: View {
 
 private struct DictionaryGroup: View {
     @ObservedObject var settings: SettingsStore
+    let controller: DictationController
     @State private var word = ""
     @State private var validation = ""
     @State private var showAll = false
@@ -383,6 +388,13 @@ private struct DictionaryGroup: View {
         let count = allWords.count
         let visibleWords = showAll || count <= 24 ? allWords : Array(allWords.prefix(24))
         SettingsGroup(tr("Personal dictionary"), detail: count == 0 ? "" : "\(count) / 80") {
+            Row(tr("Learn from corrections"), info: tr("When on, put reads the text field again when the next dictation starts, or 30 seconds after the text was written, if that window is still in front. When a word it wrote was replaced there, the panel asks whether to add the new word to the personal dictionary. Nothing is added without asking, and nothing read is sent anywhere.")) {
+                GlassSegments(label: tr("Learn from corrections"),
+                              selection: Binding(
+                                get: { settings.preferences.learnCorrections },
+                                set: { settings.preferences.learnCorrections = $0; if !$0 { controller.clearLearned() } }),
+                              options: [(false, tr("Off")), (true, tr("On"))], compact: true)
+            }
             HStack(spacing: 6) {
                 TextField(tr("Add a name, product or term"), text: $word).glassField().onSubmit(add)
                 Button(tr("Add"), action: add).buttonStyle(SolidButton()).disabled(word.trimmingCharacters(in: .whitespaces).isEmpty)
