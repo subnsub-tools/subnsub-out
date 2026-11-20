@@ -134,13 +134,14 @@ public struct TextClient {
 
     private func send(_ body: [String: Any]) async throws -> String {
         let live = service.platform.live
-        var request = service.request(live ? "responses" : "chat/completions", timeout: live ? 45 : 60)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: live ? body : OpenAIWire.chatBody(body))
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else { throw VoiceError(tr("Invalid response from %@.", service.platform.name)) }
+        var (data, http) = try await post(live ? "responses" : "chat/completions",
+            body: live ? body : OpenAIWire.chatBody(body, platform: service.platform), timeout: live ? 45 : 60)
+        // Some Model Studio models refuse the thinking switch itself; ask once more without it.
+        if service.platform.wire == .alibaba, OpenAIWire.rejectsThinkingSwitch(status: http.statusCode, data: data) {
+            var again = OpenAIWire.chatBody(body, platform: service.platform)
+            again.removeValue(forKey: "enable_thinking")
+            (data, http) = try await post("chat/completions", body: again, timeout: 60)
+        }
         guard http.statusCode == 200 else {
             throw OpenAIWire.serviceError(status: http.statusCode, data: data, name: service.platform.name)
         }
@@ -148,5 +149,16 @@ public struct TextClient {
             throw VoiceError(tr("Cannot read the text polishing result."))
         }
         return try live ? OpenAIWire.responseText(object) : OpenAIWire.chatText(object)
+    }
+
+    private func post(_ path: String, body: [String: Any], timeout: TimeInterval) async throws -> (Data, HTTPURLResponse) {
+        var request = service.request(path, timeout: timeout)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw VoiceError(tr("Invalid response from %@.", service.platform.name)) }
+        return (data, http)
     }
 }

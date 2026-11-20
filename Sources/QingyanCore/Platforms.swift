@@ -1,10 +1,21 @@
 import Foundation
 
 /// Where recognition or tidying is sent. OpenAI is spoken to in its own way (audio streamed while
-/// you speak, text through the Responses API). Every other platform is spoken to in the common
+/// you speak, text through the Responses API), Alibaba Cloud Model Studio through its realtime
+/// socket and `/chat/completions`. Every other platform is spoken to in the common
 /// "OpenAI-compatible" way: the finished recording is uploaded to `/audio/transcriptions`, text
 /// goes through `/chat/completions`.
 public struct Platform: Equatable, Identifiable, Sendable {
+    /// How a platform is spoken to.
+    public enum Wire: Sendable, Equatable {
+        /// OpenAI's realtime socket and the Responses API.
+        case openAI
+        /// The common way: one upload of the finished recording, and `/chat/completions`.
+        case generic
+        /// The Qwen-ASR-Realtime socket for recognition, `/chat/completions` for text.
+        case alibaba
+    }
+
     public let id: String
     /// The name in English: a brand, or what the service whose address the user types in is called.
     public let englishName: String
@@ -13,8 +24,10 @@ public struct Platform: Equatable, Identifiable, Sendable {
     /// Suggestions only, the first one being the default. The user may type any other model.
     public let speechModels: [String]
     public let textModels: [String]
+    /// How this platform is spoken to.
+    public let wire: Wire
     /// OpenAI itself: recognition streams over the realtime socket, text uses the Responses API.
-    public let live: Bool
+    public var live: Bool { wire == .openAI }
     /// Whether the vocabulary may be sent along with the audio as a `prompt`.
     public let hints: Bool
     /// What a key looks like, or a note in English for a service that may need none.
@@ -27,24 +40,36 @@ public struct Platform: Equatable, Identifiable, Sendable {
 
     public static let openAI = Platform(id: "openai", englishName: "OpenAI", base: "https://api.openai.com/v1",
         speechModels: ["gpt-live-transcribe", "gpt-transcribe", "gpt-4o-mini-transcribe"],
-        textModels: ["gpt-4.1-mini", "gpt-4.1"], live: true, hints: true, englishKeyHint: "sk-…")
+        textModels: ["gpt-4.1-mini", "gpt-4.1"], wire: .openAI, hints: true, englishKeyHint: "sk-…")
+    /// Alibaba Cloud Model Studio: by default the Singapore region; the address can name another
+    /// region or a workspace's own domain.
+    public static let alibaba = Platform(id: "alibaba", englishName: "Alibaba Cloud Model Studio",
+        base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        speechModels: ["qwen3-asr-flash-realtime"], textModels: ["qwen3.8-flash", "qwen-plus"],
+        wire: .alibaba, hints: true, englishKeyHint: "sk-…")
     public static let groq = Platform(id: "groq", englishName: "Groq", base: "https://api.groq.com/openai/v1",
         speechModels: ["whisper-large-v3-turbo", "whisper-large-v3"],
-        textModels: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"], live: false, hints: true, englishKeyHint: "gsk_…")
+        textModels: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"], wire: .generic, hints: true, englishKeyHint: "gsk_…")
     public static let siliconFlow = Platform(id: "siliconflow", englishName: "SiliconFlow", base: "https://api.siliconflow.cn/v1",
         speechModels: ["FunAudioLLM/SenseVoiceSmall", "TeleAI/TeleSpeechASR"],
-        textModels: ["deepseek-ai/DeepSeek-V4-Flash"], live: false, hints: false, englishKeyHint: "sk-…")
+        textModels: ["deepseek-ai/DeepSeek-V4-Flash"], wire: .generic, hints: false, englishKeyHint: "sk-…")
     /// Any other service with the same interface: another cloud, a gateway, a model on this network.
     public static let custom = Platform(id: "custom", englishName: "Custom", base: "", speechModels: [], textModels: [],
-        live: false, hints: true, englishKeyHint: "leave empty if none is needed")
+        wire: .generic, hints: true, englishKeyHint: "leave empty if none is needed")
 
-    public static let all = [openAI, groq, siliconFlow, custom]
+    public static let all = [openAI, alibaba, groq, siliconFlow, custom]
 
     /// OpenAI's model for finished recordings. It is sent the whole file rather than a stream:
     /// that is the call OpenAI documents for telling it which languages and words to expect.
     public static let fileModel = "gpt-transcribe"
     /// Whether this model is sent the recording while it is still being made.
-    public func streams(model: String) -> Bool { live && model != Platform.fileModel }
+    public func streams(model: String) -> Bool {
+        switch wire {
+        case .openAI: return model != Platform.fileModel
+        case .alibaba: return true
+        case .generic: return false
+        }
+    }
 
     /// A dictation saved before platforms existed names none; it was made for OpenAI.
     public static func named(_ id: String?) -> Platform { all.first { $0.id == id } ?? openAI }
@@ -81,8 +106,38 @@ public struct Platform: Equatable, Identifiable, Sendable {
         return !(host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]")
     }
 
-    public func baseURL(custom: String) -> URL? {
-        base.isEmpty ? Platform.normalized(base: custom) : URL(string: base)
+    /// Model Studio's address as people type or paste it: a bare host name, or an https address
+    /// whose path and query are ignored — both calls live at fixed paths on the host. Empty is
+    /// the Singapore region. Anything but https is refused: the key works only where it was made.
+    public static func alibabaBase(_ text: String) -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return URL(string: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1") }
+        let address = value.contains("://") ? value : "https://" + value
+        guard let parts = URLComponents(string: address), parts.scheme?.lowercased() == "https",
+              let host = parts.host, !host.isEmpty,
+              parts.user == nil, parts.password == nil else { return nil }
+        var base = URLComponents()
+        base.scheme = "https"
+        base.host = host
+        base.port = parts.port
+        base.path = "/compatible-mode/v1"
+        return base.url
+    }
+
+    /// The realtime socket for a model on this address: `wss://<host>/api-ws/v1/realtime`.
+    public static func realtimeURL(base: URL, model: String) -> URL {
+        var parts = URLComponents()
+        parts.scheme = "wss"
+        parts.host = base.host
+        parts.port = base.port
+        parts.path = "/api-ws/v1/realtime"
+        parts.queryItems = [URLQueryItem(name: "model", value: model)]
+        return parts.url ?? base
+    }
+
+    public func baseURL(custom: String, alibaba: String = "") -> URL? {
+        if wire == .alibaba { return Platform.alibabaBase(alibaba) }
+        return base.isEmpty ? Platform.normalized(base: custom) : URL(string: base)
     }
 }
 
@@ -229,11 +284,20 @@ public extension OpenAIWire {
     }
 
     /// The same request as `responseBody`/`revisionBody` builds, in the shape `/chat/completions` takes.
-    static func chatBody(_ body: [String: Any]) -> [String: Any] {
-        ["model": body["model"] ?? "", "stream": false, "max_tokens": 8192, "messages": [
+    static func chatBody(_ body: [String: Any], platform: Platform) -> [String: Any] {
+        var chat: [String: Any] = ["model": body["model"] ?? "", "stream": false, "max_tokens": 8192, "messages": [
             ["role": "system", "content": body["instructions"] ?? ""],
             ["role": "user", "content": body["input"] ?? ""]
         ]]
+        // Model Studio's models think by default; the answer itself is all that is wanted.
+        if platform.wire == .alibaba { chat["enable_thinking"] = false }
+        return chat
+    }
+
+    /// Some Model Studio models refuse the `enable_thinking` parameter itself (400, "The model …
+    /// does not support enable_thinking"); the caller asks the same question once more without it.
+    static func rejectsThinkingSwitch(status: Int, data: Data) -> Bool {
+        status == 400 && String(decoding: data, as: UTF8.self).lowercased().contains("enable_thinking")
     }
 
     static func chatText(_ object: [String: Any]) throws -> String {

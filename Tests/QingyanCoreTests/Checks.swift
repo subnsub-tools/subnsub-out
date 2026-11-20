@@ -97,6 +97,7 @@ struct Checks {
             ("Knock: every nonce round-trips, noise and broken patterns are ignored", knock),
             ("Spoken editing: two-step requests, field text as data, markers, smallest changed span", revision),
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
+            ("Model Studio: address forms, realtime session shape, transcript joining, resampling, thinking off", alibaba),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
@@ -1241,8 +1242,13 @@ struct Checks {
                   && !Platform.isPlain(URL(string: "http://127.0.0.1:1234/v1")!) && !Platform.isPlain(URL(string: "https://x.example/v1")!), "only unencrypted traffic that leaves this Mac is warned about")
         try check(Platform.named(nil) == .openAI && Platform.named("nonsense") == .openAI && Platform.named("groq") == .groq, "an unknown platform is OpenAI")
         try check(Platform.custom.baseURL(custom: "http://127.0.0.1:1/v1") != nil && Platform.custom.baseURL(custom: "") == nil
-                  && Platform.groq.baseURL(custom: "http://127.0.0.1:1/v1")?.host == "api.groq.com", "only the custom platform takes the typed address")
-        try check(Set(Platform.all.map(\.id)).count == Platform.all.count && Platform.all.filter(\.live) == [.openAI], "platform ids are distinct, only OpenAI is live")
+                  && Platform.groq.baseURL(custom: "http://127.0.0.1:1/v1")?.host == "api.groq.com"
+                  && Platform.alibaba.baseURL(custom: "", alibaba: "") == Platform.alibabaBase("")
+                  && Platform.alibaba.baseURL(custom: "", alibaba: "https://ws.ap-southeast-1.maas.aliyuncs.com/x")?.host == "ws.ap-southeast-1.maas.aliyuncs.com",
+                  "the custom platform takes the typed address, Model Studio its own")
+        try check(Set(Platform.all.map(\.id)).count == Platform.all.count && Platform.all.filter { $0.wire == .openAI } == [.openAI]
+                  && Platform.all.filter { $0.wire == .alibaba } == [.alibaba] && Platform.all.filter { $0.wire == .generic } == [.groq, .siliconFlow, .custom],
+                  "platform ids are distinct, only OpenAI speaks its own way and only Model Studio Alibaba's")
 
         let pcm = Data(repeating: 7, count: 4800)
         let wav = OpenAIWire.wav(pcm: pcm)
@@ -1263,8 +1269,9 @@ struct Checks {
         try check(told.contains("name=\"languages[]\"\r\n\r\nzh\r\n") && told.contains("name=\"languages[]\"\r\n\r\nen\r\n")
                   && told.contains("name=\"keywords[]\"\r\n\r\nQingyan\r\n") && told.contains("name=\"keywords[]\"\r\n\r\ninput\r\n"), "each language and each keyword is a field of its own")
         try check(Platform.openAI.streams(model: "gpt-live-transcribe") && Platform.openAI.streams(model: "gpt-4o-mini-transcribe")
-                  && !Platform.openAI.streams(model: "gpt-transcribe") && !Platform.groq.streams(model: "gpt-live-transcribe"),
-                  "OpenAI streams, except to its model for finished recordings; other platforms never do")
+                  && !Platform.openAI.streams(model: "gpt-transcribe") && !Platform.groq.streams(model: "gpt-live-transcribe")
+                  && Platform.alibaba.streams(model: "qwen3-asr-flash-realtime") && Platform.alibaba.streams(model: "a-dated-snapshot"),
+                  "OpenAI streams, except to its model for finished recordings; Model Studio streams every model, generic platforms never do")
 
         // Chinese proper nouns ("proper noun no. N") weigh far more in the prompt than Latin letters.
         let hint = OpenAIWire.vocabularyPrompt((0..<80).map { "\u{4E13}\u{6709}\u{540D}\u{8BCD}\u{7B2C}\($0)\u{53F7}" })
@@ -1272,7 +1279,7 @@ struct Checks {
         try check(OpenAIWire.vocabularyPrompt(["Qingyan", "<bad>", " input "]) == "Qingyan, input" && OpenAIWire.vocabularyPrompt([]) == "", "the hint obeys the dictionary rules")
 
         let body = try OpenAIWire.responseBody(transcript: "Um, that Thursday meeting", mode: .translate, targetLanguage: "English", selection: "", model: "m")
-        let chat = OpenAIWire.chatBody(body)
+        let chat = OpenAIWire.chatBody(body, platform: .groq)
         let messages = chat["messages"] as? [[String: String]] ?? []
         try check(chat["model"] as? String == "m" && chat["instructions"] == nil && chat["input"] == nil && chat["store"] == nil && chat["stream"] as? Bool == false, "chat request has its own shape")
         try check(messages.count == 2 && messages[0]["role"] == "system" && messages[0]["content"] == body["instructions"] as? String
@@ -1307,6 +1314,154 @@ struct Checks {
                                    dictionary: [], selection: "", speechPlatform: "groq", textPlatform: "custom")
         let again = try JSONDecoder().decode(SavedDictation.self, from: JSONEncoder().encode(saved))
         try check(again.speechPlatform == "groq" && again.textPlatform == "custom", "the platforms of a recording survive saving")
+    }
+
+    /// Alibaba Cloud Model Studio: the address as typed or pasted, the realtime session's shape,
+    /// transcript items reconciled like OpenAI's, and the 24→16 kHz resampler.
+    static func alibaba() throws {
+        try check(Platform.alibabaBase("")?.absoluteString == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "empty is the Singapore region")
+        try check(Platform.alibabaBase("dashscope-intl.aliyuncs.com")?.absoluteString == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "a bare host gets the calls' path")
+        try check(Platform.alibabaBase(" https://ws1.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions ")?.absoluteString
+                  == "https://ws1.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "a pasted call address keeps only its host")
+        for bad in ["http://dashscope-intl.aliyuncs.com", "ftp://x", "https://user:pw@x.example/compatible-mode/v1", "https://"] {
+            try check(Platform.alibabaBase(bad) == nil, "not a usable Model Studio address: \(bad)")
+        }
+        let base = Platform.alibabaBase("dashscope-intl.aliyuncs.com")!
+        try check(Platform.realtimeURL(base: base, model: "qwen3-asr-flash-realtime").absoluteString
+                  == "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime", "the realtime socket's address")
+
+        let body = try OpenAIWire.responseBody(transcript: "t", mode: .dictate, targetLanguage: "English", selection: "", model: "m")
+        try check(OpenAIWire.chatBody(body, platform: .alibaba)["enable_thinking"] as? Bool == false, "Model Studio's models are asked not to think")
+        try check(OpenAIWire.chatBody(body, platform: .groq)["enable_thinking"] == nil && OpenAIWire.chatBody(body, platform: .custom)["enable_thinking"] == nil,
+                  "other platforms are not sent it")
+        let refusing = Data(#"{"error":{"message":"The model x does not support enable_thinking."}}"#.utf8)
+        try check(OpenAIWire.rejectsThinkingSwitch(status: 400, data: refusing)
+                  && !OpenAIWire.rejectsThinkingSwitch(status: 400, data: Data(#"{"error":{"message":"rate limited"}}"#.utf8))
+                  && !OpenAIWire.rejectsThinkingSwitch(status: 401, data: refusing),
+                  "a 400 naming enable_thinking asks for one retry without it")
+
+        let update = OpenAIWire.qwenSession(dictionary: ["Qingyan", " input ", "Qingyan"])
+        try check(update["type"] as? String == "session.update" && (update["event_id"] as? String)?.hasPrefix("event_") == true, "the session event has an id")
+        let session = update["session"] as! [String: Any]
+        let vad = session["turn_detection"] as! [String: Any]
+        try check(session["modalities"] as? [String] == ["text"] && session["input_audio_format"] as? String == "pcm"
+                  && session["sample_rate"] as? Int == 16000, "16 kHz PCM in, text out")
+        try check(vad["type"] as? String == "server_vad" && vad["threshold"] as? Double == 0.2 && vad["silence_duration_ms"] as? Int == 800,
+                  "server-side silence detection that splits speech without ever ending the session")
+        let corpus = (session["input_audio_transcription"] as! [String: Any])["corpus"] as! [String: Any]
+        try check(corpus["text"] as? String == "Qingyan, input", "the clean dictionary as context text")
+        let serialized = String(decoding: try JSONSerialization.data(withJSONObject: update), as: UTF8.self)
+        try check(!serialized.contains("language"), "no language is pinned: dictation mixes Chinese and English")
+        let bare = OpenAIWire.qwenSession(dictionary: [])["session"] as! [String: Any]
+        try check(bare["input_audio_transcription"] == nil, "no dictionary, no context field")
+
+        var transcript = QwenTranscript()
+        try transcript.receive(["type": "conversation.item.input_audio_transcription.text", "item_id": "a", "text": "Hello.", "stash": " Wo"])
+        try check(transcript.text == "Hello. Wo" && !transcript.finished, "a partial is the confirmed prefix plus the draft")
+        try transcript.receive(["type": "conversation.item.input_audio_transcription.completed", "item_id": "a", "transcript": "Hello."])
+        try transcript.receive(["type": "conversation.item.input_audio_transcription.text", "item_id": "b", "text": "World", "stash": ""])
+        try check(transcript.text == "Hello. World", "an ASCII word boundary keeps one space")
+        // Two Chinese items: "hello" and "world" in Chinese join with nothing between.
+        var zh = QwenTranscript()
+        try zh.receive(["type": "conversation.item.input_audio_transcription.completed", "item_id": "x", "transcript": "\u{4F60}\u{597D}"])
+        try zh.receive(["type": "conversation.item.input_audio_transcription.text", "item_id": "y", "text": "\u{4E16}\u{754C}", "stash": ""])
+        try check(zh.text == "\u{4F60}\u{597D}\u{4E16}\u{754C}", "Chinese pieces join with nothing")
+        // A completion may arrive for a later item first; spoken order is first sight of each id —
+        // from item_id on buffer events, or inside the item on conversation.item.created.
+        var order = QwenTranscript()
+        try order.receive(["type": "input_audio_buffer.speech_started", "item_id": "first"])
+        try order.receive(["type": "conversation.item.created", "item": ["id": "second"]])
+        try order.receive(["type": "conversation.item.input_audio_transcription.completed", "item_id": "second", "transcript": "two"])
+        try check(order.text == "two" && !order.finished, "an item not yet seen is not invented")
+        try order.receive(["type": "conversation.item.input_audio_transcription.completed", "item_id": "first", "transcript": "one"])
+        try check(order.text == "one two", "completion order does not reorder speech")
+        try order.receive(["type": "session.finished"])
+        try check(order.finished, "only session.finished ends it")
+        // An item that completes empty replaces its draft: the text can return to nothing.
+        var emptied = QwenTranscript()
+        try emptied.receive(["type": "conversation.item.input_audio_transcription.text", "item_id": "a", "text": "Draft", "stash": ""])
+        try check(emptied.text == "Draft", "a draft shows")
+        try emptied.receive(["type": "conversation.item.input_audio_transcription.completed", "item_id": "a", "transcript": ""])
+        try check(emptied.text.isEmpty, "an empty completion replaces the draft with nothing")
+
+        try check(OpenAIWire.appendChunks(Data(count: 6400)).map(\.count) == [3200, 3200]
+                  && OpenAIWire.appendChunks(Data(count: 7000)).map(\.count) == [3200, 3200, 600]
+                  && OpenAIWire.appendChunks(Data()).isEmpty, "audio goes out in append events of at most 100 ms")
+
+        func rejection(_ event: [String: Any]) -> String {
+            var transcript = QwenTranscript()
+            do { try transcript.receive(event); return "" }
+            catch { return error.localizedDescription }
+        }
+        let keyMessage = tr("The API key is invalid. Update it in Settings.")
+        let modelMessage = tr("This account cannot use the selected recognition model. Choose another in Settings.")
+        let interrupted = tr("Live speech recognition was interrupted. Check the network, model permissions and account balance.")
+        try check(rejection(["type": "error", "error": ["code": "invalid_api_key", "message": "secret-canary"]]) == keyMessage
+                  && rejection(["type": "error", "error": ["code": "Unauthorized"]]) == keyMessage, "key errors map to the key message")
+        try check(rejection(["type": "error", "error": ["code": "model_not_found", "message": "secret-canary"]]) == modelMessage
+                  && rejection(["type": "conversation.item.input_audio_transcription.failed", "item_id": "a",
+                                "error": ["code": "access_denied", "message": "x"]]) == modelMessage, "model errors map to the model message")
+        try check(rejection(["type": "error", "error": ["code": "throttling", "message": "secret-canary"]]) == interrupted, "everything else is the generic interruption")
+        try check(!rejection(["type": "error", "error": ["code": "x", "message": "secret-canary"]]).contains("secret-canary")
+                  && !rejection(["type": "error", "error": ["code": "invalid_api_key", "message": "secret-canary"]]).contains("secret-canary"),
+                  "the provider's message is never echoed")
+
+        // The resampler produces ceil(2·in/3) samples, an odd byte carried to the next call.
+        for bytes in [0, 2, 6, 4800, 9602, 4801] {
+            var resampler = PCMResampler()
+            let samples = bytes / 2
+            try check(resampler.process(Data(repeating: 1, count: bytes)).count == (2 * samples + 2) / 3 * 2,
+                      "output follows the samples received: \(bytes) bytes")
+        }
+        var carried = PCMResampler()
+        _ = carried.process(Data(repeating: 1, count: 4801))
+        try check(carried.process(Data(repeating: 1, count: 1)).count == 2, "an odd trailing byte pairs with the next chunk")
+
+        // The same signal — a tone plus seeded noise — whole and split any way gives the same bytes.
+        var seed: UInt64 = 42
+        func random(_ bound: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int(seed >> 33) % bound }
+        var signal = Data()
+        for i in 0..<4800 {
+            var sample = Int16(8000.0 * sin(2 * .pi * 1000 * Double(i) / 24000) + Double(random(4000) - 2000)).littleEndian
+            withUnsafeBytes(of: &sample) { signal.append(contentsOf: $0) }
+        }
+        var whole = PCMResampler()
+        let atOnce = whole.process(signal)
+        var chunked = PCMResampler()
+        var joined = Data()
+        var at = signal.startIndex
+        while at < signal.endIndex {
+            let end = Swift.min(at + random(997) + 1, signal.endIndex)
+            joined.append(chunked.process(signal[at..<end]))
+            at = end
+        }
+        try check(joined == atOnce, "identical output however the input is split")
+
+        func sine(_ frequency: Double, amplitude: Double, samples: Int) -> Data {
+            var data = Data()
+            for i in 0..<samples {
+                var sample = Int16(amplitude * sin(2 * .pi * frequency * Double(i) / 24000)).littleEndian
+                withUnsafeBytes(of: &sample) { data.append(contentsOf: $0) }
+            }
+            return data
+        }
+        func samples(_ data: Data) -> [Int16] {
+            data.withUnsafeBytes { bytes in
+                stride(from: 0, to: bytes.count, by: 2).map { Int16(bitPattern: UInt16(bytes[$0]) | UInt16(bytes[$0 + 1]) << 8) }
+            }
+        }
+        func rms(_ values: [Int16]) -> Double { sqrt(values.map { Double($0) * Double($0) }.reduce(0, +) / Double(values.count)) }
+        var lowPass = PCMResampler(), highPass = PCMResampler(), quiet = PCMResampler(), fullUp = PCMResampler(), fullDown = PCMResampler()
+        let inLevel = 8000 / sqrt(2)
+        let lowOut = Array(samples(lowPass.process(sine(1000, amplitude: 8000, samples: 12000))).dropFirst(100))
+        try check(abs(20 * log10(rms(lowOut) / inLevel)) < 0.5, "a tone inside the band keeps its level")
+        let highOut = Array(samples(highPass.process(sine(10000, amplitude: 8000, samples: 12000))).dropFirst(100))
+        try check(20 * log10(rms(highOut) / inLevel) <= -40, "a tone above the band is removed")
+        try check(quiet.process(Data(repeating: 0, count: 9600)).allSatisfy { $0 == 0 }, "silence stays silence")
+        var maxed = Data(), floored = Data()
+        for _ in 0..<4800 { maxed.append(contentsOf: [0xFF, 0x7F]); floored.append(contentsOf: [0x00, 0x80]) }
+        try check(samples(fullUp.process(maxed)).dropFirst(200).allSatisfy { $0 > 30000 }, "full-scale up saturates, never wraps to negative")
+        try check(samples(fullDown.process(floored)).dropFirst(200).allSatisfy { $0 < -30000 }, "full-scale down saturates, never wraps to positive")
     }
 
     static func keystrokes() throws {

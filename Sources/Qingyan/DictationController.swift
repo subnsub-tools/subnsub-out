@@ -885,6 +885,10 @@ final class DictationController: ObservableObject {
     private func transcriber(for request: SavedDictation) async throws -> any Transcriber {
         let service = try await settings.serviceAsync(request.speechPlatform)
         guard !request.speechModel.isEmpty else { throw VoiceError(tr("The recognition model name is empty. Enter it in Settings.")) }
+        if service.platform.wire == .alibaba {
+            return QwenRealtimeTranscriber(key: service.key,
+                endpoint: Platform.realtimeURL(base: service.base, model: request.speechModel))
+        }
         return service.platform.streams(model: request.speechModel) ? RealtimeTranscriber(key: service.key) : UploadTranscriber(service: service)
     }
 

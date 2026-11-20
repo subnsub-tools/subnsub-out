@@ -31,6 +31,9 @@ struct Preferences: Codable, Equatable {
     var textPlatform = Platform.openAI.id
     /// The address of the platform the user describes themselves.
     var customBase = ""
+    /// Model Studio's address when it is not the Singapore region: another region's host or a
+    /// workspace's own domain.
+    var alibabaHost = ""
     /// The model last used on each platform, so that switching back restores it: "speech.groq" → model.
     var modelChoices: [String: String] = [:]
     var shortcut = "fn"
@@ -71,6 +74,7 @@ struct Preferences: Codable, Equatable {
         speechPlatform = try values.decodeIfPresent(String.self, forKey: .speechPlatform) ?? speechPlatform
         textPlatform = try values.decodeIfPresent(String.self, forKey: .textPlatform) ?? textPlatform
         customBase = try values.decodeIfPresent(String.self, forKey: .customBase) ?? customBase
+        alibabaHost = try values.decodeIfPresent(String.self, forKey: .alibabaHost) ?? alibabaHost
         modelChoices = try values.decodeIfPresent([String: String].self, forKey: .modelChoices) ?? modelChoices
         shortcut = try values.decodeIfPresent(String.self, forKey: .shortcut) ?? shortcut
         microphone = try values.decodeIfPresent(String.self, forKey: .microphone) ?? microphone
@@ -366,7 +370,11 @@ final class SettingsStore: ObservableObject {
     @Published var savingPlatforms: Set<String> = []
 
     func usable(_ platform: String) -> Bool {
-        platform == Platform.custom.id ? Platform.normalized(base: preferences.customBase) != nil : savedKeys.contains(platform)
+        switch platform {
+        case Platform.custom.id: return Platform.normalized(base: preferences.customBase) != nil
+        case Platform.alibaba.id: return savedKeys.contains(platform) && Platform.alibabaBase(preferences.alibabaHost) != nil
+        default: return savedKeys.contains(platform)
+        }
     }
 
     /// Both platforms in use can be called. Setting it is for previews only.
@@ -378,8 +386,10 @@ final class SettingsStore: ObservableObject {
     /// Synchronous service lookup (uses Vault's pre-warmed memory cache).
     func service(_ id: String?) throws -> Service {
         let platform = Platform.named(id)
-        guard let base = platform.baseURL(custom: preferences.customBase) else {
-            throw VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."))
+        guard let base = platform.baseURL(custom: preferences.customBase, alibaba: preferences.alibabaHost) else {
+            throw platform.wire == .alibaba
+                ? VoiceError(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."))
+                : VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."))
         }
         if platform.id == Platform.custom.id {
             return Service(platform: platform, base: base, key: try Keychain.read(platform.id))
@@ -396,9 +406,12 @@ final class SettingsStore: ObservableObject {
     func serviceAsync(_ id: String?) async throws -> Service {
         let platform = Platform.named(id)
         let customBase = preferences.customBase
+        let alibabaHost = preferences.alibabaHost
         let isSaved = savedKeys.contains(platform.id)
-        guard let base = platform.baseURL(custom: customBase) else {
-            throw VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."))
+        guard let base = platform.baseURL(custom: customBase, alibaba: alibabaHost) else {
+            throw platform.wire == .alibaba
+                ? VoiceError(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."))
+                : VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."))
         }
         if platform.id == Platform.custom.id {
             let key = try await Task.detached(priority: .userInitiated) { try Keychain.read(platform.id) }.value

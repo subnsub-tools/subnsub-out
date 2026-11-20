@@ -79,6 +79,10 @@ private struct ModelRows: View {
         let suggestions = speech ? platform.speechModels : platform.textModels
         let fixed = speech && platform.live
         let listed = suggestions.contains(model.wrappedValue)
+        let info: String? = speech
+            ? (platform.wire == .openAI ? tr("gpt-live-transcribe shows the words as you speak. gpt-transcribe recognizes the whole recording once it ends, more accurately.")
+               : platform.wire == .alibaba ? tr("qwen3-asr-flash-realtime shows the words as you speak.") : nil)
+            : nil
         Row(speech ? tr("Speech recognition") : tr("Text polishing")) {
             GlassMenu(label: speech ? tr("Speech recognition service") : tr("Text polishing service"),
                       selection: Binding(get: { platform.id }, set: { typing = false; settings.choose($0, speech: speech) }),
@@ -86,7 +90,7 @@ private struct ModelRows: View {
         }
         if !suggestions.isEmpty {
             Row(speech ? tr("Recognition model") : tr("Polishing model"),
-                info: speech && platform.live ? tr("gpt-live-transcribe shows the words as you speak. gpt-transcribe recognizes the whole recording once it ends, more accurately.") : nil) {
+                info: info) {
                 GlassMenu(label: speech ? tr("Recognition model") : tr("Polishing model"),
                           selection: Binding(get: { listed && !typing ? model.wrappedValue : Self.other },
                                              set: { value in
@@ -116,6 +120,15 @@ private struct KeyGroup: View {
         let custom = platform.id == Platform.custom.id
         SettingsGroup(custom ? tr("Custom endpoint · OpenAI-compatible") : tr("%@ API key", platform.name),
                       detail: saved ? tr("Saved") : tr("Not set up")) {
+            if platform.wire == .alibaba {
+                TextField(tr("Address, such as dashscope-intl.aliyuncs.com"), text: $settings.preferences.alibabaHost)
+                    .glassField(mono: true).autocorrectionDisabled()
+                hint(tr("Leave empty for the Singapore region. A key works only with the address of the region it was created in; for another region or a workspace's own domain, enter that address."))
+                if !settings.preferences.alibabaHost.trimmingCharacters(in: .whitespaces).isEmpty,
+                   Platform.alibabaBase(settings.preferences.alibabaHost) == nil {
+                    hint(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."), warning: true)
+                }
+            }
             if custom {
                 TextField(tr("Endpoint URL, such as https://example.com/v1"), text: $settings.preferences.customBase)
                     .glassField(mono: true).autocorrectionDisabled()
@@ -163,13 +176,23 @@ private struct KeyGroup: View {
             defer { checking = false }
             do {
                 let service = try await settings.serviceAsync(id)
+                let prefs = settings.preferences
+                let speechHere = prefs.speechPlatform == id, textHere = prefs.textPlatform == id
+                // Model Studio proves the key and the speech model over its realtime socket;
+                // the speech model's name is not looked up in the model list.
+                if platform.wire == .alibaba && speechHere {
+                    try await QwenRealtimeTranscriber.probe(key: service.key,
+                        endpoint: Platform.realtimeURL(base: service.base, model: prefs.speechModel))
+                }
+                if platform.wire == .alibaba && !textHere {
+                    settings.keyMessages[id] = tr("The API key is valid, and the chosen models are available."); return
+                }
                 guard let models = try await service.models() else {
                     settings.keyMessages[id] = tr("This service does not list its models. Make a recording to test the connection."); return
                 }
-                let prefs = settings.preferences
                 var wanted: [String] = []
-                if prefs.speechPlatform == id { wanted.append(prefs.speechModel) }
-                if prefs.textPlatform == id { wanted.append(prefs.textModel) }
+                if speechHere && platform.wire != .alibaba { wanted.append(prefs.speechModel) }
+                if textHere { wanted.append(prefs.textModel) }
                 let missing = wanted.filter { !models.contains($0) }
                 let custom = id == Platform.custom.id
                 // The list is joined the way each language writes one: ", " in English, an ideographic comma in Chinese.
