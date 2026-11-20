@@ -153,7 +153,7 @@ final class Channel: @unchecked Sendable {
             try await RemoteIO.write(connection, try RemoteWire.frame(["v": 2, "hello": greeting(identity: identity, oneTime: oneTime, name: name, port: listening)]))
             let reply = try await RemoteIO.readFrame(connection)
             guard reply["ok"] as? Bool == true, let theirs = parse(reply) else {
-                throw VoiceError(reply["message"] as? String ?? tr("The other Mac runs a different version of put. Update both to the same version."))
+                throw VoiceError(reply["message"] as? String ?? tr("The other Mac runs a different version of out. Update both to the same version."))
             }
             let keys = try keys(identity: identity, oneTime: oneTime, peerIdentity: theirs.key, peerOneTime: theirs.once, initiator: true)
             return Channel(connection: connection, peerKey: helperAgent.map(HelperLink.id) ?? theirs.key.base64EncodedString(),

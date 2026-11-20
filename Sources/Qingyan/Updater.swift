@@ -46,8 +46,8 @@ final class Updater: ObservableObject {
         }
     }
 
-    /// Whether this copy can be replaced at all: only the one in Applications is, as put.app or
-    /// (when it could not move there, see `Relocation`) still as input.app.
+    /// Whether this copy can be replaced at all: only the one in Applications is, as out.app or
+    /// (when it could not move there, see `Relocation`) still under an earlier name.
     private var replaceable: Bool {
         !settings.preview && AppLocation.replaceable(Bundle.main.bundleURL.standardizedFileURL.path)
     }
@@ -138,7 +138,7 @@ final class Updater: ObservableObject {
         say("Downloading %@…", build.version)
         let app = try await fetch(build)
         ready = (build, app)
-        say("%@ is ready and will install when put is idle", build.version)
+        say("%@ is ready and will install when out is idle", build.version)
         installIfIdle()
     }
 
@@ -154,7 +154,7 @@ final class Updater: ObservableObject {
         let temporary: URL = try await ask(build.source) { delegate in
             try await session.download(for: UpdateFeed.request(build.asset, file: true), delegate: delegate)
         }
-        let zip = folder.appendingPathComponent("put.zip")
+        let zip = folder.appendingPathComponent("out.zip")
         try files.moveItem(at: temporary, to: zip)
         let bytes = try Data(contentsOf: zip, options: .mappedIfSafe)
         let found = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
@@ -165,7 +165,7 @@ final class Updater: ObservableObject {
             throw VoiceError(tr("Could not unpack the package for %@.", build.version))
         }
         try? files.removeItem(at: zip)
-        let app = folder.appendingPathComponent("put.app", isDirectory: true)
+        let app = folder.appendingPathComponent("out.app", isDirectory: true)
         let info = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))
         guard info?["CFBundleIdentifier"] as? String == UpdateFeed.bundleIdentifier,
               Int(info?["CFBundleVersion"] as? String ?? "") == build.number else {
@@ -199,7 +199,7 @@ final class Updater: ObservableObject {
             placed = try FileManager.default.replaceItemAt(here, withItemAt: ready.app) ?? here
         } catch {
             self.ready = nil
-            let reason = error is VoiceError ? error.localizedDescription : tr("Could not replace put in Applications.")
+            let reason = error is VoiceError ? error.localizedDescription : tr("Could not replace out in Applications.")
             say("Version %@ · %@", version, reason)
             return
         }

@@ -12,7 +12,7 @@ import Network
 public enum HelperLink {
     /// The Monitor page's Install window with put's switch on (monitor.js, ?install=put): the line
     /// there installs the helper for this account, with direct connections, and put after it.
-    public static let installPage = URL(string: "https://dashboard.subnsub.com/?install=put#monitor")!
+    public static let installPage = URL(string: "https://dashboard.subnsub.com/?install=out#monitor")!
 
     /// A device reached through the helper is called this, followed by its agent id.
     public static let prefix = "helper:"
@@ -86,10 +86,10 @@ public enum HelperLink {
             let byte = try await RemoteIO.read(connection, count: 1)
             if byte.first == 0x0A { break }
             line.append(byte)
-            guard line.count <= limit else { throw VoiceError(tr("The helper on this Mac answered in a way put does not understand.")) }
+            guard line.count <= limit else { throw VoiceError(tr("The helper on this Mac answered in a way out does not understand.")) }
         }
         guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any] else {
-            throw VoiceError(tr("The helper on this Mac answered in a way put does not understand."))
+            throw VoiceError(tr("The helper on this Mac answered in a way out does not understand."))
         }
         return object
     }
@@ -179,14 +179,14 @@ public enum HelperLink {
     static func arrival(_ connection: NWConnection) async throws -> (agent: String, name: String) {
         let header = try await readLine(connection)
         guard let agent = header["from"] as? String, !agent.isEmpty else {
-            throw VoiceError(tr("The helper on this Mac answered in a way put does not understand."))
+            throw VoiceError(tr("The helper on this Mac answered in a way out does not understand."))
         }
         return (agent, String((header["name"] as? String ?? "").prefix(80)))
     }
 
     public static func sentence(_ absence: Absence) -> String {
         switch absence {
-        case .notInstalled: return tr("The Monitor helper is not installed on this Mac, or its version is too old for put's connection between Macs. Install or update it from the Monitor page.")
+        case .notInstalled: return tr("The Monitor helper is not installed on this Mac, or its version is too old for out's connection between Macs. Install or update it from the Monitor page.")
         case .notRunning: return tr("The Monitor helper on this Mac is not running.")
         }
     }
@@ -194,7 +194,7 @@ public enum HelperLink {
     static func refusal(_ code: String, name: String) -> String {
         let who = name.isEmpty ? tr("The other Mac") : name
         switch code {
-        case "put-not-running": return tr("put is not running on %@.", who)
+        case "put-not-running": return tr("out is not running on %@.", who)
         case "unreachable": return tr("%@ cannot be reached. Check that it is on and its Monitor helper is running.", who)
         case "unknown-peer": return tr("The helper on this Mac does not know %@ yet. Open the Monitor page once so that it can tell the Macs about each other.", who)
         case "not-allowed": return tr("%@ does not know this Mac yet. Open the Monitor page once so that it can tell the Macs about each other.", who)

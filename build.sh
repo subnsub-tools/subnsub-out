@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # Which identity signs the app. The repository's build sets its own (the self-signed "input
-# signing" certificate, named before the app was renamed put); without one, the Apple Development certificate the app was first developed with.
+# signing" certificate, named before the app was renamed put, then out); without one, the Apple Development certificate the app was first developed with.
 # Every build a Mac is to update to must carry the same identity as the one installed there:
 # macOS ties the app's permissions to it, and the app refuses an update signed by another.
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-0E963B03D3A303855B9F48FD499600DA26CC1930}"
@@ -13,11 +13,11 @@ case "${1:-}" in
   ""|--install) ;;
   *) printf 'Usage: bash build.sh [--install]\n' >&2; exit 1 ;;
 esac
-# The app was called Qingyan, then input, before it was renamed put; any of those processes may
-# still be running. Only an install replaces the bundle a running copy was started from; a plain
-# build goes into build/ and is safe beside it (a packaging job may build while put runs).
-if [[ "${1:-}" == --install ]] && { /usr/bin/pgrep -x put >/dev/null || /usr/bin/pgrep -x input >/dev/null || /usr/bin/pgrep -x Qingyan >/dev/null; }; then
-  printf 'Quit put before replacing its signed app bundle.\n' >&2
+# The app was called Qingyan, then input, then put, before it was renamed out; any of those
+# processes may still be running. Only an install replaces the bundle a running copy was started
+# from; a plain build goes into build/ and is safe beside it (a packaging job may build while out runs).
+if [[ "${1:-}" == --install ]] && { /usr/bin/pgrep -x out >/dev/null || /usr/bin/pgrep -x put >/dev/null || /usr/bin/pgrep -x input >/dev/null || /usr/bin/pgrep -x Qingyan >/dev/null; }; then
+  printf 'Quit out before replacing its signed app bundle.\n' >&2
   exit 1
 fi
 # Only the app. The checks reach into the core with a testable import, which a release build does not allow.
@@ -29,11 +29,11 @@ for ARCH in arm64 x86_64; do
   swift build --package-path "$ROOT" -c release --product Qingyan --arch "$ARCH"
   SLICES+=("$(swift build --package-path "$ROOT" -c release --arch "$ARCH" --show-bin-path)/Qingyan")
 done
-APP="$ROOT/build/put.app"
+APP="$ROOT/build/out.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-lipo -create "${SLICES[@]}" -output "$APP/Contents/MacOS/put"
-lipo "$APP/Contents/MacOS/put" -verify_arch arm64 x86_64 || { printf 'The app is not universal.\n' >&2; exit 1; }
+lipo -create "${SLICES[@]}" -output "$APP/Contents/MacOS/out"
+lipo "$APP/Contents/MacOS/out" -verify_arch arm64 x86_64 || { printf 'The app is not universal.\n' >&2; exit 1; }
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # The icon (made from Resources/AppIcon.svg by tools/icon.swift).
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
@@ -49,7 +49,7 @@ codesign --force --sign "$SIGNING_IDENTITY" --identifier local.hopo.qingyan "$AP
 codesign --verify --strict "$APP"
 printf '\nBuilt: %s\n' "$APP"
 if [[ "${1:-}" == --install ]]; then
-  DEST="/Applications/put.app"
+  DEST="/Applications/out.app"
   if [[ -e "$DEST" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$DEST/Contents/Info.plist")" != local.hopo.qingyan ]]; then
     printf 'The installation path belongs to another app; leaving it unchanged.\n' >&2
     exit 1
@@ -62,7 +62,7 @@ if [[ "${1:-}" == --install ]]; then
   fi
   "$LSREGISTER" -f "$DEST"
   # Retire bundles left from the old names so only one app claims the bundle identifier.
-  for OLD in "/Applications/input.app" "/Applications/Qingyan.app" "$ROOT/build/input.app" "$ROOT/build/Qingyan.app"; do
+  for OLD in "/Applications/put.app" "/Applications/input.app" "/Applications/Qingyan.app" "$ROOT/build/put.app" "$ROOT/build/input.app" "$ROOT/build/Qingyan.app"; do
     if [[ -d "$OLD" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$OLD/Contents/Info.plist" 2>/dev/null)" == local.hopo.qingyan ]]; then
       "$LSREGISTER" -u "$OLD" || true
       rm -rf "$OLD"

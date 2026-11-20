@@ -40,13 +40,13 @@ public enum RemoteWire {
     public static func bodyLength(_ header: Data) throws -> Int {
         guard header.count == 4 else { throw VoiceError(tr("The other Mac's response was incomplete.")) }
         let size = header.reduce(0) { $0 << 8 | Int($1) }
-        guard size > 0, size <= limit else { throw VoiceError(tr("The other Mac's response is in an incompatible format. Make sure both Macs run the same version of put.")) }
+        guard size > 0, size <= limit else { throw VoiceError(tr("The other Mac's response is in an incompatible format. Make sure both Macs run the same version of out.")) }
         return size
     }
 
     public static func object(_ body: Data) throws -> [String: Any] {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
-            throw VoiceError(tr("The other Mac's response is in an incompatible format. Make sure both Macs run the same version of put."))
+            throw VoiceError(tr("The other Mac's response is in an incompatible format. Make sure both Macs run the same version of out."))
         }
         return object
     }
@@ -286,7 +286,7 @@ enum RemoteIO {
     }
 
     static func unreachable(_ name: String, _ port: Int) -> VoiceError {
-        VoiceError(tr("Cannot reach %@:%ld. Make sure put is running on the other Mac and the two Macs can reach each other.", name, port))
+        VoiceError(tr("Cannot reach %@:%ld. Make sure out is running on the other Mac and the two Macs can reach each other.", name, port))
     }
 }
 
@@ -785,7 +785,7 @@ public final class RemoteReceiver {
                     case .ready: self.update(true, tr("Listening on port %ld · Ready", port))
                     case .failed, .waiting:
                         listener.cancel(); self.listener = nil
-                        self.update(false, tr("Cannot listen on port %ld, which may be in use. put will try again automatically.", port))
+                        self.update(false, tr("Cannot listen on port %ld, which may be in use. out will try again automatically.", port))
                     default: break
                     }
                 }
@@ -798,7 +798,7 @@ public final class RemoteReceiver {
             }
             self.listener = listener
             listener.start(queue: .main)
-        } catch { update(false, tr("Cannot listen on port %ld, which may be in use. put will try again automatically.", port)) }
+        } catch { update(false, tr("Cannot listen on port %ld, which may be in use. out will try again automatically.", port)) }
     }
 
     // MARK: Through the Monitor helper
@@ -914,7 +914,7 @@ public final class RemoteReceiver {
         guard first["v"] as? Int == 2, let hello = first["hello"] as? [String: Any],
               let (reply, channel) = Channel.answer(connection, hello: hello, identity: identity, name: name, listening: port,
                                                     helperAgent: helperAgent) else {
-            let refusal: [String: Any] = ["ok": false, "message": tr("The two Macs run different versions of put. Update both to the same version.")]
+            let refusal: [String: Any] = ["ok": false, "message": tr("The two Macs run different versions of out. Update both to the same version.")]
             if let frame = try? RemoteWire.frame(refusal) { try? await RemoteIO.write(connection, frame) }
             connection.cancel(); return
         }
@@ -937,7 +937,7 @@ public final class RemoteReceiver {
         let device = trusted(channel.peerKey)
         if object["ping"] as? Bool == true {
             guard device != nil else { return (["ok": false, "message": tr("The other Mac has not added this Mac to its trusted list."), "name": name, "paired": false], .close) }
-            let (ok, message) = probe?() ?? (false, tr("put on the other Mac is not ready."))
+            let (ok, message) = probe?() ?? (false, tr("out on the other Mac is not ready."))
             return (["ok": ok, "message": message, "name": name, "paired": true], .close)
         }
         if object["pair"] as? Bool == true { return await pair(object, on: channel, known: device) }
@@ -954,8 +954,8 @@ public final class RemoteReceiver {
             return (["ok": false, "message": tr("The other Mac does not allow this Mac to type text there."), "miss": MissReason.notAllowed.rawValue], .close)
         }
         if let nonce = object["arm"] as? Int {
-            guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of put. Update both to the same version.")) }
-            let (ok, message) = probe?() ?? (false, tr("put on the other Mac is not ready."))
+            guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }
+            let (ok, message) = probe?() ?? (false, tr("out on the other Mac is not ready."))
             // The app's probe says no only without Accessibility permission.
             guard ok else { return (["ok": false, "message": message, "miss": MissReason.accessibility.rawValue], .close) }
             guard armed[nonce] == nil || armed[nonce] === channel else { return refuse(tr("The signal channel is busy. Try again.")) }

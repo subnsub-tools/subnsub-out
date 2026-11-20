@@ -1,4 +1,4 @@
 /* The permission prompts in Simplified Chinese. */
-"NSMicrophoneUsageDescription" = "put 仅在按下快捷键后录音，在本机或经所选的识别平台将声音转成文字；再次按下或按 Esc 后停止。";
-"NSSpeechRecognitionUsageDescription" = "仅在「语音识别」选用「本机」时，put 才在本机识别语音。";
-"NSLocalNetworkUsageDescription" = "put 在两台 Mac 之间传递识别出的文字：一台说话，另一台粘贴。仅在开启「多台 Mac」后使用。";
+"NSMicrophoneUsageDescription" = "out 仅在按下快捷键后录音，在本机或经所选的识别平台将声音转成文字；再次按下或按 Esc 后停止。";
+"NSSpeechRecognitionUsageDescription" = "仅在「语音识别」选用「本机」时，out 才在本机识别语音。";
+"NSLocalNetworkUsageDescription" = "out 在两台 Mac 之间传递识别出的文字：一台说话，另一台粘贴。仅在开启「多台 Mac」后使用。";

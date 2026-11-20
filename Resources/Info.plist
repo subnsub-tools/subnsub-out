@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>CFBundleName</key><string>put</string>
+    <key>CFBundleName</key><string>out</string>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
-    <key>CFBundleDisplayName</key><string>put</string>
-    <key>CFBundleExecutable</key><string>put</string>
+    <key>CFBundleDisplayName</key><string>out</string>
+    <key>CFBundleExecutable</key><string>out</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIdentifier</key><string>local.hopo.qingyan</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -14,9 +14,9 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>put records only after you press the shortcut, and turns the audio into text on this Mac or through the recognition service you chose. Recording stops when you press it again or Esc.</string>
-    <key>NSSpeechRecognitionUsageDescription</key><string>put recognizes speech on this Mac only when This Mac is chosen for speech recognition.</string>
-    <key>NSLocalNetworkUsageDescription</key><string>put passes recognized text between two Macs: you speak on one and it is typed on the other. Used only after you turn on Multiple Macs.</string>
+    <key>NSMicrophoneUsageDescription</key><string>out records only after you press the shortcut, and turns the audio into text on this Mac or through the recognition service you chose. Recording stops when you press it again or Esc.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>out recognizes speech on this Mac only when This Mac is chosen for speech recognition.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>out passes recognized text between two Macs: you speak on one and it is typed on the other. Used only after you turn on Multiple Macs.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>

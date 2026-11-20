@@ -24,8 +24,8 @@ public enum UpdateFeed {
         /// The newest build's manifest: on GitHub, the newest release's own.
         public var manifest: URL {
             switch self {
-            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-put/releases/latest/download/put.json")!
-            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/put.json")!
+            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-out/releases/latest/download/out.json")!
+            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/out.json")!
             }
         }
 
@@ -34,8 +34,8 @@ public enum UpdateFeed {
         /// `version` is digits and dots (`UpdateFeed.number`).
         public func asset(version: String) -> URL {
             switch self {
-            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-put/releases/download/v\(version)/put-\(version).zip")!
-            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/put-\(version).zip")!
+            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-out/releases/download/v\(version)/out-\(version).zip")!
+            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/out-\(version).zip")!
             }
         }
     }
@@ -66,12 +66,12 @@ public enum UpdateFeed {
     }
 
     /// The build `put.json` announces:
-    /// `{"version": "0.1.57", "file": "put-0.1.57.zip", "size": 1209759, "sha256": "<64 hex digits>"}`.
+    /// `{"version": "0.1.57", "file": "out-0.1.57.zip", "size": 1209759, "sha256": "<64 hex digits>"}`.
     /// Nil when it is not that. The zip is always fetched from the same place, under the one name
     /// its version gives it (`Source.asset`): the manifest says which build, never where from.
     public static func build(in manifest: Any, from source: Source) -> Build? {
         guard let object = manifest as? [String: Any], let version = object["version"] as? String,
-              let number = number(of: version), object["file"] as? String == "put-\(version).zip",
+              let number = number(of: version), object["file"] as? String == "out-\(version).zip",
               let size = object["size"] as? Int, size > 0, size <= largest,
               let stated = object["sha256"] as? String else { return nil }
         let digest = stated.lowercased()
@@ -114,7 +114,7 @@ public enum UpdateFeed {
     public static func request(_ url: URL, file: Bool = false) -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: file ? 120 : 20)
         request.setValue(file ? "application/zip" : "application/json", forHTTPHeaderField: "Accept")
-        request.setValue("put-updater", forHTTPHeaderField: "User-Agent")
+        request.setValue("out-updater", forHTTPHeaderField: "User-Agent")
         return request
     }
 
@@ -122,27 +122,29 @@ public enum UpdateFeed {
     public static func problem(status: Int) -> VoiceError {
         switch status {
         case 404: return VoiceError(tr("No version is available from the update server yet."))
-        case 403, 429: return VoiceError(tr("Too many update checks. put will try again automatically."), retryable: true)
+        case 403, 429: return VoiceError(tr("Too many update checks. out will try again automatically."), retryable: true)
         default: return VoiceError(tr("Update check failed (HTTP %ld).", status), retryable: true)
         }
     }
 }
 
-/// Where the app lives. It was called input before it was called put, and the builds from before
-/// the rename install and update it as /Applications/input.app. A copy started from there moves
-/// itself to /Applications/put.app, once, unless something is there already; either way, a copy in
-/// Applications under either name keeps itself up to date.
+/// Where the app lives. It was called input, then put, before it was called out (user
+/// 2026-11-20), and builds from before each rename install and update it under that name: as
+/// /Applications/input.app or /Applications/put.app. A copy started from there moves itself to
+/// /Applications/out.app, once, unless something is there already; either way, a copy in
+/// Applications under any of the names keeps itself up to date.
 public enum AppLocation {
-    public static let current = "/Applications/put.app"
-    public static let legacy = "/Applications/input.app"
+    public static let current = "/Applications/out.app"
+    /// The names from before, newest first.
+    public static let legacy = ["/Applications/put.app", "/Applications/input.app"]
 
     public enum Step: Equatable, Sendable { case stay, move }
 
     /// What a copy started from `running` does about where it is.
     public static func step(running: String, currentTaken: Bool) -> Step {
-        running == legacy && !currentTaken ? .move : .stay
+        legacy.contains(running) && !currentTaken ? .move : .stay
     }
 
     /// Only a copy in Applications replaces itself with a new build.
-    public static func replaceable(_ running: String) -> Bool { running == current || running == legacy }
+    public static func replaceable(_ running: String) -> Bool { running == current || legacy.contains(running) }
 }

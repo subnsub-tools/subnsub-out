@@ -355,7 +355,7 @@ private struct InputGroup: View {
                 }
             }
             Divider()
-            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. To change the shortcut, click it here or on the panel and press the new one: Fn, a Command key on its own, an F key, or a key with Control or Option. With Fn, put takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when put quits or another shortcut is chosen.")) {
+            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. To change the shortcut, click it here or on the panel and press the new one: Fn, a Command key on its own, an F key, or a key with Control or Option. With Fn, out takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when out quits or another shortcut is chosen.")) {
                 Button(controller.recordingShortcut ? tr("Press the new shortcut…") : settings.shortcutLabel) { controller.recordShortcut() }
                     .buttonStyle(QuietButton())
                     .help(tr("Shortcut: %@ · Click to change it", settings.shortcutLabel))
@@ -398,7 +398,7 @@ private struct DictionaryGroup: View {
         let count = allWords.count
         let visibleWords = showAll || count <= 24 ? allWords : Array(allWords.prefix(24))
         SettingsGroup(tr("Personal dictionary"), detail: count == 0 ? "" : "\(count) / 80") {
-            Row(tr("Learn from corrections"), info: tr("When on, put reads the text field again when the next dictation starts, or 30 seconds after the text was written, if that window is still in front. When a word it wrote was replaced there, the panel asks whether to add the new word to the personal dictionary. Nothing is added without asking, and nothing read is sent anywhere.")) {
+            Row(tr("Learn from corrections"), info: tr("When on, out reads the text field again when the next dictation starts, or 30 seconds after the text was written, if that window is still in front. When a word it wrote was replaced there, the panel asks whether to add the new word to the personal dictionary. Nothing is added without asking, and nothing read is sent anywhere.")) {
                 GlassSegments(label: tr("Learn from corrections"),
                               selection: Binding(
                                 get: { settings.preferences.learnCorrections },
@@ -492,7 +492,7 @@ private struct GeneralGroup: View {
                 )).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             if !settings.loginMessage.isEmpty { hint(settings.loginMessage, warning: true) }
-            Row(tr("Install updates automatically"), info: tr("Checks for new versions in the background. Once an update's hash and digital signature are verified, put replaces itself and restarts while idle.")) {
+            Row(tr("Install updates automatically"), info: tr("Checks for new versions in the background. Once an update's hash and digital signature are verified, out replaces itself and restarts while idle.")) {
                 Toggle(tr("Install updates automatically"), isOn: $settings.preferences.autoUpdate).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             HStack(alignment: .center, spacing: 6) {
@@ -505,7 +505,7 @@ private struct GeneralGroup: View {
             HStack {
                 hint(tr("The last 100 finished records are kept on this Mac."))
                 Spacer(minLength: 0)
-                Button(tr("Quit put")) { NSApp.terminate(nil) }.buttonStyle(QuietButton())
+                Button(tr("Quit out")) { NSApp.terminate(nil) }.buttonStyle(QuietButton())
             }
         }
     }

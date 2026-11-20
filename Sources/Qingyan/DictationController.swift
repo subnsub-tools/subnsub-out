@@ -262,7 +262,7 @@ final class DictationController: ObservableObject {
                 defer { self.boundWasPresent = present }
                 guard self.boundWasPresent == true, !present, !self.busy else { return }
                 let name = MicrophoneBinding.displayLabel(boundName: self.settings.preferences.microphoneName, uid: uid)
-                self.warnMicrophone(tr("The locked microphone “%@” was disconnected. put does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
+                self.warnMicrophone(tr("The locked microphone “%@” was disconnected. out does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
             }
         }.store(in: &microphoneSubscriptions)
         // A binding made or changed by hand starts from what is connected now.
@@ -333,7 +333,7 @@ final class DictationController: ObservableObject {
                 : (false, tr("Connected, but the other Mac has not granted Accessibility permission, so it cannot paste.")) },
             context: { TextTarget.field() },
             deliver: { [weak self] request in
-                guard let self else { throw VoiceError(tr("put is quitting on the other Mac.")) }
+                guard let self else { throw VoiceError(tr("out is quitting on the other Mac.")) }
                 return try self.receive(request)
             })
     }
@@ -631,7 +631,7 @@ final class DictationController: ObservableObject {
                                         : tr("A remote desktop window is in front, but none of your other Macs can be reached. %@", problems))
             }
             throw RemoteRefusal(peer: nil, miss: .noAnswer,
-                                description: tr("A remote desktop window is in front, but none of your other Macs answered. Make sure put is running on the Mac you are controlling."))
+                                description: tr("A remote desktop window is in front, but none of your other Macs answered. Make sure out is running on the Mac you are controlling."))
         }
         let outcome: WriteResult
         switch plan {
@@ -1179,7 +1179,7 @@ final class DictationController: ObservableObject {
         guard !busy else { return }
         settings.refreshPermissions()
         guard settings.accessibilityAllowed else {
-            showTypingProblem(tr("Accessibility permission is not granted. Allow put in System Settings.")); return
+            showTypingProblem(tr("Accessibility permission is not granted. Allow out in System Settings.")); return
         }
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
             showTypingProblem(tr("The clipboard holds no text.")); return

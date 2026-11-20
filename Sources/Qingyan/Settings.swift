@@ -196,7 +196,7 @@ enum Vault {
     static func save(_ value: Data, account: String) throws {
         let validAccount = try plain(account)
         // Given on the tool's input, not as an argument: arguments can be seen by other programs.
-        let line = "add-generic-password -U -s \(service) -a \(validAccount) -D \"put secret\" -w \(value.base64EncodedString())\n"
+        let line = "add-generic-password -U -s \(service) -a \(validAccount) -D \"out secret\" -w \(value.base64EncodedString())\n"
         _ = try run(["-i"], input: line)
         let back = try run(["find-generic-password", "-s", service, "-a", validAccount, "-w"])
         lock.lock(); defer { lock.unlock() }
@@ -260,7 +260,7 @@ enum DeviceKeychain {
         let identity: DeviceIdentity
         if status == errSecSuccess, let data = item as? Data, let kept = DeviceIdentity(saved: data) { identity = kept }
         else if status == errSecItemNotFound { identity = DeviceIdentity() }
-        else { throw VoiceError(tr("Could not read this Mac's identity key. Unlock the keychain and open put again.")) }
+        else { throw VoiceError(tr("Could not read this Mac's identity key. Unlock the keychain and open out again.")) }
         do { try Vault.save(identity.saved, account: "identity") }
         catch { throw VoiceError(tr("Could not save this Mac's identity key to the keychain.")) }
         return identity
@@ -322,6 +322,8 @@ final class SettingsStore: ObservableObject {
     @Published var page = Page.main
     /// Brings the panel up; set by the app.
     var openPanel: (() -> Void)?
+    /// Turns the compact floating bar on (the full panel goes) or off (it comes back); set by the app.
+    var setCompact: ((Bool) -> Void)?
 
     /// The side drawer beside the panel (hosting either History or Settings), and which side it opens on.
     @Published var historyOpen = false

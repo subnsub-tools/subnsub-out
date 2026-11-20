@@ -1703,27 +1703,29 @@ struct Checks {
         }
         let sha = String(repeating: "ab", count: 32)
         func manifest(_ version: Any = "0.1.12", file: Any? = nil, size: Any = 1_209_759, sha256: Any = sha) -> [String: Any] {
-            ["version": version, "file": file ?? "put-\(version).zip", "size": size, "sha256": sha256]
+            ["version": version, "file": file ?? "out-\(version).zip", "size": size, "sha256": sha256]
         }
         let found = UpdateFeed.build(in: manifest(sha256: sha.uppercased()), from: .site)
         try check(found?.number == 12 && found?.version == "0.1.12" && found?.size == 1_209_759 && found?.digest == sha, "the announced build, its checksum in lower case")
-        try check(found?.asset.absoluteString == "https://dashboard.subnsub.com/api/input/put-0.1.12.zip" && found?.source == .site
-                  && UpdateFeed.Source.site.manifest.absoluteString == "https://dashboard.subnsub.com/api/input/put.json", "on the site the zip lies beside the manifest, under the name its version gives it")
+        try check(found?.asset.absoluteString == "https://dashboard.subnsub.com/api/input/out-0.1.12.zip" && found?.source == .site
+                  && UpdateFeed.Source.site.manifest.absoluteString == "https://dashboard.subnsub.com/api/input/out.json", "on the site the zip lies beside the manifest, under the name its version gives it")
         let fromGitHub = UpdateFeed.build(in: manifest(), from: .github)
-        try check(fromGitHub?.asset.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/download/v0.1.12/put-0.1.12.zip"
+        try check(fromGitHub?.asset.absoluteString == "https://github.com/subnsub-tools/subnsub-out/releases/download/v0.1.12/out-0.1.12.zip"
                   && fromGitHub?.source == .github
-                  && UpdateFeed.Source.github.manifest.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/latest/download/put.json",
+                  && UpdateFeed.Source.github.manifest.absoluteString == "https://github.com/subnsub-tools/subnsub-out/releases/latest/download/out.json",
                   "on GitHub the manifest is the newest release's, and the zip comes from the release of the version it names")
         try check(UpdateFeed.Source.allCases.first == .github, "GitHub is asked first")
         // Where the app lives: a copy at the name from before the rename moves, once, when it can.
-        try check(AppLocation.step(running: "/Applications/input.app", currentTaken: false) == .move, "input.app moves to put.app")
-        try check(AppLocation.step(running: "/Applications/input.app", currentTaken: true) == .stay, "nothing is moved over a put.app that is there")
-        try check(AppLocation.step(running: "/Applications/put.app", currentTaken: true) == .stay
-                  && AppLocation.step(running: "/Users/x/Downloads/input.app", currentTaken: false) == .stay, "a copy elsewhere stays")
-        try check(AppLocation.replaceable("/Applications/put.app") && AppLocation.replaceable("/Applications/input.app")
-                  && !AppLocation.replaceable("/Users/x/put.app") && !AppLocation.replaceable("/Applications/Qingyan.app"), "only a copy in Applications updates itself")
-        for (bad, why) in [(manifest(file: "https://evil.example/put-0.1.12.zip"), "a file elsewhere"), (manifest(file: "../put-0.1.12.zip"), "a path"),
-                           (manifest(file: "put-0.1.13.zip"), "another version's file"), (manifest(file: "input-0.1.12.zip"), "the name from before the rename"), (manifest("0.1.x"), "no version"), (manifest("../0.1.12"), "a version with a path in it"),
+        try check(AppLocation.step(running: "/Applications/put.app", currentTaken: false) == .move
+                  && AppLocation.step(running: "/Applications/input.app", currentTaken: false) == .move, "put.app and input.app move to out.app")
+        try check(AppLocation.step(running: "/Applications/put.app", currentTaken: true) == .stay, "nothing is moved over an out.app that is there")
+        try check(AppLocation.step(running: "/Applications/out.app", currentTaken: true) == .stay
+                  && AppLocation.step(running: "/Users/x/Downloads/put.app", currentTaken: false) == .stay, "a copy elsewhere stays")
+        try check(AppLocation.replaceable("/Applications/out.app") && AppLocation.replaceable("/Applications/put.app") && AppLocation.replaceable("/Applications/input.app")
+                  && !AppLocation.replaceable("/Users/x/out.app") && !AppLocation.replaceable("/Applications/Qingyan.app"), "only a copy in Applications updates itself")
+        for (bad, why) in [(manifest(file: "https://evil.example/out-0.1.12.zip"), "a file elsewhere"), (manifest(file: "../out-0.1.12.zip"), "a path"),
+                           (manifest(file: "out-0.1.13.zip"), "another version's file"), (manifest(file: "put-0.1.12.zip"), "the name from before the rename"),
+                           (manifest(file: "input-0.1.12.zip"), "the name before that"), (manifest("0.1.x"), "no version"), (manifest("../0.1.12"), "a version with a path in it"),
                            (manifest(12), "a version that is not text"), (manifest(size: 0), "no size"), (manifest(size: UpdateFeed.largest + 1), "an absurd size"),
                            (manifest(size: "1209759"), "a size that is not a number"), (manifest(sha256: "abc"), "a short checksum"),
                            (manifest(sha256: String(repeating: "zz", count: 32)), "a checksum that is not hex"), (manifest(sha256: String(repeating: "\u{FF41}\u{FF42}", count: 32)), "a checksum in wide letters")] {
@@ -1769,7 +1771,7 @@ struct Checks {
 
         let asked = UpdateFeed.request(UpdateFeed.Source.github.manifest)
         try check(asked.value(forHTTPHeaderField: "Authorization") == nil && asked.cachePolicy == .reloadIgnoringLocalCacheData
-                  && asked.value(forHTTPHeaderField: "User-Agent") == "put-updater", "asked afresh, as itself, with no credential")
+                  && asked.value(forHTTPHeaderField: "User-Agent") == "out-updater", "asked afresh, as itself, with no credential")
         try check(UpdateFeed.request(found!.asset, file: true).timeoutInterval > asked.timeoutInterval, "the file is given longer than the manifest")
         try check(UpdateFeed.problem(status: 404).message.contains("No version") && UpdateFeed.problem(status: 429).retryable && UpdateFeed.problem(status: 500).retryable, "what a refusal means")
     }

@@ -872,14 +872,22 @@ struct MainView: View {
     private var header: some View {
         HStack(spacing: 5) {
             HStack(alignment: .top, spacing: 2) {
-                Text("put").font(.system(size: 13, weight: .bold))
+                Text("out").font(.system(size: 13, weight: .bold))
                 Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6).padding(.top, 1)
             }
             .contentShape(Rectangle())
             .help(status.text)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("put · " + status.text)
+            .accessibilityLabel("out · " + status.text)
             Spacer(minLength: 4)
+            HeaderIconButton(
+                symbol: "pip.enter",
+                active: false,
+                helpText: tr("Compact floating bar"),
+                accessibility: tr("Shrink the panel into a compact bar that stays on top")
+            ) {
+                settings.setCompact?(true)
+            }
             HeaderIconButton(
                 symbol: "keyboard",
                 active: controller.phase == .processing && controller.capsuleStep == .typing,
@@ -1061,7 +1069,7 @@ struct MainView: View {
                             .background(Color.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.orange.opacity(0.32), lineWidth: 0.8))
                         } else {
-                            caption(resolution.isBound ? tr("This microphone is locked. If it disconnects, put pauses and you are notified; put never switches to another microphone on its own.") : tr("Click any microphone below to lock it permanently."))
+                            caption(resolution.isBound ? tr("This microphone is locked. If it disconnects, out pauses and you are notified; out never switches to another microphone on its own.") : tr("Click any microphone below to lock it permanently."))
                         }
 
                         ForEach(controller.microphones.all) { mic in
@@ -1321,7 +1329,7 @@ struct RemoteSection: View {
     var body: some View {
         let on = settings.preferences.linkEnabled
         return VStack(alignment: .leading, spacing: 0) {
-            Row(tr("Work across Macs"), info: tr("When on, put on this Mac reaches put on your other Macs through the Monitor helper, types text on the one you are controlling by remote desktop, and keeps the Shelf in sync. The Macs are the ones on your Monitor page; nothing is paired here.")) {
+            Row(tr("Work across Macs"), info: tr("When on, out on this Mac connects to out on your other Macs through the Monitor helper, types text on the one you are controlling by remote desktop, and keeps the Shelf in sync. The Macs are the ones on your Monitor page; nothing is paired here.")) {
                 Toggle(tr("Work across Macs"), isOn: $settings.preferences.linkEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                     .onChange(of: settings.preferences.linkEnabled) { _, _ in controller.linkChanged() }
             }
@@ -1343,7 +1351,7 @@ struct RemoteSection: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(settings.preferences.devices) { device in row(device) }
                     if settings.preferences.devices.isEmpty {
-                        caption(tr("No other Mac with put is on your Monitor page yet. Open the Monitor page once: while it is open, it tells your Macs about each other.")).padding(.top, 8)
+                        caption(tr("No other Mac with out is on your Monitor page yet. Open the Monitor page once: while it is open, it tells your Macs about each other.")).padding(.top, 8)
                     }
                 }
             }
@@ -1361,7 +1369,7 @@ struct RemoteSection: View {
     private var problem: String? {
         if !controller.linkProblem.isEmpty { return controller.linkProblem }
         switch controller.helperState {
-        case .missing: return tr("put works across Macs through the Monitor helper. Install it on this Mac from the Monitor page, or update it if it is installed.")
+        case .missing: return tr("out works across Macs through the Monitor helper. Install it on this Mac from the Monitor page, or update it if it is installed.")
         case .stopped: return tr("The Monitor helper on this Mac is not running.")
         case .noTunnel: return tr("The Monitor helper on this Mac has no direct connection. Install it from the Monitor page with direct connections on.")
         case .checking, .ready: return nil

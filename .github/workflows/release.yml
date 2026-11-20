@@ -10,17 +10,20 @@
 # publishes nothing.
 #
 # Each build is a release of its own, and the only one that holds it: v0.1.<build> on the commit
-# it was built from, holding put-0.1.<build>.zip (the app, which install.sh and the installed
-# copies download) and put.json (version, file, size, sha256) naming it. There is no disk image
-# or other installer: put is installed by the command in the README. The repository's tags are
+# it was built from, holding out-0.1.<build>.zip (the app, which install.sh and the installed
+# copies download) and out.json (version, file, size, sha256) naming it. There is no disk image
+# or other installer: out is installed by the command in the README. The repository's tags are
 # its publishers' alone, and this workflow makes none. Installed copies read the newest release's
-# put.json, and our site serves the same (https://dashboard.subnsub.com/api/input/put.json).
+# out.json, and our site serves the same (https://dashboard.subnsub.com/api/input/out.json).
 #
-# Until 0.1.48 installed copies read the standing pre-release "builds" instead (put.json and the
-# newest zips), and copies from when the app was called input read its latest.json. While that
-# release is there, each build is also put in it, so those copies update to a build that reads
-# the new place; once every Mac does, it is deleted, and from then on this does nothing.
-# Each zip and put.json also get a build provenance attestation (GitHub's, recorded in the public
+# The app was called put until 0.1.49 (and input before that). Copies of put read put.json and
+# take only put-<version>.zip holding put.app, so each release also holds that pair: the same
+# signed app, its folder named put.app. Started from /Applications/put.app it moves itself to
+# out.app and reads out.json from then on (Relocation). Copies up to 0.1.48 read the standing
+# pre-release "builds" instead; while that release is there, the put pair goes in it too. Both
+# stay until every Mac runs out; then the builds release is deleted and the put pair is dropped
+# from here.
+# Each zip and manifest also get a build provenance attestation (GitHub's, recorded in the public
 # Sigstore log), so that anyone can check which run of this workflow, from which commit, built
 # them. The build number is one more than the larger of the newest build released here and the
 # build the site's feed names now, so it only grows.
@@ -88,14 +91,15 @@ jobs:
           state=$(old_feed) || exit 1
           if [ "$state" = present ]; then
             old=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets \
-              --jq '[.assets[].name | capture("^(input|put)-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0') \
+              --jq '[.assets[].name | capture("^(input|put|out)-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0') \
               || { echo "::error::the old feed release builds could not be read"; exit 1; }
             released=$(( old > released ? old : released ))
           fi
-          # What the site's feed names: put.json, and latest.json for copies named input while it
-          # still answers. Retried: a runner's resolver sometimes misses a name for a moment.
+          # What the site's feed names: out.json, put.json for copies of put, and latest.json for
+          # copies named input while it still answers. Retried: a runner's resolver sometimes misses
+          # a name for a moment.
           served=0
-          for manifest in put.json latest.json; do
+          for manifest in out.json put.json latest.json; do
             code=$(curl -sS --max-time 20 --retry 5 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/feed.json" -w '%{http_code}' \
               "https://dashboard.subnsub.com/api/input/$manifest") || code=000
             if [ "$code" = 404 ]; then continue; fi
@@ -165,8 +169,8 @@ jobs:
         run: |
           set -euo pipefail
           bash build.sh
-          codesign --verify --strict --verbose=2 build/put.app
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/put.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
+          codesign --verify --strict --verbose=2 build/out.app
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/out.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
 
       - name: Forget the signing identity
         # Nothing after the build signs, so no later step (the attestation action included) gets
@@ -186,7 +190,7 @@ jobs:
           # The requirement every installed copy holds an update to. A build that does not meet it
           # would be refused by them, so it is not released.
           REQUIREMENT='identifier "local.hopo.qingyan" and certificate root = H"5f3964801c4df9f728472f64717dbc410f4e00d8"'
-          codesign --verify --strict -R="$REQUIREMENT" build/put.app
+          codesign --verify --strict -R="$REQUIREMENT" build/out.app
           # A run of an older commit (a rerun) must not publish it as the newest build.
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$head" != "$GITHUB_SHA" ]; then
@@ -195,16 +199,30 @@ jobs:
           fi
           version="0.1.$INPUT_BUILD"
           out="$RUNNER_TEMP/out"; mkdir -p "$out"
-          zip="$out/put-$version.zip"
-          ditto -c -k --keepParent build/put.app "$zip"
-          size=$(stat -f%z "$zip")
-          sum=$(shasum -a 256 "$zip" | cut -d' ' -f1)
-          printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "put-$version.zip" "$size" "$sum" > "$out/put.json"
+          # The size and digest each on their own, so that a failure stops the run (inside the
+          # manifest's printf it would not).
+          manifest() {  # manifest <zip> <file name> <out file>
+            local size sum
+            size=$(stat -f%z "$1")
+            sum=$(shasum -a 256 "$1" | cut -d' ' -f1)
+            [[ "$size" =~ ^[1-9][0-9]*$ && "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no size or digest for $1"; return 1; }
+            printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "$2" "$size" "$sum" > "$3"
+          }
+          zip="$out/out-$version.zip"
+          ditto -c -k --keepParent build/out.app "$zip"
+          manifest "$zip" "out-$version.zip" "$out/out.json"
+          # The bridge for copies of put (see the top): the same signed bundle, its folder named put.app.
+          mkdir -p "$RUNNER_TEMP/bridge"
+          ditto build/out.app "$RUNNER_TEMP/bridge/put.app"
+          codesign --verify --strict -R="$REQUIREMENT" "$RUNNER_TEMP/bridge/put.app"
+          old="$out/put-$version.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/bridge/put.app" "$old"
+          manifest "$old" "put-$version.zip" "$out/put.json"
           { echo "publish=true"; echo "version=$version"; echo "zip=$zip"; echo "out=$out"; } >> "$GITHUB_OUTPUT"
 
       - name: Attest
-        # A provenance attestation for the zip and put.json, signed by GitHub: anyone can check that
-        # they were built by this workflow from this commit with
+        # A provenance attestation for the zips and manifests, signed by GitHub: anyone can check
+        # that they were built by this workflow from this commit with
         # `gh attestation verify <file> --repo <this repository>`.
         if: steps.package.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -221,22 +239,23 @@ jobs:
         run: |
           set -euo pipefail
           # This build's own release, on the commit it was built from, marked the latest: its zip
-          # and the put.json naming it, which installed copies and install.sh read as the newest.
+          # and the out.json naming it, which installed copies and install.sh read as the newest,
+          # and the put pair for copies of put (see the top).
           {
-            printf 'put %s, for Macs with Apple silicon and with Intel (macOS 14 or later), built by GitHub Actions from %s and signed with the input signing certificate (named before the app was renamed put).\n\n' "$VERSION" "$GITHUB_SHA"
-            printf 'To install put, or bring it up to date, run this in Terminal (it checks the download and the signature, and macOS does not stop the first launch):\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\n' "$GITHUB_REPOSITORY"
-            printf 'Installed copies update themselves: put-%s.zip is the app they download, and put.json names it.\n\n' "$VERSION"
-            printf 'Where a file was built: gh attestation verify put-%s.zip --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
+            printf 'out %s, for Macs with Apple silicon and with Intel (macOS 14 or later), built by GitHub Actions from %s and signed with the input signing certificate (named before the app was renamed put, then out).\n\n' "$VERSION" "$GITHUB_SHA"
+            printf 'To install out, or bring it up to date, run this in Terminal (it checks the download and the signature, and macOS does not stop the first launch):\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\n' "$GITHUB_REPOSITORY"
+            printf 'Installed copies update themselves: out-%s.zip is the app they download, and out.json names it. put-%s.zip and put.json are the same app for copies installed while it was called put, which move themselves to out.app.\n\n' "$VERSION" "$VERSION"
+            printf 'Where a file was built: gh attestation verify out-%s.zip --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
             git log -1 --format=%B "$GITHUB_SHA"
           } > "$RUNNER_TEMP/notes.md"
           # The tag came first — a publisher pushed it; this run only releases onto it.
           [ "$GITHUB_REF" = "refs/tags/v$VERSION" ] || { echo "::error::expected the run of tag v$VERSION, got $GITHUB_REF"; exit 1; }
-          gh release create "v$VERSION" "$ZIP" "$OUT/put.json" --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "put $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          gh release create "v$VERSION" "$ZIP" "$OUT/out.json" "$OUT/put-$VERSION.zip" "$OUT/put.json" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "out $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
 
       - name: Old feed
-        # Copies up to 0.1.48 read only the standing pre-release "builds" (see the top). What was
-        # released goes there too, the released files themselves, so a rerun of a tag whose
+        # Copies up to 0.1.48 read only the standing pre-release "builds" (see the top). The put
+        # pair that was released goes there too, the released files themselves, so a rerun of a tag whose
         # release is out (REPAIR) brings the old feed up to date the same way.
         if: steps.package.outputs.publish == 'true' || env.REPAIR == 'true'
         env:
@@ -289,7 +308,7 @@ jobs:
           gh release upload builds "$dir/put-$VERSION.zip" --repo "$GITHUB_REPOSITORY" --clobber
           replace put.json "$dir/put.json"
           gh release edit builds --repo "$GITHUB_REPOSITORY" --prerelease --title "put update feed (old)" \
-            --notes "Where copies of put up to 0.1.48 look for updates, until every Mac has a build that reads the newest release instead; then this release is deleted. To install put, see https://github.com/$GITHUB_REPOSITORY#install. put.json names the newest build, put $VERSION, and the zip it names lies beside it."
+            --notes "Where copies of put up to 0.1.48 look for updates, until every Mac runs out, which reads the newest release instead; then this release is deleted. To install out, see https://github.com/$GITHUB_REPOSITORY#install. put.json names the newest build, put $VERSION, and the zip it names lies beside it."
           # It keeps the three newest put zips (a Mac that read put.json a moment ago still finds
           # the zip it named). The input zips and latest.json are left as they are.
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/builds" \

@@ -64,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var controller: DictationController!
     private var window: NSWindow?
     private var overlay: NSPanel?
+    /// The compact floating bar, shown in place of the panel when it is chosen (CompactBar).
+    private var compactPanel: NSPanel?
     private var overlayHost: NSHostingView<VoiceBar>?
     /// The capsule's size as SwiftUI last laid it out.
     private var overlayReportedSize: CGSize?
@@ -89,13 +91,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: "local.hopo.qingyan")
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if let existing = others.first { existing.activate(); NSApp.terminate(nil); return }
-        // A copy still at the name from before the rename moves to put.app and starts again there.
+        // A copy still at a name from before a rename moves to out.app and starts again there.
         if Relocation.moveIfNeeded() { return }
         let loginItemRenewed = Relocation.renewLoginItem()
         settings = SettingsStore()
-        if !loginItemRenewed { settings.loginMessage = tr("Open at login could not be set up again after the app moved to put.app. Turn it on again here.") }
+        if !loginItemRenewed { settings.loginMessage = tr("Open at login could not be set up again after the app moved to out.app. Turn it on again here.") }
         controller = DictationController(settings: settings)
         settings.openPanel = { [weak self] in self?.showWindow() }
+        settings.setCompact = { [weak self] on in self?.setCompact(on) }
         installMainMenu()
         // The menu bar's words and the status item's tooltip are set once; a change of language
         // sets them again.
@@ -130,7 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
         let renewed = defaults.string(forKey: "panelShownForBuild") != build
         defaults.set(build, forKey: "panelShownForBuild")
-        if renewed { showWindow(activating: false, inFront: true) }
+        if defaults.bool(forKey: "panelCompact") { showCompact() }
+        else if renewed { showWindow(activating: false, inFront: true) }
         else if defaults.object(forKey: "panelOpen") as? Bool != false { showWindow(activating: false) }
         controller.updater.start()
         if CommandLine.arguments.contains("--setup-permissions") {
@@ -159,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // The word alone, and any click opens the menu (its Show Main Panel opens the panel).
         if let button = statusItem?.button {
-            button.title = "put"
+            button.title = "out"
             button.image = nil
         }
         let menu = NSMenu()
@@ -171,13 +175,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// The status item's tooltip and spoken name, in the chosen language.
     private func labelStatusItem() {
         guard let button = statusItem?.button else { return }
-        button.toolTip = tr("put · Click for the menu")
-        button.setAccessibilityLabel(tr("put, opens its menu"))
+        button.toolTip = tr("out · Click for the menu")
+        button.setAccessibilityLabel(tr("out, opens its menu"))
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        item(menu, controller.phase == .recording ? tr("put · Recording") : tr("put · %@ to Start or Stop", settings.shortcutLabel), nil)?.isEnabled = false
+        item(menu, controller.phase == .recording ? tr("out · Recording") : tr("out · %@ to Start or Stop", settings.shortcutLabel), nil)?.isEnabled = false
         menu.addItem(.separator())
         if controller.phase == .recording { item(menu, tr("Stop Recording"), #selector(stopRecording)) }
         if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording)) }
@@ -187,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item(menu, tr("Settings…"), #selector(openSettings))
         if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult)) }
         menu.addItem(.separator())
-        item(menu, tr("Quit put"), #selector(quit))
+        item(menu, tr("Quit out"), #selector(quit))
     }
 
     @discardableResult private func item(_ menu: NSMenu, _ title: String, _ action: Selector?) -> NSMenuItem? {
@@ -213,10 +217,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         preferences.target = self
         application.addItem(preferences)
         application.addItem(.separator())
-        let hide = NSMenuItem(title: tr("Hide put"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hide = NSMenuItem(title: tr("Hide out"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         hide.target = NSApp
         application.addItem(hide)
-        let quit = NSMenuItem(title: tr("Quit put"), action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: tr("Quit out"), action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         application.addItem(quit)
         let edit = NSMenu(title: tr("Edit"))
@@ -233,6 +237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func showWindow(activating: Bool = true, inFront: Bool = false) {
         guard settings != nil else { return }
+        // Asking for the panel, from anywhere, brings it back in place of the compact bar.
+        if UserDefaults.standard.bool(forKey: "panelCompact") || compactPanel?.isVisible == true { leaveCompact() }
         if window == nil {
             let window = makePanel(settings: settings, controller: controller)
             let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
@@ -307,7 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func makePanel(settings: SettingsStore, controller: DictationController) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.defaultHeight),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "put"
+        window.title = "out"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
@@ -435,6 +441,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func windowDidMove(_ notification: Notification) {
+        if let moved = notification.object as? NSWindow, moved === compactPanel {
+            UserDefaults.standard.set(Double(moved.frame.minX), forKey: "compactLeft")
+            UserDefaults.standard.set(Double(moved.frame.maxY), forKey: "compactTop")
+            return
+        }
         if let moved = notification.object as? NSWindow, moved === overlay {
             overlayDraggedByUser = true
             overlayAnchorOrigin = moved.frame.origin
@@ -454,6 +465,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let most = window.contentMaxSize.height
         wishedHeight = height >= most - 1 ? Self.unlimited : height
         rememberPlace(window)
+    }
+
+    // MARK: - Compact floating bar
+
+    /// The compact bar in place of the panel (on), or the panel back in place of the bar (off). The
+    /// choice is kept across starts.
+    private func setCompact(_ on: Bool) {
+        guard on else { leaveCompact(); showWindow(); return }
+        UserDefaults.standard.set(true, forKey: "panelCompact")
+        showCompact()
+        // Out of sight, not closed: the panel comes back as it was.
+        window?.orderOut(nil)
+    }
+
+    private func leaveCompact() {
+        UserDefaults.standard.set(false, forKey: "panelCompact")
+        compactPanel?.orderOut(nil)
+    }
+
+    private func showCompact() {
+        guard settings != nil else { return }
+        if compactPanel == nil { compactPanel = makeCompact(onExpand: { [weak self] in self?.setCompact(false) }) }
+        guard let panel = compactPanel else { return }
+        // Where it was left, if that is still on a screen; else the top right of the main screen.
+        let defaults = UserDefaults.standard
+        let size = panel.frame.size
+        let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
+        var origin = NSPoint(x: visible.maxX - size.width - 12, y: visible.maxY - size.height - 8)
+        if defaults.object(forKey: "compactLeft") != nil {
+            let saved = NSPoint(x: defaults.double(forKey: "compactLeft"), y: defaults.double(forKey: "compactTop") - size.height)
+            if NSScreen.screens.contains(where: { $0.visibleFrame.insetBy(dx: -2, dy: -2).contains(NSRect(origin: saved, size: size)) }) { origin = saved }
+        }
+        panel.setFrameOrigin(origin)
+        panel.orderFrontRegardless()
+    }
+
+    /// A glass bar above every window on every Space, full-screen apps included, that never takes
+    /// the keyboard from the app in front and moves by any part that is not a control.
+    private func makeCompact(onExpand: @escaping () -> Void, glass: Bool = true) -> NSPanel {
+        let host = NSHostingView(rootView: CompactBar(settings: settings, controller: controller, shelf: controller.shelf,
+                                                      meter: controller.meter, glass: glass, onExpand: onExpand))
+        host.layoutSubtreeIfNeeded()
+        let size = NSSize(width: CompactBar.width, height: ceil(host.fittingSize.height))
+        let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
+                                  backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
+        panel.contentView = host
+        panel.delegate = self
+        return panel
     }
 
     // MARK: - Miniature Floating Status Capsule
@@ -764,6 +832,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.capsuleResult = .inserted
         controller.phase = .recording; controller.connected = false; controller.partial = ""
         try await bar("bar-offline")
+        // The compact floating bar, light and dark: Shelf items and a result; recording; empty.
+        func compact(_ name: String) async throws {
+            let make = { CompactBar(settings: settings, controller: controller, shelf: controller.shelf, meter: controller.meter, glass: false, onExpand: {}) }
+            let host = NSHostingView(rootView: make())
+            host.layoutSubtreeIfNeeded()
+            let size = NSSize(width: CompactBar.width, height: ceil(host.fittingSize.height))
+            for dark in [false, true] {
+                try await capture(make(), size: size, dark: dark, path: "\(directory)/\(name)\(dark ? "-dark" : "").png")
+                count += 1
+            }
+        }
+        controller.phase = .done
+        controller.shelf.previewFill()
+        try await compact("compact-shelf")
+        controller.shelf.targeted = true
+        try await compact("compact-drop")
+        controller.shelf.targeted = false
+        controller.phase = .recording; controller.elapsed = 7
+        try await compact("compact-recording")
+        controller.phase = .idle; controller.result = ""; controller.shelf.items = []; controller.shelf.linked = 0
+        let kept = settings.history; settings.history = []
+        try await compact("compact-empty")
+        settings.history = kept
         controller.phase = .idle; controller.message = ""; controller.result = ""; settings.section = nil
         let live = makePanel(settings: settings, controller: controller)
         live.setFrameTopLeftPoint(NSPoint(x: -3000, y: 900))
@@ -780,11 +871,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             count += 1
         }
         try await shot("window-default")
-        func press(_ x: CGFloat, fromTop y: CGFloat) async throws {
-            let point = NSPoint(x: x, y: live.frame.height - y)
+        func press(_ x: CGFloat, fromTop y: CGFloat, in target: NSWindow? = nil) async throws {
+            let window = target ?? live
+            let point = NSPoint(x: x, y: window.frame.height - y)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: live.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else { continue }
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else { continue }
                 NSApp.sendEvent(event)
                 try await Task.sleep(nanoseconds: 60_000_000)
             }
@@ -809,7 +901,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try expect(controller.recordingShortcut, "the shortcut badge")
         try await press(35, fromTop: 62)
         try expect(!controller.recordingShortcut, "the shortcut badge, clicked again to keep the shortcut")
-        print("Clicks reach the settings and history buttons, Text polishing's switch and the shortcut badge.")
+        // The compact bar: its button in the title row, and the way back from the bar itself.
+        var compactAsked: Bool?
+        settings.setCompact = { compactAsked = $0 }
+        try await press(159, fromTop: 15)
+        try expect(compactAsked == true, "the compact bar's button in the title row")
+        var expanded = false
+        let bar = makeCompact(onExpand: { expanded = true }, glass: false)
+        bar.setFrameOrigin(NSPoint(x: live.frame.minX, y: live.frame.minY))
+        bar.alphaValue = 0
+        bar.ignoresMouseEvents = true
+        bar.orderFrontRegardless()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        try await press(CompactBar.width - 22, fromTop: 22, in: bar)
+        try expect(expanded, "the compact bar's button back to the full panel")
+        bar.close()
+        settings.setCompact = nil
+        print("Clicks reach the settings and history buttons, Text polishing's switch, the shortcut badge and both ends of the compact bar.")
         live.close()
         for key in ["panelWishedHeight", "panelLeft", "panelTop"] { UserDefaults.standard.removeObject(forKey: key) }
         print("Rendered \(count) native UI states without recording, API calls, or permission changes.")
