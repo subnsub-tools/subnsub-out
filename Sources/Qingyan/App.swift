@@ -798,11 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try expect(controller.recordingShortcut, "the shortcut badge")
         try await press(35, fromTop: 62)
         try expect(!controller.recordingShortcut, "the shortcut badge, clicked again to keep the shortcut")
-        try await press(206, fromTop: 121)
-        try expect(!settings.preferences.polish, "Polish “Off”")
-        try await press(248, fromTop: 121)
-        try expect(settings.preferences.polish, "Polish “On”")
-        print("Clicks reach the settings and history buttons, the shortcut badge and the tidying choice.")
+        print("Clicks reach the settings and history buttons and the shortcut badge.")
         live.close()
         for key in ["panelWishedHeight", "panelLeft", "panelTop"] { UserDefaults.standard.removeObject(forKey: key) }
         print("Rendered \(count) native UI states without recording, API calls, or permission changes.")

@@ -120,9 +120,10 @@ public struct TextClient {
     public init(service: Service, session: URLSession = .shared) { self.service = service; self.session = session }
 
     public func edit(transcript: String, mode: WritingMode, targetLanguage: String,
-                     selection: String, model: String, screening: Bool = false) async throws -> String {
+                     selection: String, model: String, style: DictationStyle = .polish,
+                     screening: Bool = false) async throws -> String {
         try await send(OpenAIWire.responseBody(transcript: transcript, mode: mode, targetLanguage: targetLanguage,
-                                               selection: selection, model: model, screening: screening))
+                                               selection: selection, model: model, style: style, screening: screening))
     }
 
     /// The second step for a dictation that may be an editing command. See `OpenAIWire.revisionBody`.

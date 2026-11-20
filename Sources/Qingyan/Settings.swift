@@ -22,7 +22,10 @@ struct LegacyPeer: Codable, Equatable {
 
 struct Preferences: Codable, Equatable {
     var mode: WritingMode = .dictate
-    var polish = true
+    /// How the dictated text is written: "raw", "polish", "structured", "formal", or a custom style's id.
+    var style = "polish"
+    /// Styles the user wrote in Settings, offered under Style once they have a name and instructions.
+    var customStyles: [CustomStyle] = []
     var targetLanguage = "English"
     var speechModel = "gpt-live-transcribe"
     var textModel = "gpt-4.1-mini"
@@ -67,7 +70,14 @@ struct Preferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         mode = try values.decodeIfPresent(WritingMode.self, forKey: .mode) ?? mode
-        polish = try values.decodeIfPresent(Bool.self, forKey: .polish) ?? polish
+        if let stored = try values.decodeIfPresent(String.self, forKey: .style) {
+            style = stored
+        } else {
+            // Saved before styles: the old on/off switch, on when absent.
+            let old = try decoder.container(keyedBy: LegacyKeys.self)
+            style = StyleChoice.legacyID(polish: try old.decodeIfPresent(Bool.self, forKey: .polish) ?? true)
+        }
+        customStyles = try values.decodeIfPresent([CustomStyle].self, forKey: .customStyles) ?? customStyles
         targetLanguage = Preferences.englishTarget(try values.decodeIfPresent(String.self, forKey: .targetLanguage) ?? targetLanguage)
         speechModel = try values.decodeIfPresent(String.self, forKey: .speechModel) ?? speechModel
         textModel = try values.decodeIfPresent(String.self, forKey: .textModel) ?? textModel
@@ -97,6 +107,12 @@ struct Preferences: Codable, Equatable {
         // A Mac that sent or received before keeps working with the others.
         linkEnabled = try values.decodeIfPresent(Bool.self, forKey: .linkEnabled) ?? (remoteRole != "off")
     }
+
+    /// The on/off switch this `style` replaced; read only when `style` is absent.
+    private enum LegacyKeys: String, CodingKey { case polish }
+
+    /// The style the stored id names, unfinished and deleted custom ids included (see `StyleChoice`).
+    var dictationStyle: DictationStyle { StyleChoice.resolve(style, customs: customStyles) }
 
     /// Before the app had English, the target of a translation was kept, and sent to the model,
     /// by its Chinese name. It is the English name now.

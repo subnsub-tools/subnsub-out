@@ -458,13 +458,21 @@ struct GlassSegments<Value: Hashable>: View {
     }
 }
 
-/// Whether dictation is tidied, as a choice that says what it is.
+/// How a dictation is written before it is entered, as a choice that says what it is.
 struct PolishChoice: View {
     @ObservedObject var settings: SettingsStore
     var body: some View {
-        Row(tr("Polish"), info: tr("When on, punctuation and paragraph breaks are added, and filler words and spoken repetitions are removed. Nothing is shortened, rewritten or translated; if the model strays from what was said, the original transcript is kept. You can also edit the text in the current field by voice (for example “change Wednesday to Thursday” or “clear everything”); the field's text is read only when what you said is taken as an edit command.\nWhen off, the recognized text is entered as is. Translate and Rewrite are not affected by this setting.")) {
-            GlassSegments(label: tr("Polish"), selection: $settings.preferences.polish,
-                          options: [(false, tr("Off")), (true, tr("On"))], compact: true)
+        let customs = settings.preferences.customStyles.filter(\.usable)
+        let options: [(value: String, title: String)] =
+            [("raw", tr("Raw")), ("polish", tr("Polish")), ("structured", tr("Structured")), ("formal", tr("Formal"))]
+            + customs.map { (value: $0.id.uuidString, title: $0.name.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        Row(tr("Style"), info: tr("Raw enters the recognized text as is.\nPolish adds punctuation and paragraph breaks and removes filler words and spoken repetitions. Nothing is shortened, rewritten or translated; if the model strays from what was said, the original transcript is kept. With Polish you can also edit the text in the current field by voice (for example “change Wednesday to Thursday” or “clear everything”); the field's text is read only when what you said is taken as an edit command.\nStructured turns what you said into a clear prompt for an AI assistant: what you want first, then the details as numbered points.\nFormal rewrites it as formal written prose.\nA custom style follows the instructions written for it in Settings.\nStructured, Formal and custom styles change the wording, so their result is not compared with what was said, and editing by voice is not available with them.")) {
+            GlassMenu(label: tr("Style"),
+                      selection: Binding(
+                        // An id that is not offered — a deleted or unfinished custom style — shows Polish.
+                        get: { options.contains { $0.value == settings.preferences.style } ? settings.preferences.style : "polish" },
+                        set: { settings.preferences.style = $0 }),
+                      options: options)
         }
     }
 }

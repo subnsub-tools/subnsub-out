@@ -98,7 +98,7 @@ final class DictationController: ObservableObject {
     private var boundWasPresent: Bool?
     /// What the status capsule names while processing, and once done. Each is set together with
     /// `message`, so the capsule never has to read the message's words.
-    enum CapsuleStep { case recognizing, polishing, editing, sending, typing }
+    enum CapsuleStep { case recognizing, polishing, writing, editing, sending, typing }
     /// `notWritten`: the text did not go into a text field on the Mac it was meant for; a title naming
     /// that Mac and a line saying why and where the text is.
     enum CapsuleResult { case inserted, onClipboard, savedToHistory, typed, notWritten(String, String) }
@@ -162,6 +162,7 @@ final class DictationController: ObservableObject {
             switch capsuleStep {
             case .recognizing: return tr("Recognizing")
             case .polishing: return tr("Polishing")
+            case .writing: return tr("Writing")
             case .editing: return tr("Editing")
             case .sending: return tr("Sending")
             case .typing: return tr("Typing %ld / %ld", typedCount, typingTotal)
@@ -729,10 +730,11 @@ final class DictationController: ObservableObject {
         entry = nil; audioFile = nil; connectionError = nil
         let selection = prefs.mode == .rewrite && settings.accessibilityAllowed ? (try? TextTarget.capture().selectedText) ?? "" : ""
         let mode: WritingMode = prefs.mode == .rewrite && (selection.isEmpty || selection.count > 30000) ? .dictate : prefs.mode
-        let request = SavedDictation(mode: mode, polish: prefs.polish, targetLanguage: prefs.targetLanguage,
+        let style = prefs.dictationStyle
+        let request = SavedDictation(mode: mode, polish: style != .raw, targetLanguage: prefs.targetLanguage,
             speechModel: prefs.speechModel, textModel: prefs.textModel, dictionary: prefs.dictionary,
             selection: mode == .rewrite ? selection : "",
-            speechPlatform: prefs.speechPlatform, textPlatform: prefs.textPlatform)
+            speechPlatform: prefs.speechPlatform, textPlatform: prefs.textPlatform, style: style)
         do {
             result = ""; partial = ""; meter.reset(); latency = nil; connected = false; hadSignal = false; stopTime = nil
             let (record, savedAudio) = try settings.beginHistory(request)
@@ -789,10 +791,12 @@ final class DictationController: ObservableObject {
                     self.result = transcript
                     self.entry?.text = transcript; self.entry?.transcript = transcript
                     try self.saveActive()
-                    self.capsuleStep = .polishing
-                    self.message = tr("Polishing the text…")
+                    // Only Polish tidies; the other styles rewrite, and Raw is over at once.
+                    let polishing = request.mode == .dictate && request.writing == .polish
+                    self.capsuleStep = polishing ? .polishing : .writing
+                    self.message = polishing ? tr("Polishing the text…") : tr("Writing the text…")
                     let screened = try await self.edit(transcript, request: request,
-                                                       screening: request.mode == .dictate && request.polish)
+                                                       screening: request.mode == .dictate && request.writing == .polish)
                     try Task.checkCancellation()
                     guard self.sessionID == id else { return }
                     var final = screened.text
@@ -894,12 +898,15 @@ final class DictationController: ObservableObject {
 
     private func edit(_ transcript: String, request: SavedDictation,
                       screening: Bool = false) async throws -> (text: String, maybe: Bool, asSaid: Bool) {
-        if !request.polish && request.mode == .dictate { return (transcript, false, false) }
+        if request.mode == .dictate && request.writing == .raw { return (transcript, false, false) }
         let service = try await settings.serviceAsync(request.textPlatform)
         guard !request.textModel.isEmpty else { throw VoiceError(tr("The text polishing model name is empty. Enter it in Settings.")) }
         let output = try await TextClient(service: service).edit(transcript: transcript, mode: request.mode,
-            targetLanguage: request.targetLanguage, selection: request.selection, model: request.textModel, screening: screening)
+            targetLanguage: request.targetLanguage, selection: request.selection, model: request.textModel,
+            style: request.writing, screening: screening)
         guard request.mode == .dictate else { return (output, false, false) }
+        // The rewriting styles are used as returned; only Polish is held to the words that were said.
+        guard request.writing == .polish else { return (output, false, false) }
         let answer = screening ? OpenAIWire.splitMarker(output) : (marker: nil, text: output)
         guard !answer.text.isEmpty else { throw VoiceError(tr("The model returned no usable text. The original transcript was kept.")) }
         let text = answer.text
@@ -1089,6 +1096,8 @@ final class DictationController: ObservableObject {
         record.request?.textModel = settings.preferences.textModel
         record.request?.speechPlatform = settings.preferences.speechPlatform
         record.request?.textPlatform = settings.preferences.textPlatform
+        record.request?.style = settings.preferences.dictationStyle
+        record.request?.polish = settings.preferences.dictationStyle != .raw
         record.status = .pending; record.failures = nil
         do { try settings.updateHistory(record) }
         catch { settings.historyMessage = tr("Could not update the retry status. Check the disk space on this Mac."); return }

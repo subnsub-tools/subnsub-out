@@ -17,6 +17,7 @@ struct SettingsPage: View {
                 PolishChoice(settings: settings)
                 ModelRows(settings: settings, speech: false)
             }
+            CustomStylesGroup(settings: settings)
             ForEach(Platform.all.filter { $0 == speech || $0 == text }) { platform in
                 KeyGroup(settings: settings, platform: platform)
             }
@@ -53,6 +54,44 @@ private struct SettingsGroup<Content: View>: View {
 
 private func hint(_ text: String, warning: Bool = false) -> some View {
     CopyableText(text, font: .system(size: 11), color: warning ? Color.orange : Palette.muted)
+}
+
+/// Styles the user writes themselves: a name for the Style menu and the instructions sent with
+/// each dictation that is written in it.
+private struct CustomStylesGroup: View {
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        SettingsGroup(tr("Custom styles")) {
+            ForEach($settings.preferences.customStyles) { $style in
+                VStack(alignment: .leading, spacing: 7) {
+                    TextField(tr("Style name"), text: Binding(
+                        get: { $style.wrappedValue.name },
+                        set: { $style.wrappedValue.name = String($0.prefix(CustomStyle.maxName)) }))
+                        .glassField()
+                    TextField(tr("Instructions, such as “Write it as a short, friendly chat message.”"), text: Binding(
+                        get: { $style.wrappedValue.prompt },
+                        set: { $style.wrappedValue.prompt = String($0.prefix(CustomStyle.maxPrompt)) }), axis: .vertical)
+                        .lineLimit(3...8)
+                        .glassField()
+                    HStack {
+                        Spacer()
+                        Button(tr("Remove")) { remove($style.wrappedValue.id) }.buttonStyle(QuietButton())
+                    }
+                }
+            }
+            hint(tr("A custom style rewrites each dictation by the instructions written here, and can be chosen under Style once it has a name and instructions. At most 12 styles."))
+            Button(tr("Add a style")) { settings.preferences.customStyles.append(CustomStyle()) }
+                .buttonStyle(SolidButton())
+                .disabled(settings.preferences.customStyles.count >= CustomStyle.maxCount)
+        }
+    }
+
+    /// Removing the style that is chosen puts the choice back to Polish.
+    private func remove(_ id: UUID) {
+        settings.preferences.customStyles.removeAll { $0.id == id }
+        if settings.preferences.style == id.uuidString { settings.preferences.style = "polish" }
+    }
 }
 
 /// The platform and the model for one of the two jobs.

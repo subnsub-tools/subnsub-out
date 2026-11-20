@@ -2,7 +2,10 @@ import Foundation
 
 public struct SavedDictation: Codable {
     public var mode: WritingMode
+    /// The on/off from before styles; `style` is the real choice, this is kept for old recordings.
     public var polish: Bool
+    /// The style chosen when the recording was made. Absent in recordings saved before styles.
+    public var style: DictationStyle?
     public var targetLanguage: String
     public var speechModel: String
     public var textModel: String
@@ -12,10 +15,14 @@ public struct SavedDictation: Codable {
     public var speechPlatform: String?
     public var textPlatform: String?
 
+    /// The style this recording is written in: its own, or what its old on/off meant.
+    public var writing: DictationStyle { style ?? (polish ? .polish : .raw) }
+
     public init(mode: WritingMode, polish: Bool, targetLanguage: String, speechModel: String,
                 textModel: String, dictionary: [String], selection: String,
-                speechPlatform: String? = nil, textPlatform: String? = nil) {
-        self.mode = mode; self.polish = polish; self.targetLanguage = targetLanguage
+                speechPlatform: String? = nil, textPlatform: String? = nil,
+                style: DictationStyle? = nil) {
+        self.mode = mode; self.polish = polish; self.style = style; self.targetLanguage = targetLanguage
         self.speechModel = speechModel; self.textModel = textModel
         self.dictionary = dictionary; self.selection = selection
         self.speechPlatform = speechPlatform; self.textPlatform = textPlatform

@@ -98,6 +98,7 @@ struct Checks {
             ("Spoken editing: two-step requests, field text as data, markers, smallest changed span", revision),
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
             ("Model Studio: address forms, realtime session shape, transcript joining, resampling, thinking off", alibaba),
+            ("Output styles: the old switch reads as its style, ids resolve, each style's instructions reach the request, only Polish screens", styles),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
@@ -1462,6 +1463,54 @@ struct Checks {
         for _ in 0..<4800 { maxed.append(contentsOf: [0xFF, 0x7F]); floored.append(contentsOf: [0x00, 0x80]) }
         try check(samples(fullUp.process(maxed)).dropFirst(200).allSatisfy { $0 > 30000 }, "full-scale up saturates, never wraps to negative")
         try check(samples(fullDown.process(floored)).dropFirst(200).allSatisfy { $0 < -30000 }, "full-scale down saturates, never wraps to positive")
+    }
+
+    static func styles() throws {
+        try check(StyleChoice.legacyID(polish: true) == "polish" && StyleChoice.legacyID(polish: false) == "raw",
+                  "the old switch reads as its style")
+        try check(StyleChoice.resolve("raw", customs: []) == .raw && StyleChoice.resolve("polish", customs: []) == .polish
+                  && StyleChoice.resolve("structured", customs: []) == .structured && StyleChoice.resolve("formal", customs: []) == .formal,
+                  "the built-in ids name their styles")
+        var custom = CustomStyle(name: "  Chat  ", prompt: "  Write it as a short chat message.  ")
+        try check(StyleChoice.resolve(custom.id.uuidString, customs: [custom]) == .custom(name: "Chat", prompt: "Write it as a short chat message."),
+                  "a usable custom style resolves, trimmed")
+        custom.prompt = "   "
+        try check(StyleChoice.resolve(custom.id.uuidString, customs: [custom]) == .polish
+                  && StyleChoice.resolve(UUID().uuidString, customs: [custom]) == .polish
+                  && StyleChoice.resolve("anything-else", customs: []) == .polish,
+                  "an unfinished, deleted or unknown id falls back to Polish")
+        try check(!CustomStyle().usable && !CustomStyle(name: "n").usable && CustomStyle(name: "n", prompt: "p").usable
+                  && CustomStyle.maxCount == 12 && CustomStyle.maxName == 40 && CustomStyle.maxPrompt == 4000,
+                  "a custom style is offered only with a name and instructions")
+
+        // Recordings from before styles keep their on/off; a custom style round-trips inside one.
+        let decoder = JSONDecoder()
+        let legacy = """
+        {"mode":"dictate","polish":%@,"targetLanguage":"English","speechModel":"m","textModel":"m","dictionary":[],"selection":""}
+        """
+        let polished = try decoder.decode(SavedDictation.self, from: Data(legacy.replacingOccurrences(of: "%@", with: "true").utf8))
+        let raw = try decoder.decode(SavedDictation.self, from: Data(legacy.replacingOccurrences(of: "%@", with: "false").utf8))
+        try check(polished.writing == .polish && raw.writing == .raw, "recordings from before styles keep their polish setting")
+        let stored = SavedDictation(mode: .dictate, polish: false, targetLanguage: "", speechModel: "m", textModel: "m",
+                                    dictionary: [], selection: "", style: .custom(name: "Chat", prompt: "p"))
+        let again = try decoder.decode(SavedDictation.self, from: try JSONEncoder().encode(stored))
+        try check(again.writing == .custom(name: "Chat", prompt: "p") && !again.polish, "a custom style round-trips in a recording")
+
+        func body(_ style: DictationStyle, screening: Bool = false) throws -> [String: Any] {
+            try OpenAIWire.responseBody(transcript: "t", mode: .dictate, targetLanguage: "English",
+                                      selection: "", model: "m", style: style, screening: screening)
+        }
+        let structured = try body(.structured, screening: true), formal = try body(.formal)
+        let customBody = try body(.custom(name: "n", prompt: "as a haiku"), screening: true), screened = try body(.polish, screening: true)
+        try check((structured["instructions"] as? String ?? "").contains("Rewrite it as a clear, well-organized prompt")
+                  && (formal["instructions"] as? String ?? "").contains("formal written prose")
+                  && (customBody["instructions"] as? String ?? "").contains("<instructions>\nas a haiku\n</instructions>"),
+                  "each rewriting style sends its own instructions")
+        try check((screened["instructions"] as? String ?? "").contains("@@MAYBE")
+                  && ![structured, formal, customBody].contains { ($0["instructions"] as? String ?? "").contains("@@MAYBE") },
+                  "only Polish screens for an editing command")
+        try check([structured, formal, customBody].allSatisfy { $0["input"] as? String == #"{"transcript":"t"}"# },
+                  "the input is the transcript for every style")
     }
 
     static func keystrokes() throws {
