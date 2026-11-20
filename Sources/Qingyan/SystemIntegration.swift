@@ -504,6 +504,7 @@ struct TextTarget {
         }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         guard let raw = attribute(appElement, kAXFocusedUIElementAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else {
+            revealFields(appElement)
             return TextTarget(app: app, selectedText: "")
         }
         let element = unsafeBitCast(raw, to: AXUIElement.self)
@@ -516,6 +517,23 @@ struct TextTarget {
         }
         return TextTarget(app: app, selectedText: attribute(element, kAXSelectedTextAttribute) as? String ?? "",
                           editable: writable(element, in: app))
+    }
+
+    /// Text may soon be written in front: a recording starts here, or another Mac knocked here.
+    static func prepareFront() {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        if attribute(appElement, kAXFocusedUIElementAttribute) == nil { revealFields(appElement) }
+    }
+
+    /// Electron apps (Visual Studio Code, Cursor, Slack…) show no focused element, text fields
+    /// included, until AXManualAccessibility is set on them, and then take about two seconds to
+    /// (VS Code, 2026-11-21). Text pasted into one was reported as not in a text field. Other apps
+    /// ignore the attribute.
+    private static func revealFields(_ appElement: AXUIElement) {
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
     }
 
     private static func writable(_ element: AXUIElement, in app: NSRunningApplication) -> Bool {

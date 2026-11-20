@@ -1738,12 +1738,12 @@ struct VoiceBar: View {
                 }
             }
         } else if controller.phase == .done, case let .notWritten(title, detail) = controller.capsuleResult {
-            // Which Mac, and why the text is not there: two short lines, the second may wrap once.
+            // Which Mac, and why the text is not there: two short lines, each cut short to stay inside
+            // the capsule's window (the tooltip and the panel have the whole of it).
             Button(action: copyFromCapsule) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                    Text(detail).font(.system(size: 10.5)).foregroundStyle(Palette.muted)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    Text(detail).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
                 }
                 .foregroundStyle(Palette.ink)
                 .frame(maxWidth: 210, alignment: .leading)

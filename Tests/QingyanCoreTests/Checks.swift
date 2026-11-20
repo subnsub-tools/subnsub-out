@@ -1779,7 +1779,8 @@ struct Checks {
     static func overlayPlacement() throws {
         let pill = OverlayPlacement.defaultSize
         try check(pill.width * pill.height <= OverlayPlacement.maxAllowedArea, "default capsule stays well below one quarter of the legacy bar")
-        try check(248 * 58 <= OverlayPlacement.maxAllowedArea, "even the widest error capsule stays below one quarter of the legacy bar")
+        let widest = OverlayPlacement.maxSize
+        try check(widest.width * widest.height <= OverlayPlacement.maxAllowedArea, "even the widest capsule window stays below one quarter of the legacy bar")
 
         let flipped = OverlayPlacement.quartzToAppKit(CGRect(x: 100, y: 50, width: 300, height: 40), primaryHeight: 900)
         try check(flipped == CGRect(x: 100, y: 810, width: 300, height: 40), "Quartz top-left coordinates flip cleanly to AppKit bottom-left")

@@ -214,14 +214,18 @@ final class DictationController: ObservableObject {
         // helper knows them: they go before anything dials them.
         if !settings.preview { settings.preferences.devices.removeAll { HelperLink.agent(of: $0.host) == nil } }
         receiver.shelf = shelf.sync
-        updater.isBusy = { [weak self] in self.map { $0.busy || $0.retryingID != nil } ?? false }
+        updater.isBusy = { [weak self] in self.map { $0.busy || $0.starting || $0.retryingID != nil } ?? false }
         shortcut.onToggle = { [weak self] in Task { @MainActor in self?.toggle() } }
         shortcut.onCancel = { [weak self] in
-            guard let self, self.busy else { return false }
+            guard let self, self.busy || self.starting else { return false }
             Task { @MainActor in self.cancel() }
             return true
         }
-        shortcut.onKnock = { [weak self] nonce in self?.receiver.knocked(nonce) }
+        shortcut.onKnock = { [weak self] nonce in
+            self?.receiver.knocked(nonce)
+            // The text is coming to the app in front here.
+            Task { @MainActor in TextTarget.prepareFront() }
+        }
         shortcut.onTypeClipboard = { [weak self] in Task { @MainActor in self?.typeClipboard(from: .shortcut) } }
         // Where the panel's Type the Clipboard types into: the last app in front other than this one.
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() { lastOtherApp = front }
@@ -829,8 +833,20 @@ final class DictationController: ObservableObject {
     func toggle() {
         if phase == .recording { finish(); return }
         guard phase != .processing else { return }
-        begin()
+        // A press while the microphone is starting stops the recording once it has started.
+        if starting { stopWhenStarted.toggle(); return }
+        starting = true
+        stopWhenStarted = false
+        Task {
+            await begin()
+            starting = false
+            if stopWhenStarted, phase == .recording { finish() }
+        }
     }
+
+    /// The microphone is starting; nothing else that records, retries or types begins meanwhile.
+    private var starting = false
+    private var stopWhenStarted = false
 
     /// Says why there is no input — the bound microphone is away, or there is none at all — on the
     /// status capsule for a few seconds and on the panel until the next dictation. Nothing records.
@@ -848,7 +864,7 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func begin() {
+    private func begin() async {
         checkCorrection()
         endShortcutRecording()
         settings.refreshPermissions()
@@ -858,21 +874,18 @@ final class DictationController: ObservableObject {
             openSettings?()
             return
         }
+        // The text is written in front once it is ready; some apps need a moment to show their fields.
+        TextTarget.prepareFront()
         let prefs = settings.preferences
-        let liveAvailable = Microphone.available()
-        let liveDefault = Microphone.systemDefault()
-        let micCheck = MicrophoneBinding.resolve(
-            boundUID: prefs.microphone,
-            boundName: prefs.microphoneName,
-            available: liveAvailable.map { .init(uid: $0.uid, name: $0.name) },
-            systemDefault: liveDefault.map { .init(uid: $0.uid, name: $0.name) }
-        )
+        // The device list kept off the main thread: reading the audio system here could hang the
+        // app. The recorder checks the devices again as it opens the microphone.
+        let micCheck = microphoneResolution
         if let problem = micCheck.missingMessage {
             microphones.refresh()
             warnMicrophone(problem)
             return
         }
-        if case .boundAvailable(let matched) = micCheck, settings.preferences.microphoneName != matched.name {
+        if microphones.loaded, case .boundAvailable(let matched) = micCheck, settings.preferences.microphoneName != matched.name {
             settings.preferences.microphoneName = matched.name
         }
         stopRetry()
@@ -889,13 +902,17 @@ final class DictationController: ObservableObject {
             speechPlatform: prefs.speechPlatform, textPlatform: prefs.textPlatform, style: style)
         do {
             result = ""; partial = ""; meter.reset(); latency = nil; connected = false; hadSignal = false; stopTime = nil
-            let (record, savedAudio) = try settings.beginHistory(request)
-            entry = record; audioFile = savedAudio
-            let audio = try recorder.start(microphone: prefs.microphone, microphoneName: prefs.microphoneName) { [weak self] value in
+            // The microphone opens off the main thread, so an audio system that stops answering ends in
+            // an error instead of a frozen out. History gets the recording only once it has started.
+            let audio = try await recorder.start(microphone: prefs.microphone, microphoneName: prefs.microphoneName) { [weak self] value in
                 guard let self, self.sessionID == id, self.phase == .recording else { return }
                 self.meter.setLevel(min(1, value * 12))
                 if value > 0.002 { self.hadSignal = true }
             }
+            // Cancelled or replaced while starting: the stream is this start's, so stopping it is safe.
+            guard sessionID == id else { recorder.stop(); return }
+            let (record, savedAudio) = try settings.beginHistory(request)
+            entry = record; audioFile = savedAudio
             phase = .recording
             message = mode != prefs.mode ? tr("No text selected · Handled as dictation") : tr("Recording · Tap again to stop")
             presentOverlay?()
@@ -1038,6 +1055,9 @@ final class DictationController: ObservableObject {
                 }
             }
         } catch {
+            guard sessionID == id else { return }
+            recorder.stop()
+            microphones.refresh()
             try? audioFile?.finish()
             if let entry { settings.removeHistory(id: entry.id) }
             entry = nil; audioFile = nil
@@ -1176,7 +1196,7 @@ final class DictationController: ObservableObject {
     /// user's choice for this action alone: dictation still never does either). Nothing typed is
     /// kept: not in History, not in the result.
     func typeClipboard(from origin: ClipboardTyper.Origin) {
-        guard !busy else { return }
+        guard !busy, !starting else { return }
         settings.refreshPermissions()
         guard settings.accessibilityAllowed else {
             showTypingProblem(tr("Accessibility permission is not granted. Allow out in System Settings.")); return
@@ -1241,6 +1261,8 @@ final class DictationController: ObservableObject {
         if typingJob != nil { stopTyping() }
         stopRetry()
         endRemote()
+        // A recording still starting is dropped; nothing has reached History yet.
+        if starting { sessionID = UUID(); recorder.stop() }
         if busy {
             sessionID = UUID()
             recorder.stop(); captureJob?.cancel(); job?.cancel(); client?.cancel(); clock?.cancel()
@@ -1284,7 +1306,7 @@ final class DictationController: ObservableObject {
     }
 
     func retry(_ id: UUID) {
-        guard !busy, retryingID == nil,
+        guard !busy, !starting, retryingID == nil,
               var record = settings.history.first(where: { $0.id == id }), record.canRetry else { return }
         record.request = retryRequest(record)
         record.status = .pending; record.failures = nil
@@ -1295,7 +1317,7 @@ final class DictationController: ObservableObject {
     }
 
     private func retryQueued(preferred: UUID? = nil) {
-        guard !settings.preview, !busy, retryingID == nil,
+        guard !settings.preview, !busy, !starting, retryingID == nil,
               var record = settings.history.reversed().first(where: {
                   $0.state == .pending && (preferred == nil || preferred == $0.id) &&
                   (retryAfter[$0.id] ?? .distantPast) <= Date() &&

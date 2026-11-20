@@ -25,7 +25,7 @@ struct AudioRecorderChecks {
             for selected in microphones {
                 var levels = 0
                 var invalidLevel = false
-                let stream = try recorder.start(microphone: selected == "default" ? "" : selected) { level in
+                let stream = try await recorder.start(microphone: selected == "default" ? "" : selected) { level in
                     levels += 1
                     if !level.isFinite || level < 0 { invalidLevel = true }
                 }

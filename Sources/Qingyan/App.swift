@@ -534,8 +534,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let probe = NSHostingView(rootView: host.rootView)
         probe.sizingOptions = .intrinsicContentSize
         let fitting = probe.fittingSize
-        let width = min(max(ceil(fitting.width), 96), 248)
-        let height = min(max(ceil(fitting.height), 38), 58)
+        let width = min(max(ceil(fitting.width), 96), OverlayPlacement.maxSize.width)
+        let height = min(max(ceil(fitting.height), 38), OverlayPlacement.maxSize.height)
         return CGSize(width: width, height: height)
     }
 
@@ -626,8 +626,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         overlayReportedSize = rawSize
         guard let overlay, overlay.isVisible, !overlayLeaving else { return }
         let size = CGSize(
-            width: min(max(ceil(rawSize.width), 96), 248),
-            height: min(max(ceil(rawSize.height), 38), 58)
+            width: min(max(ceil(rawSize.width), 96), OverlayPlacement.maxSize.width),
+            height: min(max(ceil(rawSize.height), 38), OverlayPlacement.maxSize.height)
         )
         let visible = overlayScreenFrame ?? (overlay.screen ?? NSScreen.main)?.visibleFrame ?? overlay.frame
         let next = OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: overlayCorner, in: visible)
@@ -711,8 +711,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             host.layoutSubtreeIfNeeded()
             let fit = host.fittingSize
             let size = NSSize(width: ceil(max(88, fit.width)), height: ceil(max(32, fit.height)))
-            guard size.width * size.height <= OverlayPlacement.maxAllowedArea else {
-                throw VoiceError("The status capsule is larger than its limit, a quarter of the earlier capsule: \(Int(size.width))×\(Int(size.height))")
+            // The window never grows past maxSize; content larger than that is cut off on screen.
+            guard size.width <= OverlayPlacement.maxSize.width, size.height <= OverlayPlacement.maxSize.height else {
+                throw VoiceError("The status capsule is larger than its window: \(Int(size.width))×\(Int(size.height))")
             }
             // Glass like the panel, so light and dark both (the dark one is <name>-dark.png).
             for dark in [false, true] {
@@ -829,6 +830,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await bar("bar-not-typed")
         controller.capsuleResult = .notWritten(DictationController.missTitle(.unreachable, peer: "Office"), DictationController.missLine(.unreachable, clipboard: .thisMac))
         try await bar("bar-not-reached")
+        controller.capsuleResult = .notWritten(DictationController.missTitle(.notAllowed, peer: "Kitchen Mac mini 2023"), DictationController.missLine(.notAllowed, clipboard: .thisMac))
+        try await bar("bar-not-typed-long")
         controller.capsuleResult = .inserted
         controller.phase = .recording; controller.connected = false; controller.partial = ""
         try await bar("bar-offline")

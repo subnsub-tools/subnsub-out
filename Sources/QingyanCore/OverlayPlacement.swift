@@ -59,6 +59,9 @@ public enum OverlayPlacement {
     public static let legacyArea: CGFloat = 444 * 162
     public static let maxAllowedArea: CGFloat = legacyArea / 4
     public static let defaultSize = CGSize(width: 156, height: 46)
+    /// The largest window the capsule gets, within that budget. Its widest content, the two lines
+    /// naming another Mac that did not type the text, has to fit, or both rounded ends are cut off.
+    public static let maxSize = CGSize(width: 284, height: 58)
 
     /// Converts a rectangle from Quartz global coordinates (top-left of primary screen) into
     /// AppKit screen coordinates (bottom-left of primary screen).
