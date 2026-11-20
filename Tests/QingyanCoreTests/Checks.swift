@@ -1708,12 +1708,12 @@ struct Checks {
         let found = UpdateFeed.build(in: manifest(sha256: sha.uppercased()), from: .site)
         try check(found?.number == 12 && found?.version == "0.1.12" && found?.size == 1_209_759 && found?.digest == sha, "the announced build, its checksum in lower case")
         try check(found?.asset.absoluteString == "https://dashboard.subnsub.com/api/input/put-0.1.12.zip" && found?.source == .site
-                  && UpdateFeed.Source.site.manifest.absoluteString == "https://dashboard.subnsub.com/api/input/put.json", "the zip lies beside the manifest, under the name its version gives it")
+                  && UpdateFeed.Source.site.manifest.absoluteString == "https://dashboard.subnsub.com/api/input/put.json", "on the site the zip lies beside the manifest, under the name its version gives it")
         let fromGitHub = UpdateFeed.build(in: manifest(), from: .github)
-        try check(fromGitHub?.asset.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/download/builds/put-0.1.12.zip"
+        try check(fromGitHub?.asset.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/download/v0.1.12/put-0.1.12.zip"
                   && fromGitHub?.source == .github
-                  && UpdateFeed.Source.github.manifest.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/download/builds/put.json",
-                  "a manifest from GitHub names a zip on GitHub")
+                  && UpdateFeed.Source.github.manifest.absoluteString == "https://github.com/subnsub-tools/subnsub-put/releases/latest/download/put.json",
+                  "on GitHub the manifest is the newest release's, and the zip comes from the release of the version it names")
         try check(UpdateFeed.Source.allCases.first == .github, "GitHub is asked first")
         // Where the app lives: a copy at the name from before the rename moves, once, when it can.
         try check(AppLocation.step(running: "/Applications/input.app", currentTaken: false) == .move, "input.app moves to put.app")

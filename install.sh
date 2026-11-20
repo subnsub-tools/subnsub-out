@@ -3,8 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/subnsub-tools/subnsub-put/main/install.sh | sh
 #
-# It reads put.json (the newest build) from this repository's release "builds", or from our site
-# when GitHub cannot be reached, downloads the zip it names, checks the zip's size and SHA-256
+# It reads put.json (the newest build) from this repository's newest release, or from our site
+# when GitHub cannot be reached, downloads the zip it names (from that version's own release, or
+# from the site), checks the zip's size and SHA-256
 # against put.json and the app's bundle ID, version and code signature (it must be signed with the
 # "input signing (SUB&SUB)" certificate, as every build is), and only then puts it in
 # /Applications/put.app and opens it. What curl downloads carries no quarantine mark, so macOS does
@@ -13,15 +14,23 @@
 # app has to own its bundle to update itself later.
 #
 # For testing only: PUT_INSTALL_DIR installs elsewhere (a copy outside /Applications does not
-# update itself), PUT_FEED_BASE reads put.json and the zip from other places, PUT_NO_OPEN=1 does
-# not open the app.
+# update itself), PUT_FEED_BASE reads put.json and the zip from other places (folders or addresses
+# holding both, separated by spaces), PUT_NO_OPEN=1 does not open the app.
 set -eu
 
 # All of it is one function, called on the last line: a script cut off in transit runs nothing.
 main() {
   BUNDLE_ID="local.hopo.qingyan"
   REQUIREMENT='identifier "local.hopo.qingyan" and certificate root = H"5f3964801c4df9f728472f64717dbc410f4e00d8"'
-  FEEDS="${PUT_FEED_BASE:-https://github.com/subnsub-tools/subnsub-put/releases/download/builds https://dashboard.subnsub.com/api/input}"
+  RELEASES="https://github.com/subnsub-tools/subnsub-put/releases"
+  SITE="https://dashboard.subnsub.com/api/input"
+  # The old feed release "builds" (up to 0.1.48) is asked after the newest release, while it is
+  # there: until a release holds a put.json, GitHub still has the build there.
+  FEEDS="${PUT_FEED_BASE:-github builds site}"
+  # Where a feed keeps the manifest, and a version's zip: on GitHub, the newest release's put.json
+  # and the zip in that version's own release; elsewhere, side by side.
+  manifest_at() { case "$1" in github) echo "$RELEASES/latest/download/put.json" ;; builds) echo "$RELEASES/download/builds/put.json" ;; site) echo "$SITE/put.json" ;; *) echo "$1/put.json" ;; esac; }
+  zip_at() { case "$1" in github) echo "$RELEASES/download/v$2/$3" ;; builds) echo "$RELEASES/download/builds/$3" ;; site) echo "$SITE/$3" ;; *) echo "$1/$3" ;; esac; }
   DIR="${PUT_INSTALL_DIR:-/Applications}"
   APP="$DIR/put.app"
 
@@ -57,7 +66,7 @@ main() {
   # The manifest: the first place that answers.
   base=""
   for feed in $FEEDS; do
-    if curl -fsSL --proto '=https,file' --max-time 30 --retry 2 -o "$work/put.json" "$feed/put.json" 2>/dev/null; then
+    if curl -fsSL --proto '=https,file' --max-time 30 --retry 2 -o "$work/put.json" "$(manifest_at "$feed")" 2>/dev/null; then
       base="$feed"; break
     fi
   done
@@ -82,7 +91,7 @@ main() {
   for feed in $FEEDS; do [ "$feed" = "$base" ] || order="$order $feed"; done
   got=""
   for feed in $order; do
-    if curl -fsSL --proto '=https,file' --max-time 300 --retry 2 -o "$work/$file" "$feed/$file" 2>/dev/null; then
+    if curl -fsSL --proto '=https,file' --max-time 300 --retry 2 -o "$work/$file" "$(zip_at "$feed" "$version" "$file")" 2>/dev/null; then
       got="$feed"; break
     fi
   done

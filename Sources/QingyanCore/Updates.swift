@@ -1,12 +1,14 @@
 import Foundation
 
-/// Where new builds of the app come from. Each place holds every signed build as
-/// `put-<version>.zip` and a `put.json` naming the newest. (Its `latest.json` names the one build
-/// that copies from before the rename, which read only that, take: see `AppLocation`.)
+/// Where new builds of the app come from. Each place has a `put.json` naming the newest build and
+/// that build as `put-<version>.zip`.
 ///
-/// - first the public repository's standing release `builds`, where its workflow publishes them:
-///   what anybody can check against the source and the build's attestation, so a build changed on
-///   our site alone is not installed by a Mac that can reach GitHub;
+/// - first the public repository's releases, where its workflow publishes them, one release for
+///   each version (`v<version>`, holding that version's zip and a `put.json` naming it): the
+///   manifest is the newest release's, and the zip comes from the release of the version it
+///   names. What anybody can check against the source and the build's attestation, so a build
+///   changed on our site alone is not installed by a Mac that can reach GitHub. (Until 0.1.48 the
+///   app read the standing release `builds` instead, which goes once every Mac reads this.)
 /// - then our own site, which serves the same builds, for a Mac that cannot: asked at once when
 ///   somebody checks by hand, and by the automatic check only once GitHub has been out of reach
 ///   for `githubGrace`. A GitHub that answers (with no build, a manifest that cannot be read, or a
@@ -19,13 +21,23 @@ public enum UpdateFeed {
     public enum Source: String, CaseIterable, Sendable {
         case github, site
 
-        public var base: URL {
+        /// The newest build's manifest: on GitHub, the newest release's own.
+        public var manifest: URL {
             switch self {
-            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-put/releases/download/builds/")!
-            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/")!
+            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-put/releases/latest/download/put.json")!
+            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/put.json")!
             }
         }
-        public var manifest: URL { base.appendingPathComponent("put.json") }
+
+        /// A build's zip: on GitHub, in that version's own release (never "the newest", which may
+        /// have moved on since the manifest was read); on the site, beside the manifest.
+        /// `version` is digits and dots (`UpdateFeed.number`).
+        public func asset(version: String) -> URL {
+            switch self {
+            case .github: return URL(string: "https://github.com/subnsub-tools/subnsub-put/releases/download/v\(version)/put-\(version).zip")!
+            case .site: return URL(string: "https://dashboard.subnsub.com/api/input/put-\(version).zip")!
+            }
+        }
     }
 
     /// How long GitHub must have been out of reach before the automatic check asks the site.
@@ -55,8 +67,8 @@ public enum UpdateFeed {
 
     /// The build `put.json` announces:
     /// `{"version": "0.1.57", "file": "put-0.1.57.zip", "size": 1209759, "sha256": "<64 hex digits>"}`.
-    /// Nil when it is not that. The zip is always fetched from beside the manifest, under the one
-    /// name its version gives it: the manifest says which build, never where from.
+    /// Nil when it is not that. The zip is always fetched from the same place, under the one name
+    /// its version gives it (`Source.asset`): the manifest says which build, never where from.
     public static func build(in manifest: Any, from source: Source) -> Build? {
         guard let object = manifest as? [String: Any], let version = object["version"] as? String,
               let number = number(of: version), object["file"] as? String == "put-\(version).zip",
@@ -64,7 +76,7 @@ public enum UpdateFeed {
               let stated = object["sha256"] as? String else { return nil }
         let digest = stated.lowercased()
         guard digest.count == 64, digest.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
-        return Build(version: version, number: number, asset: source.base.appendingPathComponent("put-\(version).zip"),
+        return Build(version: version, number: number, asset: source.asset(version: version),
                      size: size, digest: digest, source: source)
     }
 
