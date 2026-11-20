@@ -14,6 +14,8 @@ public struct Platform: Equatable, Identifiable, Sendable {
         case generic
         /// The Qwen-ASR-Realtime socket for recognition, `/chat/completions` for text.
         case alibaba
+        /// The system's speech model, on this Mac; it cannot polish text.
+        case onDevice
     }
 
     public let id: String
@@ -28,6 +30,10 @@ public struct Platform: Equatable, Identifiable, Sendable {
     public let wire: Wire
     /// OpenAI itself: recognition streams over the realtime socket, text uses the Responses API.
     public var live: Bool { wire == .openAI }
+    /// Whether this platform can polish text — everything but this Mac's own speech model.
+    public var writes: Bool { wire != .onDevice }
+    /// Whether this platform needs an API key — everything but this Mac and the user's own endpoint.
+    public var needsKey: Bool { wire != .onDevice && self != .custom }
     /// Whether the vocabulary may be sent along with the audio as a `prompt`.
     public let hints: Bool
     /// What a key looks like, or a note in English for a service that may need none.
@@ -47,6 +53,11 @@ public struct Platform: Equatable, Identifiable, Sendable {
         base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         speechModels: ["qwen3-asr-flash-realtime"], textModels: ["qwen3.8-flash", "qwen-plus"],
         wire: .alibaba, hints: true, englishKeyHint: "sk-…")
+    /// The system's own speech model, on this Mac (macOS 26 and later): no key, nothing is sent
+    /// anywhere, and the "model" is the spoken language, one per recording.
+    public static let thisMac = Platform(id: "apple", englishName: "This Mac", base: "",
+        speechModels: ["zh-CN", "zh-TW", "yue-CN", "en-US", "ja-JP", "ko-KR"], textModels: [],
+        wire: .onDevice, hints: true, englishKeyHint: "")
     public static let groq = Platform(id: "groq", englishName: "Groq", base: "https://api.groq.com/openai/v1",
         speechModels: ["whisper-large-v3-turbo", "whisper-large-v3"],
         textModels: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"], wire: .generic, hints: true, englishKeyHint: "gsk_…")
@@ -57,7 +68,21 @@ public struct Platform: Equatable, Identifiable, Sendable {
     public static let custom = Platform(id: "custom", englishName: "Custom", base: "", speechModels: [], textModels: [],
         wire: .generic, hints: true, englishKeyHint: "leave empty if none is needed")
 
-    public static let all = [openAI, alibaba, groq, siliconFlow, custom]
+    public static let all = [openAI, alibaba, thisMac, groq, siliconFlow, custom]
+
+    /// The platforms that can recognize speech: this Mac's own model only when it is offered.
+    public static func speechChoices(onDevice: Bool) -> [Platform] {
+        onDevice ? all : all.filter { $0.wire != .onDevice }
+    }
+
+    /// The platforms that can polish text.
+    public static var textChoices: [Platform] { all.filter(\.writes) }
+
+    /// A locale identifier ("zh-CN") as its display name in the app's language, itself when
+    /// the system has no name for it.
+    public static func languageName(_ id: String, english: Bool) -> String {
+        Locale(identifier: english ? "en" : "zh-Hans").localizedString(forIdentifier: id) ?? id
+    }
 
     /// OpenAI's model for finished recordings. It is sent the whole file rather than a stream:
     /// that is the call OpenAI documents for telling it which languages and words to expect.
@@ -66,7 +91,7 @@ public struct Platform: Equatable, Identifiable, Sendable {
     public func streams(model: String) -> Bool {
         switch wire {
         case .openAI: return model != Platform.fileModel
-        case .alibaba: return true
+        case .alibaba, .onDevice: return true
         case .generic: return false
         }
     }

@@ -104,17 +104,12 @@ public struct QwenTranscript {
         }
     }
 
-    /// Every item seen, latest state, joined the way the pieces were spoken: Chinese pieces
-    /// touch, an English word boundary keeps one space.
+    /// Every item seen, latest state, joined the way the pieces were spoken (see `joinPieces`).
     public var text: String {
         var text = ""
         for id in order {
             guard let piece = final[id] ?? partial[id], !piece.isEmpty else { continue }
-            if let last = text.last, last.isASCII && !last.isWhitespace,
-               let first = piece.first, first.isASCII && (first.isLetter || first.isNumber) {
-                text += " "
-            }
-            text += piece
+            text = OpenAIWire.joinPieces(text, piece)
         }
         return text
     }

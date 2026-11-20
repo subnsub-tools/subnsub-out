@@ -98,6 +98,7 @@ struct Checks {
             ("Spoken editing: two-step requests, field text as data, markers, smallest changed span", revision),
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
             ("Model Studio: address forms, realtime session shape, transcript joining, resampling, thinking off", alibaba),
+            ("This Mac on the device: wire, menus, no key, piece joining, language names", onDevice),
             ("Output styles: the old switch reads as its style, ids resolve, each style's instructions reach the request, only Polish screens", styles),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
@@ -1248,8 +1249,9 @@ struct Checks {
                   && Platform.alibaba.baseURL(custom: "", alibaba: "https://ws.ap-southeast-1.maas.aliyuncs.com/x")?.host == "ws.ap-southeast-1.maas.aliyuncs.com",
                   "the custom platform takes the typed address, Model Studio its own")
         try check(Set(Platform.all.map(\.id)).count == Platform.all.count && Platform.all.filter { $0.wire == .openAI } == [.openAI]
-                  && Platform.all.filter { $0.wire == .alibaba } == [.alibaba] && Platform.all.filter { $0.wire == .generic } == [.groq, .siliconFlow, .custom],
-                  "platform ids are distinct, only OpenAI speaks its own way and only Model Studio Alibaba's")
+                  && Platform.all.filter { $0.wire == .alibaba } == [.alibaba] && Platform.all.filter { $0.wire == .generic } == [.groq, .siliconFlow, .custom]
+                  && Platform.all.filter { $0.wire == .onDevice } == [.thisMac],
+                  "platform ids are distinct, and each speaks in its own way only")
 
         let pcm = Data(repeating: 7, count: 4800)
         let wav = OpenAIWire.wav(pcm: pcm)
@@ -1463,6 +1465,27 @@ struct Checks {
         for _ in 0..<4800 { maxed.append(contentsOf: [0xFF, 0x7F]); floored.append(contentsOf: [0x00, 0x80]) }
         try check(samples(fullUp.process(maxed)).dropFirst(200).allSatisfy { $0 > 30000 }, "full-scale up saturates, never wraps to negative")
         try check(samples(fullDown.process(floored)).dropFirst(200).allSatisfy { $0 < -30000 }, "full-scale down saturates, never wraps to positive")
+    }
+
+    static func onDevice() throws {
+        try check(Platform.thisMac.wire == .onDevice && !Platform.thisMac.writes && !Platform.thisMac.needsKey
+                  && Platform.thisMac.streams(model: "zh-CN"),
+                  "this Mac's model recognizes on the device, polishes nothing and needs no key")
+        try check(Platform.openAI.needsKey && Platform.alibaba.needsKey && Platform.groq.needsKey
+                  && Platform.openAI.writes && Platform.alibaba.writes && Platform.custom.writes && !Platform.custom.needsKey,
+                  "every service needs a key except the user's own endpoint")
+        try check(Platform.speechChoices(onDevice: true) == Platform.all
+                  && Platform.speechChoices(onDevice: false) == Platform.all.filter { $0.wire != .onDevice },
+                  "the speech menu offers this Mac only when the system model is there")
+        try check(Platform.textChoices == Platform.all.filter(\.writes) && !Platform.textChoices.contains(.thisMac),
+                  "the text menu never offers it")
+        try check(OpenAIWire.joinPieces("\u{4F60}\u{597D}", "\u{4E16}\u{754C}") == "\u{4F60}\u{597D}\u{4E16}\u{754C}"
+                  && OpenAIWire.joinPieces("Hello.", "World") == "Hello. World"
+                  && OpenAIWire.joinPieces("OK", "\u{597D}") == "OK\u{597D}"
+                  && OpenAIWire.joinPieces("", "x") == "x" && OpenAIWire.joinPieces("one", "") == "one",
+                  "transcript pieces join in the spoken spacing")
+        try check(Platform.languageName("zh-CN", english: true) != "zh-CN" && Platform.languageName("zh-CN", english: false) != "zh-CN",
+                  "a language id shows its name")
     }
 
     static func styles() throws {

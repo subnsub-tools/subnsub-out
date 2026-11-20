@@ -224,6 +224,17 @@ public enum OpenAIWire {
         return ["model": model, "instructions": instruction, "input": input, "store": false, "max_output_tokens": 12000]
     }
 
+    /// Joins two pieces the way they were spoken: Chinese pieces touch, and an English word
+    /// boundary keeps one space — inserted only when the left piece ends in a non-space ASCII
+    /// character and the right piece begins with an ASCII letter or digit.
+    public static func joinPieces(_ left: String, _ right: String) -> String {
+        if let last = left.last, last.isASCII && !last.isWhitespace,
+           let first = right.first, first.isASCII && (first.isLetter || first.isNumber) {
+            return left + " " + right
+        }
+        return left + right
+    }
+
     /// Splits an answer into its leading marker (@@NEW, @@MAYBE or @@EDIT) and the text after it.
     /// An answer without a marker is all text. The text may be empty: "delete it".
     public static func splitMarker(_ output: String) -> (marker: String?, text: String) {

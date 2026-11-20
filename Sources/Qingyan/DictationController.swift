@@ -772,7 +772,7 @@ final class DictationController: ObservableObject {
                 guard let self else { return }
                 do {
                     try Task.checkCancellation()
-                    guard self.networkAvailable else { throw VoiceError(tr("The network is unavailable"), retryable: true) }
+                    guard self.networkAvailable || Platform.named(request.speechPlatform).wire == .onDevice else { throw VoiceError(tr("The network is unavailable"), retryable: true) }
                     let client = try await self.transcriber(for: request)
                     self.client = client
                     let transcript = try await client.run(audio: savedAudio.stream(), model: request.speechModel, dictionary: request.dictionary,
@@ -887,6 +887,12 @@ final class DictationController: ObservableObject {
     }
 
     private func transcriber(for request: SavedDictation) async throws -> any Transcriber {
+        if Platform.named(request.speechPlatform).wire == .onDevice {
+            guard #available(macOS 26, *) else {
+                throw VoiceError(tr("This Mac cannot recognize this language on the device. Choose another in Settings."))
+            }
+            return OnDeviceTranscriber(locale: request.speechModel)
+        }
         let service = try await settings.serviceAsync(request.speechPlatform)
         guard !request.speechModel.isEmpty else { throw VoiceError(tr("The recognition model name is empty. Enter it in Settings.")) }
         if service.platform.wire == .alibaba {
@@ -1089,15 +1095,39 @@ final class DictationController: ObservableObject {
         dismissOverlay?()
     }
 
+    /// Whether a recorded request needs the network: on-device speech does not,
+    /// and a Raw dictation skips the remote text step entirely.
+    func needsNetwork(_ r: SavedDictation) -> Bool {
+        let textSkipped = r.mode == .dictate && r.writing == .raw
+        return !(Platform.named(r.speechPlatform).wire == .onDevice && textSkipped)
+    }
+
+    /// Whether this recorded request could run right now: each platform usable for
+    /// its step, and the network unless the request needs none.
+    func canRun(_ r: SavedDictation) -> Bool {
+        let textSkipped = r.mode == .dictate && r.writing == .raw
+        return settings.usable(r.speechPlatform ?? Platform.openAI.id)
+            && (textSkipped || settings.usable(r.textPlatform ?? Platform.openAI.id))
+            && (networkAvailable || !needsNetwork(r))
+    }
+
+    /// The request a manual retry of this record would run: its recorded request
+    /// updated to the platforms, models and style chosen now.
+    func retryRequest(_ record: HistoryEntry) -> SavedDictation? {
+        guard var request = record.request else { return nil }
+        request.speechModel = settings.preferences.speechModel
+        request.textModel = settings.preferences.textModel
+        request.speechPlatform = settings.preferences.speechPlatform
+        request.textPlatform = settings.preferences.textPlatform
+        request.style = settings.preferences.dictationStyle
+        request.polish = settings.preferences.dictationStyle != .raw
+        return request
+    }
+
     func retry(_ id: UUID) {
         guard !busy, retryingID == nil,
               var record = settings.history.first(where: { $0.id == id }), record.canRetry else { return }
-        record.request?.speechModel = settings.preferences.speechModel
-        record.request?.textModel = settings.preferences.textModel
-        record.request?.speechPlatform = settings.preferences.speechPlatform
-        record.request?.textPlatform = settings.preferences.textPlatform
-        record.request?.style = settings.preferences.dictationStyle
-        record.request?.polish = settings.preferences.dictationStyle != .raw
+        record.request = retryRequest(record)
         record.status = .pending; record.failures = nil
         do { try settings.updateHistory(record) }
         catch { settings.historyMessage = tr("Could not update the retry status. Check the disk space on this Mac."); return }
@@ -1106,10 +1136,11 @@ final class DictationController: ObservableObject {
     }
 
     private func retryQueued(preferred: UUID? = nil) {
-        guard !settings.preview, !busy, retryingID == nil, networkAvailable, settings.hasKey,
+        guard !settings.preview, !busy, retryingID == nil,
               var record = settings.history.reversed().first(where: {
                   $0.state == .pending && (preferred == nil || preferred == $0.id) &&
-                  (retryAfter[$0.id] ?? .distantPast) <= Date()
+                  (retryAfter[$0.id] ?? .distantPast) <= Date() &&
+                  ($0.request.map { canRun($0) } ?? false)
               }), let request = record.request, let archive = settings.archive else { return }
         let id = record.id
         record.status = .processing; record.problem = nil

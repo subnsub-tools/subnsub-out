@@ -1437,7 +1437,7 @@ struct HistorySection: View {
                     if entry.canRetry {
                         Button(tr("Retry")) { controller.retry(entry.id) }
                             .buttonStyle(QuietButton())
-                            .disabled(controller.busy || controller.retryingID != nil || !settings.hasKey || !controller.networkAvailable)
+                            .disabled(controller.busy || controller.retryingID != nil || !(controller.retryRequest(entry).map { controller.canRun($0) } ?? false))
                     }
                     CopyActionButton(text: entry.text)
                 }
@@ -1468,7 +1468,7 @@ struct HistorySection: View {
                     }
                     if entry.canRetry {
                         Button(tr("Retry")) { controller.retry(entry.id) }.buttonStyle(SolidButton())
-                            .disabled(controller.busy || controller.retryingID != nil || !settings.hasKey || !controller.networkAvailable)
+                            .disabled(controller.busy || controller.retryingID != nil || !(controller.retryRequest(entry).map { controller.canRun($0) } ?? false))
                     }
                     CopyActionButton(text: entry.text)
                     Button(tr("Delete")) { settings.removeHistory(id: entry.id) }.buttonStyle(QuietButton())

@@ -389,13 +389,14 @@ final class SettingsStore: ObservableObject {
         switch platform {
         case Platform.custom.id: return Platform.normalized(base: preferences.customBase) != nil
         case Platform.alibaba.id: return savedKeys.contains(platform) && Platform.alibabaBase(preferences.alibabaHost) != nil
+        case Platform.thisMac.id: return OnDeviceModels.available
         default: return savedKeys.contains(platform)
         }
     }
 
     /// Both platforms in use can be called. Setting it is for previews only.
     var hasKey: Bool {
-        get { usable(preferences.speechPlatform) && usable(preferences.textPlatform) }
+        get { usable(preferences.speechPlatform) && (preferences.dictationStyle == .raw || usable(preferences.textPlatform)) }
         set { savedKeys = newValue ? Set(Platform.all.map(\.id)) : [] }
     }
 

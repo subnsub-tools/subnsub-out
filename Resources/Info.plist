@@ -14,7 +14,8 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>put records only after you press the shortcut, and sends the audio to the recognition service you chose to turn it into text. Recording stops when you press it again or Esc.</string>
+    <key>NSMicrophoneUsageDescription</key><string>put records only after you press the shortcut, and turns the audio into text on this Mac or through the recognition service you chose. Recording stops when you press it again or Esc.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>put recognizes speech on this Mac only when This Mac is chosen for speech recognition.</string>
     <key>NSLocalNetworkUsageDescription</key><string>put passes recognized text between two Macs: you speak on one and it is typed on the other. Used only after you turn on Multiple Macs.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>

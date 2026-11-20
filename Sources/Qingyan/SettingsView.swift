@@ -19,7 +19,11 @@ struct SettingsPage: View {
             }
             CustomStylesGroup(settings: settings)
             ForEach(Platform.all.filter { $0 == speech || $0 == text }) { platform in
-                KeyGroup(settings: settings, platform: platform)
+                if platform.wire == .onDevice {
+                    OnDeviceGroup(model: prefs.speechModel, models: OnDeviceModels.shared)
+                } else {
+                    KeyGroup(settings: settings, platform: platform)
+                }
             }
             InputGroup(settings: settings, controller: controller, microphones: controller.microphones)
             DictionaryGroup(settings: settings)
@@ -94,6 +98,33 @@ private struct CustomStylesGroup: View {
     }
 }
 
+/// The system speech model's state for the chosen language, and its one download.
+private struct OnDeviceGroup: View {
+    let model: String
+    @ObservedObject var models: OnDeviceModels
+
+    var body: some View {
+        SettingsGroup(tr("Speech model on this Mac"), detail: detail) {
+            hint(tr("The model for the chosen language is downloaded from Apple and kept by macOS, which shares it with other apps. Until it is installed, a recording waits for it."))
+            if models.state == .notInstalled || models.state == .failed {
+                Button(tr("Download")) { models.download(model) }.buttonStyle(SolidButton())
+            }
+        }
+        .task(id: model) { await models.refresh(model) }
+    }
+
+    private var detail: String {
+        switch models.state {
+        case .checking: return "…"
+        case .unsupported: return tr("Not available on this Mac")
+        case .notInstalled: return tr("Not installed")
+        case .downloading(let part): return tr("Downloading %ld%%", Int(part * 100))
+        case .installed: return tr("Installed")
+        case .failed: return tr("Download failed")
+        }
+    }
+}
+
 /// The platform and the model for one of the two jobs.
 private struct ModelRows: View {
     @ObservedObject var settings: SettingsStore
@@ -117,25 +148,28 @@ private struct ModelRows: View {
         let platform = Platform.named(speech ? settings.preferences.speechPlatform : settings.preferences.textPlatform)
         let suggestions = speech ? platform.speechModels : platform.textModels
         let fixed = speech && platform.live
+        let onMac = platform.wire == .onDevice
         let listed = suggestions.contains(model.wrappedValue)
         let info: String? = speech
             ? (platform.wire == .openAI ? tr("gpt-live-transcribe shows the words as you speak. gpt-transcribe recognizes the whole recording once it ends, more accurately.")
-               : platform.wire == .alibaba ? tr("qwen3-asr-flash-realtime shows the words as you speak.") : nil)
+               : platform.wire == .alibaba ? tr("qwen3-asr-flash-realtime shows the words as you speak.")
+               : onMac ? tr("Recognized on this Mac by the system's speech model: the audio does not leave this Mac, and the words show as you speak. Each recording is recognized in the one language chosen here.") : nil)
             : nil
+        let modelLabel = speech ? (onMac ? tr("Spoken language") : tr("Recognition model")) : tr("Polishing model")
         Row(speech ? tr("Speech recognition") : tr("Text polishing")) {
             GlassMenu(label: speech ? tr("Speech recognition service") : tr("Text polishing service"),
                       selection: Binding(get: { platform.id }, set: { typing = false; settings.choose($0, speech: speech) }),
-                      options: Platform.all.map { ($0.id, $0.name) })
+                      options: (speech ? Platform.speechChoices(onDevice: OnDeviceModels.available) : Platform.textChoices).map { ($0.id, $0.name) })
         }
         if !suggestions.isEmpty {
-            Row(speech ? tr("Recognition model") : tr("Polishing model"),
-                info: info) {
-                GlassMenu(label: speech ? tr("Recognition model") : tr("Polishing model"),
+            Row(modelLabel, info: info) {
+                GlassMenu(label: modelLabel,
                           selection: Binding(get: { listed && !typing ? model.wrappedValue : Self.other },
                                              set: { value in
                                                  if value == Self.other { typing = true } else { typing = false; model.wrappedValue = value }
                                              }),
-                          options: suggestions.map { ($0, $0) } + (fixed && listed ? [] : [(Self.other, tr("Custom model…"))]))
+                          options: suggestions.map { ($0, onMac ? Platform.languageName($0, english: Localization.current != .simplifiedChinese) : $0) }
+                              + (fixed && listed ? [] : [(Self.other, tr("Custom model…"))]))
             }
         }
         if suggestions.isEmpty || (!fixed && (typing || !listed)) {
