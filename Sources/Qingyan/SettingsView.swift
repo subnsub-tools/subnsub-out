@@ -10,19 +10,24 @@ struct SettingsPage: View {
     var body: some View {
         let prefs = settings.preferences
         let speech = Platform.named(prefs.speechPlatform), text = Platform.named(prefs.textPlatform)
+        // Everything about polishing shows only once Text polishing is turned on (user 2026-11-20).
+        let polishing = prefs.style != StyleChoice.standard
         VStack(alignment: .leading, spacing: 11) {
             SettingsGroup(tr("Recognition and polishing")) {
                 ModelRows(settings: settings, speech: true)
                 Divider()
-                PolishChoice(settings: settings)
-                Row(tr("Text before the cursor"), info: tr("When on, each dictation sends up to 1,000 characters written before the cursor in the current field to the polishing service with the transcript, so names, terms and misheard words can be put right. Nothing is read in password fields, terminals or fields over 6,000 characters, while Work across Macs has other Macs to send to, or with the Raw style.")) {
-                    GlassSegments(label: tr("Text before the cursor"), selection: $settings.preferences.fieldContext,
-                                  options: [(false, tr("Off")), (true, tr("On"))], compact: true)
+                PolishSwitch(settings: settings)
+                if polishing {
+                    PolishChoice(settings: settings)
+                    Row(tr("Text before the cursor"), info: tr("When on, each dictation sends up to 1,000 characters written before the cursor in the current field to the polishing service with the transcript, so names, terms and misheard words can be put right. Nothing is read in password fields, terminals or fields over 6,000 characters, or while Work across Macs has other Macs to send to.")) {
+                        GlassSegments(label: tr("Text before the cursor"), selection: $settings.preferences.fieldContext,
+                                      options: [(false, tr("Off")), (true, tr("On"))], compact: true)
+                    }
+                    ModelRows(settings: settings, speech: false)
                 }
-                ModelRows(settings: settings, speech: false)
             }
-            CustomStylesGroup(settings: settings)
-            ForEach(Platform.all.filter { $0 == speech || $0 == text }) { platform in
+            if polishing { CustomStylesGroup(settings: settings) }
+            ForEach(Platform.all.filter { $0 == speech || (polishing && $0 == text) }) { platform in
                 if platform.wire == .onDevice {
                     OnDeviceGroup(model: prefs.speechModel, models: OnDeviceModels.shared)
                 } else {
@@ -95,10 +100,11 @@ private struct CustomStylesGroup: View {
         }
     }
 
-    /// Removing the style that is chosen puts the choice back to Raw.
+    /// Removing the style that is chosen goes back to Polish: Text polishing stays on, as it was
+    /// turned on here, and this group stays where it is.
     private func remove(_ id: UUID) {
         settings.preferences.customStyles.removeAll { $0.id == id }
-        if settings.preferences.style == id.uuidString { settings.preferences.style = StyleChoice.standard }
+        if settings.preferences.style == id.uuidString { settings.preferences.style = "polish" }
     }
 }
 
@@ -160,7 +166,7 @@ private struct ModelRows: View {
                : onMac ? tr("Recognized on this Mac by the system's speech model: the audio does not leave this Mac, and the words show as you speak. Each recording is recognized in the one language chosen here.") : nil)
             : nil
         let modelLabel = speech ? (onMac ? tr("Spoken language") : tr("Recognition model")) : tr("Polishing model")
-        Row(speech ? tr("Speech recognition") : tr("Text polishing")) {
+        Row(speech ? tr("Speech recognition") : tr("Text polishing service")) {
             GlassMenu(label: speech ? tr("Speech recognition service") : tr("Text polishing service"),
                       selection: Binding(get: { platform.id }, set: { typing = false; settings.choose($0, speech: speech) }),
                       options: (speech ? Platform.speechChoices(onDevice: OnDeviceModels.available) : Platform.textChoices).map { ($0.id, $0.name) })

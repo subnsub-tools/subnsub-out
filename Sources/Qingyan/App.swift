@@ -646,9 +646,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             guard size.width * size.height <= OverlayPlacement.maxAllowedArea else {
                 throw VoiceError("The status capsule is larger than its limit, a quarter of the earlier capsule: \(Int(size.width))×\(Int(size.height))")
             }
-            try await capture(VoiceBar(controller: controller, meter: controller.meter, settings: settings, glass: false),
-                              size: size, path: "\(directory)/\(name).png")
-            count += 1
+            // Glass like the panel, so light and dark both (the dark one is <name>-dark.png).
+            for dark in [false, true] {
+                try await capture(VoiceBar(controller: controller, meter: controller.meter, settings: settings, glass: false),
+                                  size: size, dark: dark, path: "\(directory)/\(name)\(dark ? "-dark" : "").png")
+                count += 1
+            }
         }
         try await panel("panel-setup")
         try await panel("connection-empty", .connection)
@@ -712,7 +715,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         settings.choose(Platform.groq.id, speech: true); settings.choose(Platform.custom.id, speech: false)
         settings.preferences.customBase = "http://100.64.0.7:11434/v1"; settings.preferences.textModel = "qwen3:14b"
         settings.keyMessages[Platform.groq.id] = tr("The API key is valid, and the chosen models are available.")
+        // With Text polishing on, so the polishing rows and the second platform's key show.
+        settings.preferences.style = "polish"
         try await panel("connection-mixed", .connection)
+        settings.preferences.style = StyleChoice.standard
         settings.choose(Platform.siliconFlow.id, speech: true); settings.choose(Platform.siliconFlow.id, speech: false)
         settings.savedKeys = []; settings.keyMessages = [:]
         try await panel("connection-other-empty", .connection)
@@ -788,6 +794,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await press(258, fromTop: 15)
         try expect(settings.page == .settings, "the settings button in the title row")
         try await shot("window-settings")
+        // Text polishing's On and Off (the row under the recognition model; laid out on macOS 15).
+        try await press(555, fromTop: 157)
+        try expect(settings.preferences.style == "polish", "Text polishing's On in Settings")
+        try await press(517, fromTop: 157)
+        try expect(settings.preferences.style == StyleChoice.standard, "Text polishing's Off in Settings")
         try await press(258, fromTop: 15)
         try expect(settings.page == .main, "the settings button that returns from Settings to the main page")
         try await press(225, fromTop: 15)
@@ -798,7 +809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try expect(controller.recordingShortcut, "the shortcut badge")
         try await press(35, fromTop: 62)
         try expect(!controller.recordingShortcut, "the shortcut badge, clicked again to keep the shortcut")
-        print("Clicks reach the settings and history buttons and the shortcut badge.")
+        print("Clicks reach the settings and history buttons, Text polishing's switch and the shortcut badge.")
         live.close()
         for key in ["panelWishedHeight", "panelLeft", "panelTop"] { UserDefaults.standard.removeObject(forKey: key) }
         print("Rendered \(count) native UI states without recording, API calls, or permission changes.")

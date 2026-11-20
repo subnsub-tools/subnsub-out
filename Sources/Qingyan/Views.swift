@@ -458,20 +458,40 @@ struct GlassSegments<Value: Hashable>: View {
     }
 }
 
-/// How a dictation is written before it is entered, as a choice that says what it is. Only in
-/// Settings: the panel never shows it (user 2026-11-20).
+/// Text polishing, off unless it is turned on here in Settings (user 2026-11-20). Off
+/// writes the transcript as is and Settings shows nothing else about polishing; on starts with
+/// Polish, and Style chooses among the rest.
+struct PolishSwitch: View {
+    @ObservedObject var settings: SettingsStore
+    var body: some View {
+        Row(tr("Text polishing"), info: tr("Off: the recognized text is entered as is, and nothing is sent to a polishing service.\nOn: each dictation is written in the style chosen below, through the polishing service.")) {
+            GlassSegments(label: tr("Text polishing"),
+                          selection: Binding(
+                            get: { settings.preferences.style != StyleChoice.standard },
+                            set: { on in
+                                // Pressing On again keeps the style that is chosen.
+                                guard on != (settings.preferences.style != StyleChoice.standard) else { return }
+                                settings.preferences.style = on ? "polish" : StyleChoice.standard
+                            }),
+                          options: [(false, tr("Off")), (true, tr("On"))], compact: true)
+        }
+    }
+}
+
+/// How a polished dictation is written, as a choice that says what it is. Only in Settings, and
+/// only while Text polishing is on: the panel never shows it (user 2026-11-20).
 struct PolishChoice: View {
     @ObservedObject var settings: SettingsStore
     var body: some View {
         let customs = settings.preferences.customStyles.filter(\.usable)
         let options: [(value: String, title: String)] =
-            [("raw", tr("Raw")), ("polish", tr("Polish")), ("structured", tr("Structured")), ("formal", tr("Formal"))]
+            [("polish", tr("Polish")), ("structured", tr("Structured")), ("formal", tr("Formal"))]
             + customs.map { (value: $0.id.uuidString, title: $0.name.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        Row(tr("Style"), info: tr("Raw enters the recognized text as is.\nPolish adds punctuation and paragraph breaks and removes filler words and spoken repetitions. Nothing is shortened, rewritten or translated; if the model strays from what was said, the original transcript is kept. With Polish you can also edit the text in the current field by voice (for example “change Wednesday to Thursday” or “clear everything”); the field's text is read only when what you said is taken as an edit command.\nStructured turns what you said into a clear prompt for an AI assistant: what you want first, then the details as numbered points.\nFormal rewrites it as formal written prose.\nA custom style follows the instructions written for it in Settings.\nStructured, Formal and custom styles change the wording, so their result is not compared with what was said, and editing by voice is not available with them.")) {
+        Row(tr("Style"), info: tr("Polish adds punctuation and paragraph breaks and removes filler words and spoken repetitions. Nothing is shortened, rewritten or translated; if the model strays from what was said, the original transcript is kept. With Polish you can also edit the text in the current field by voice (for example “change Wednesday to Thursday” or “clear everything”); the field's text is read only when what you said is taken as an edit command.\nStructured turns what you said into a clear prompt for an AI assistant: what you want first, then the details as numbered points.\nFormal rewrites it as formal written prose.\nA custom style follows the instructions written for it in Settings.\nStructured, Formal and custom styles change the wording, so their result is not compared with what was said, and editing by voice is not available with them.")) {
             GlassMenu(label: tr("Style"),
                       selection: Binding(
-                        // An id that is not offered — a deleted or unfinished custom style — shows Raw.
-                        get: { options.contains { $0.value == settings.preferences.style } ? settings.preferences.style : StyleChoice.standard },
+                        // An id that is not offered — an unfinished custom style — shows "—": it writes as is.
+                        get: { settings.preferences.style },
                         set: { settings.preferences.style = $0 }),
                       options: options)
         }
@@ -1507,7 +1527,7 @@ private struct MicroWaveform: View {
         HStack(spacing: 2) {
             ForEach(0..<5, id: \.self) { index in
                 Capsule()
-                    .fill(Color.white.opacity(0.96))
+                    .fill(CapsuleTint.green)
                     .frame(width: 2.2, height: max(3.5, CGFloat(meter.level) * Self.weights[index]))
             }
         }
@@ -1526,71 +1546,61 @@ private struct CapsuleClock: View {
         Text(online ? time : tr("%@ · Offline", time))
             .font(.system(size: 11.5, weight: .semibold, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(.white)
+            .foregroundStyle(Palette.ink)
             .lineLimit(1)
             .fixedSize()
     }
 }
 
-/// Dynamic luminous green background driven solely by `AudioMeter` while speaking.
+/// The colours the capsule tints its glass with, each in a shade for light and for dark glass.
+enum CapsuleTint {
+    private static func pair(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let c = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
+    static let green = pair(light: (0.11, 0.60, 0.29), dark: (0.30, 0.86, 0.47))
+    static let amber = pair(light: (0.78, 0.47, 0.03), dark: (0.98, 0.70, 0.22))
+    static let red = pair(light: (0.80, 0.23, 0.16), dark: (1.00, 0.46, 0.38))
+}
+
+/// The same glass as the panel, light or dark with the system (user 2026-11-20). The state is a
+/// tint over it: green that swells with the voice while speaking, green when done, amber when the
+/// text is not where it was meant to go, red on an error.
 private struct CapsuleSurface: View {
     let phase: DictationPhase
     @ObservedObject var meter: AudioMeter
+    /// Off only for still images, which have nothing behind them to blur.
     let glass: Bool
     /// Done, but the text is not where it was meant to go: amber, not green.
     var warning = false
 
     var body: some View {
-        let boost = phase == .recording ? Double(meter.level) * 0.12 : 0
+        let level = phase == .recording ? Double(meter.level) : 0
+        let tint: Color? = switch phase {
+        case .recording: CapsuleTint.green
+        case .done: warning ? CapsuleTint.amber : CapsuleTint.green
+        case .error: CapsuleTint.red
+        case .processing, .idle: nil
+        }
+        let strength: Double = switch phase {
+        case .recording: 0.24 + level * 0.26
+        case .done, .error: 0.18
+        case .processing, .idle: 0
+        }
         ZStack {
-            if glass && phase == .processing { Glass(dark: true) }
-            switch phase {
-            case .recording:
-                LinearGradient(
-                    colors: [
-                        Color(red: min(1, 0.16 + boost), green: min(1, 0.79 + boost * 0.65), blue: min(1, 0.37 + boost * 0.35)),
-                        Color(red: min(1, 0.09 + boost * 0.6), green: min(1, 0.64 + boost * 0.75), blue: min(1, 0.28 + boost * 0.3))
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            case .done:
-                LinearGradient(
-                    colors: warning ? [Color(red: 0.86, green: 0.55, blue: 0.10), Color(red: 0.74, green: 0.43, blue: 0.06)]
-                        : [Color(red: 0.15, green: 0.74, blue: 0.36), Color(red: 0.10, green: 0.60, blue: 0.28)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ).opacity(0.95)
-            case .error:
-                LinearGradient(
-                    colors: [Color(red: 0.84, green: 0.34, blue: 0.22), Color(red: 0.70, green: 0.24, blue: 0.16)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ).opacity(0.95)
-            case .processing, .idle:
-                Color(red: 0.09, green: 0.20, blue: 0.14).opacity(glass ? 0.62 : 0.92)
-            }
+            if glass { Glass() } else { Color(nsColor: .windowBackgroundColor).opacity(0.94) }
+            if let tint { tint.opacity(strength) }
         }
         .clipShape(Capsule(style: .continuous))
         .overlay(
             Capsule(style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            .white.opacity(phase == .recording ? 0.52 : 0.28),
-                            .white.opacity(phase == .recording ? 0.20 : 0.10)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: phase == .recording ? 1 : 0.8
-                )
+                .strokeBorder((tint ?? Color.primary).opacity(tint == nil ? 0.12 : 0.45), lineWidth: phase == .recording ? 1 : 0.8)
         )
         .shadow(
-            color: phase == .recording
-                ? Color(red: 0.14, green: 0.84, blue: 0.40).opacity(0.42 + Double(meter.level) * 0.36)
-                : Color.black.opacity(0.24),
-            radius: phase == .recording ? 5.5 + CGFloat(meter.level) * 2.0 : 4,
+            color: phase == .recording ? CapsuleTint.green.opacity(0.30 + level * 0.30) : Color.black.opacity(0.18),
+            radius: phase == .recording ? 5 + CGFloat(level) * 2.0 : 4,
             x: 0,
             y: 1.5
         )
@@ -1599,8 +1609,8 @@ private struct CapsuleSurface: View {
     }
 }
 
-/// Miniature floating status capsule — lights up completely in luminous emerald green while
-/// speaking, and docks predictably right below the top menu bar without obstructing sight.
+/// Miniature floating status capsule — glass like the panel, tinted green while speaking, and
+/// docks predictably right below the top menu bar without obstructing sight.
 struct VoiceBar: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var meter: AudioMeter
@@ -1641,7 +1651,7 @@ struct VoiceBar: View {
         .padding(.trailing, hasTrailingButtons ? 6 : 11)
         .padding(.vertical, 5.5)
         .frame(minHeight: 28)
-        .foregroundStyle(.white)
+        .foregroundStyle(Palette.ink)
         .background { CapsuleSurface(phase: controller.phase, meter: meter, glass: glass, warning: notTyped) }
         .fixedSize()
         .padding(.horizontal, 10)
@@ -1652,7 +1662,6 @@ struct VoiceBar: View {
         .onPreferenceChange(OverlaySizeKey.self) { size in
             if size.width > 0 && size.height > 0 { onSize?(size) }
         }
-        .preferredColorScheme(.dark)
         // A change of language builds the words again everywhere below.
         .id(settings.preferences.language)
     }
@@ -1673,7 +1682,7 @@ struct VoiceBar: View {
         case .processing:
             TimelineView(.animation(minimumInterval: 0.05)) { context in
                 Circle().trim(from: 0.08, to: 0.78)
-                    .stroke(.white.opacity(0.95), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
+                    .stroke(Palette.ink.opacity(0.85), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
                     .frame(width: 11.5, height: 11.5)
                     .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate * 260))
             }
@@ -1681,16 +1690,16 @@ struct VoiceBar: View {
         case .error:
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 12.5))
-                .foregroundStyle(.white)
+                .foregroundStyle(CapsuleTint.red)
         case .done, .idle:
             if notTyped {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 12))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CapsuleTint.amber)
             } else {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 12.5))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CapsuleTint.green)
             }
         }
     }
@@ -1701,16 +1710,16 @@ struct VoiceBar: View {
                 Image(systemName: "checkmark").font(.system(size: 9.5, weight: .bold))
                 Text(tr("Copied")).font(.system(size: 11, weight: .semibold))
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Palette.ink)
         } else if controller.phase == .recording {
             HStack(spacing: 5) {
                 CapsuleClock(meter: meter, online: controller.connected)
                 if !controller.partial.isEmpty {
-                    Text("·").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.65))
+                    Text("·").font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.muted)
                     Button(action: copyFromCapsule) {
                         Text(String(controller.partial.suffix(12)))
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.96))
+                            .foregroundStyle(Palette.ink)
                             .lineLimit(1)
                             .truncationMode(.head)
                             .frame(maxWidth: 96, alignment: .leading)
@@ -1725,10 +1734,10 @@ struct VoiceBar: View {
             Button(action: copyFromCapsule) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                    Text(detail).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.86))
+                    Text(detail).font(.system(size: 10.5)).foregroundStyle(Palette.muted)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Palette.ink)
                 .frame(maxWidth: 210, alignment: .leading)
                 .contentShape(Rectangle())
             }
@@ -1740,7 +1749,7 @@ struct VoiceBar: View {
                 Button(action: copyFromCapsule) {
                     Text(text)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Palette.ink)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: 152, alignment: .leading)
@@ -1751,7 +1760,7 @@ struct VoiceBar: View {
             } else {
                 Text(text)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Palette.ink)
                     .lineLimit(1)
                     .frame(maxWidth: 140, alignment: .leading)
                     .help(text)
@@ -1765,9 +1774,9 @@ struct VoiceBar: View {
                 Button { controller.finish() } label: {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 7.5, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Palette.ink)
                         .frame(width: 18, height: 18)
-                        .background(.black.opacity(0.20), in: Circle())
+                        .background(Color.primary.opacity(0.12), in: Circle())
                         .frame(width: 21, height: 21)
                         .contentShape(Circle())
                 }
@@ -1779,9 +1788,9 @@ struct VoiceBar: View {
                 Button { controller.cancel() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.92))
+                        .foregroundStyle(Palette.ink.opacity(0.8))
                         .frame(width: 18, height: 18)
-                        .background(.black.opacity(0.16), in: Circle())
+                        .background(Color.primary.opacity(0.09), in: Circle())
                         .frame(width: 21, height: 21)
                         .contentShape(Circle())
                 }
