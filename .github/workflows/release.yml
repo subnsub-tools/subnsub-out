@@ -1,5 +1,6 @@
-# Checks, builds, signs and releases put on every push to main, except one that changes only the
-# README or the license: words alone make no new build (and no update on every Mac).
+# Every push to main is checked and built, except one that changes only the README or the
+# license: words alone make no new build (and no update on every Mac). A v0.1.<build> tag a
+# publisher pushes is built, signed and released.
 #
 # The app is signed with the self-signed certificate "input signing (SUB&SUB)", whose private
 # key is the secret INPUT_SIGNING_P12 (base64 of the .p12) with INPUT_SIGNING_P12_PASSWORD.
@@ -10,9 +11,8 @@
 #
 # Each build is a release of its own, v0.1.<build> on the commit it was built from, holding
 # put-0.1.<build>.dmg (the app and a link to Applications, to install from) and
-# put-0.1.<build>.zip (the same app, for updates). The repository's tag rules let anyone who can
-# write create a v* tag, this workflow included, and nobody but its publishers move or delete one;
-# every other tag is theirs alone.
+# put-0.1.<build>.zip (the same app, for updates). The repository's tags are its publishers'
+# alone, and this workflow makes none.
 #
 # The update feed is the standing pre-release "builds", whose tag a maintainer made once: put.json
 # (version, file, size, sha256) and the three newest zips beside it, the zip uploaded first and
@@ -35,6 +35,7 @@ on:
   push:
     branches: [main]
     paths-ignore: [README.md, LICENSE]
+    tags: ['v0.1.*']
   workflow_dispatch:
 
 concurrency:
@@ -74,11 +75,6 @@ jobs:
           set -euo pipefail
           released=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '[.assets[].name | capture("^(input|put)-0\\.1\\.(?<n>[0-9]+)\\.zip$").n | tonumber] | max // 0' 2>/dev/null || echo 0)
-          # And the version tags: a run that made v<n> but stopped before the feed named it must not
-          # try to make v<n> again. Not knowing them stops the run.
-          tagged=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1." \
-            --jq '[.[].ref | capture("^refs/tags/v0\\.1\\.(?<n>[0-9]+)$").n | tonumber] | max // 0') \
-            || { echo "::error::the version tags could not be read, so the next build number is unknown"; exit 1; }
           # What the feed names: put.json (missing until the first build named put) and latest.json.
           # Retried: a runner's resolver sometimes misses a name for a moment.
           served=0
@@ -90,10 +86,29 @@ jobs:
             n=$(python3 -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["version"].rsplit(".", 1)[1]))' "$RUNNER_TEMP/feed.json")
             served=$(( n > served ? n : served ))
           done
-          build=$(( released > served ? released : served ))
-          build=$(( (build > tagged ? build : tagged) + 1 ))
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            # A publisher's tag names the build itself: it must be ahead of everything already
+            # out, and on main — the tag is checked, never made here.
+            [[ "$GITHUB_REF_NAME" =~ ^v0\.1\.([1-9][0-9]*)$ ]] || {
+              echo "::error::a release tag is v0.1.<build> with no leading zero, got $GITHUB_REF_NAME"; exit 1; }
+            build=${BASH_REMATCH[1]}
+            [ "$build" -gt "$released" ] && [ "$build" -gt "$served" ] || {
+              echo "::error::v0.1.$build is not ahead of what is out (release $released, feed $served)"; exit 1; }
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || {
+              echo "::error::the tag is not on main"; exit 1; }
+            echo "Build $build (tag $GITHUB_REF_NAME; release $released, feed $served)"
+          else
+            # And the version tags: a run that made v<n> but stopped before the feed named it must
+            # not try to make v<n> again. Not knowing them stops the run.
+            tagged=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1." \
+              --jq '[.[].ref | capture("^refs/tags/v0\\.1\\.(?<n>[0-9]+)$").n | tonumber] | max // 0') \
+              || { echo "::error::the version tags could not be read, so the next build number is unknown"; exit 1; }
+            build=$(( released > served ? released : served ))
+            build=$(( (build > tagged ? build : tagged) + 1 ))
+            echo "Build $build (newest in the feed's release $released, feed $served, version tags $tagged)"
+          fi
           echo "INPUT_BUILD=$build" >> "$GITHUB_ENV"
-          echo "Build $build (newest in the feed's release $released, feed $served, version tags $tagged)"
 
       - name: Signing identity
         env:
@@ -137,7 +152,7 @@ jobs:
 
       - name: Package
         id: package
-        if: env.SIGNING_IDENTITY != '-' && github.ref == 'refs/heads/main'
+        if: env.SIGNING_IDENTITY != '-' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -236,9 +251,8 @@ jobs:
             printf 'Where a file was built: gh attestation verify put-%s.dmg --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
             git log -1 --format=%B "$GITHUB_SHA"
           } > "$RUNNER_TEMP/notes.md"
-          # The tag first, on the commit that was built: creating a ref that is there already fails,
-          # so this build is never attached to a tag someone else made meanwhile.
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+          # The tag came first — a publisher pushed it; this run only releases onto it.
+          [ "$GITHUB_REF" = "refs/tags/v$VERSION" ] || { echo "::error::expected the run of tag v$VERSION, got $GITHUB_REF"; exit 1; }
           gh release create "v$VERSION" "$OUT/put-$VERSION.dmg" "$ZIP" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --title "put $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
           # Then the update feed: the zip first, then the manifest that names it, so the file it names
