@@ -881,10 +881,10 @@ struct MainView: View {
             .accessibilityLabel("Out · " + status.text)
             Spacer(minLength: 4)
             HeaderIconButton(
-                symbol: "pip.enter",
+                symbol: "pin",
                 active: false,
-                helpText: tr("Compact floating bar"),
-                accessibility: tr("Shrink the panel into a compact bar that stays on top")
+                helpText: tr("Keep on Top"),
+                accessibility: tr("Shrink the panel into a bar that stays on top")
             ) {
                 settings.setCompact?(true)
             }
@@ -1527,7 +1527,8 @@ struct OverlaySizeKey: PreferenceKey {
 }
 
 /// Isolated 5-bar micro-waveform driven solely by `AudioMeter`.
-private struct MicroWaveform: View {
+/// The capsule's level bars; the bar kept on top uses them too.
+struct MicroWaveform: View {
     @ObservedObject var meter: AudioMeter
     private static let weights: [CGFloat] = [7.5, 13, 9.5, 14, 8.5]
 
@@ -1545,7 +1546,7 @@ private struct MicroWaveform: View {
 }
 
 /// Isolated compact timer label driven solely by `AudioMeter`.
-private struct CapsuleClock: View {
+struct CapsuleClock: View {
     @ObservedObject var meter: AudioMeter
     let online: Bool
 
@@ -1558,6 +1559,37 @@ private struct CapsuleClock: View {
             .lineLimit(1)
             .fixedSize()
     }
+}
+
+/// The ring that turns while the capsule (or the bar kept on top) waits for something.
+struct CapsuleSpinner: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.05)) { context in
+            Circle().trim(from: 0.08, to: 0.78)
+                .stroke(Palette.ink.opacity(0.85), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
+                .frame(width: 11.5, height: 11.5)
+                .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate * 260))
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+/// Reports the pointer entering and leaving, whichever app is active: SwiftUI's own hover follows
+/// only while this app is, and the capsule sits over other apps.
+struct HoverArea: NSViewRepresentable {
+    var onChange: (Bool) -> Void
+    final class Area: NSView {
+        var onChange: (Bool) -> Void = { _ in }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        }
+        override func mouseEntered(with event: NSEvent) { onChange(true) }
+        override func mouseExited(with event: NSEvent) { onChange(false) }
+    }
+    func makeNSView(context: Context) -> Area { let area = Area(); area.onChange = onChange; return area }
+    func updateNSView(_ area: Area, context: Context) { area.onChange = onChange }
 }
 
 /// The colours the capsule tints its glass with, each in a shade for light and for dark glass.
@@ -1625,22 +1657,37 @@ struct VoiceBar: View {
     @ObservedObject var settings: SettingsStore
     var glass = true
     var onSize: ((CGSize) -> Void)? = nil
+    /// Keeps the window on top where it is (user 2026-11-21: the capsule and the bar kept on top are
+    /// one window): a pin button that shows while the pointer is over the capsule.
+    var onPin: (() -> Void)? = nil
+    /// For still images: the pin as the pointer over the capsule shows it.
+    var pinShownForPreview = false
     @State private var copied = false
     @State private var copyToken = UUID()
+    @State private var pointerOver = false
+    @State private var pointerLeft = UUID()
 
     init(
         controller: DictationController,
         meter: AudioMeter? = nil,
         settings: SettingsStore,
         glass: Bool = true,
-        onSize: ((CGSize) -> Void)? = nil
+        onSize: ((CGSize) -> Void)? = nil,
+        onPin: (() -> Void)? = nil,
+        pinShownForPreview: Bool = false
     ) {
         self.controller = controller
         self.meter = meter ?? controller.meter
         self.settings = settings
         self.glass = glass
         self.onSize = onSize
+        self.onPin = onPin
+        self.pinShownForPreview = pinShownForPreview
     }
+
+    private var pinShown: Bool { onPin != nil && (pointerOver || pinShownForPreview) }
+    /// The room the pin takes, given back by the words so the capsule stays inside its window.
+    private var pinRoom: CGFloat { pinShown ? 25 : 0 }
 
     private var copyablePayload: String {
         // Nothing of the incoming text is here yet.
@@ -1662,7 +1709,12 @@ struct VoiceBar: View {
         .padding(.vertical, 5.5)
         .frame(minHeight: 28)
         .foregroundStyle(Palette.ink)
-        .background { CapsuleSurface(phase: controller.phase, meter: meter, glass: glass, warning: notTyped) }
+        .background {
+            ZStack {
+                CapsuleSurface(phase: controller.phase, meter: meter, glass: glass, warning: notTyped)
+                WindowDragArea().clipShape(Capsule(style: .continuous))
+            }
+        }
         .fixedSize()
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -1672,6 +1724,15 @@ struct VoiceBar: View {
         .onPreferenceChange(OverlaySizeKey.self) { size in
             if size.width > 0 && size.height > 0 { onSize?(size) }
         }
+        // Without the pointer (VoiceOver), keeping on top is an action of the capsule.
+        .accessibilityAction(named: Text(tr("Keep on Top"))) { onPin?() }
+        // The pin stays a moment after the pointer leaves, so that it can be reached across the gap.
+        .background(HoverArea { inside in
+            let token = UUID()
+            pointerLeft = token
+            if inside { pointerOver = true; return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { if pointerLeft == token { pointerOver = false } }
+        })
         // A change of language builds the words again everywhere below.
         .id(settings.preferences.language)
     }
@@ -1681,22 +1742,19 @@ struct VoiceBar: View {
         return false
     }
 
-    private var hasTrailingButtons: Bool {
+    /// Cancel while busy, Close on an error.
+    private var closable: Bool {
         controller.phase == .recording || controller.phase == .processing || controller.phase == .error
     }
+
+    private var hasTrailingButtons: Bool { closable || pinShown }
 
     @ViewBuilder private var leadingIndicator: some View {
         switch controller.phase {
         case .recording:
             MicroWaveform(meter: meter)
         case .processing, .receiving:
-            TimelineView(.animation(minimumInterval: 0.05)) { context in
-                Circle().trim(from: 0.08, to: 0.78)
-                    .stroke(Palette.ink.opacity(0.85), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
-                    .frame(width: 11.5, height: 11.5)
-                    .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate * 260))
-            }
-            .frame(width: 14, height: 14)
+            CapsuleSpinner()
         case .error:
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 12.5))
@@ -1748,7 +1806,7 @@ struct VoiceBar: View {
                     Text(detail).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
                 }
                 .foregroundStyle(Palette.ink)
-                .frame(maxWidth: 210, alignment: .leading)
+                .frame(maxWidth: 210 - pinRoom, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1757,8 +1815,8 @@ struct VoiceBar: View {
             let text = controller.capsuleSummary
             // Text on its way between two Macs names the other Mac: more room than a step's word.
             // Up to the capsule window's 284 pt: the sending capsule also holds its Cancel button.
-            let remote: CGFloat? = controller.phase == .receiving ? 210
-                : controller.phase == .processing && controller.capsuleStep == .sending ? 194 : nil
+            let remote: CGFloat? = controller.phase == .receiving ? 210 - pinRoom
+                : controller.phase == .processing && controller.capsuleStep == .sending ? 194 - pinRoom : nil
             if !copyablePayload.isEmpty {
                 Button(action: copyFromCapsule) {
                     Text(text)
@@ -1767,7 +1825,7 @@ struct VoiceBar: View {
                         .lineLimit(1)
                         // A long Mac name gives way in its middle, so the words around it stay.
                         .truncationMode(remote == nil ? .tail : .middle)
-                        .frame(maxWidth: remote ?? 152, alignment: .leading)
+                        .frame(maxWidth: remote ?? 152 - pinRoom, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1778,7 +1836,7 @@ struct VoiceBar: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
                     .truncationMode(remote == nil ? .tail : .middle)
-                    .frame(maxWidth: remote ?? 140, alignment: .leading)
+                    .frame(maxWidth: remote ?? 140 - pinRoom, alignment: .leading)
                     .help(text)
             }
         }
@@ -1800,7 +1858,7 @@ struct VoiceBar: View {
                 .help(tr("Stop recording (%@)", settings.shortcutLabel))
                 .accessibilityLabel(tr("Stop recording"))
             }
-            if hasTrailingButtons {
+            if closable {
                 Button { controller.cancel() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
@@ -1813,6 +1871,21 @@ struct VoiceBar: View {
                 .buttonStyle(.plain)
                 .help(controller.busy ? tr("Cancel (Esc)") : tr("Close"))
                 .accessibilityLabel(controller.busy ? tr("Cancel this recording") : tr("Dismiss"))
+            }
+            if pinShown, let onPin {
+                Button(action: onPin) {
+                    Image(systemName: "pin")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(Palette.ink.opacity(0.85))
+                        .frame(width: 18, height: 18)
+                        .background(Color.primary.opacity(0.09), in: Circle())
+                        .frame(width: 21, height: 21)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(tr("Keep on Top: always shown here"))
+                .accessibilityLabel(tr("Keep on Top"))
+                .transition(.opacity)
             }
         }
     }

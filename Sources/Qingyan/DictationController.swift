@@ -137,6 +137,10 @@ final class DictationController: ObservableObject {
     private var receivingID: UUID?
     var presentOverlay: (() -> Void)?
     var dismissOverlay: (() -> Void)?
+    /// Between `presentOverlay` and `dismissOverlay`: what the capsule shows is current. The bar kept
+    /// on top shows it in its first row instead of the capsule, and its own idle row otherwise
+    /// (a result stays the phase after the capsule has gone).
+    @Published var capsuleShown = false
     var openSettings: (() -> Void)?
     var busy: Bool { phase == .recording || phase == .processing }
 
@@ -1156,6 +1160,14 @@ final class DictationController: ObservableObject {
         message = pending ? tr("Recording saved to History · Will transcribe when online") : tr("Recording saved to History · It can be retried there")
         audioFile = nil
         presentOverlay?()
+        // It goes like any other result: it used to stay until the next dictation, and the bar kept
+        // on top showed it instead of its Record button.
+        let shown = sessionID
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, self.sessionID == shown, self.phase == .done, case .savedToHistory = self.capsuleResult else { return }
+            self.dismissOverlay?()
+        }
     }
 
     private func localFailure(_ error: Error? = nil) {

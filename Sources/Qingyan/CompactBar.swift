@@ -2,11 +2,14 @@ import AppKit
 import SwiftUI
 import QingyanCore
 
-/// The compact version of the panel (user 2026-11-20: a compact version of the panel that stays on
-/// top; chose the bar with the Shelf under it, entered from the panel's title row): a small glass bar that
-/// floats above every window on every Space until the full panel is brought back. Top row: start
-/// or stop, what is happening, the last result (a click copies it) and the way back to the full
-/// panel; under it, the Shelf as a strip, which takes drops and gives its items by click or drag.
+/// The bar kept on top: the status capsule and the compact panel as one window (user 2026-11-21:
+/// the two become one and never show at once; the design was chosen from a demo). Not kept on top, the window is the capsule, which shows only while something happens. Kept on top,
+/// it stays, a glass bar above every window on every Space, and its first row is the capsule: what
+/// the capsule would show (recording, processing, sending, receiving, the result) shows there in
+/// place, and otherwise the row has the record button, whether this Mac is ready, and the last
+/// result (a click copies it). At its end: hide or show the Shelf, stop keeping on top, and back to
+/// the full panel. Under it, the Shelf as a strip, which takes drops and gives its items by click or
+/// drag. The bar moves by any part that is not a control.
 struct CompactBar: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var controller: DictationController
@@ -14,21 +17,32 @@ struct CompactBar: View {
     @ObservedObject var meter: AudioMeter
     var glass = true
     var onExpand: () -> Void
+    var onUnpin: () -> Void = {}
+    /// The bar's size whenever it changes (the Shelf hidden or shown), for its window.
+    var onSize: ((CGSize) -> Void)? = nil
+    @AppStorage("compactShelfFolded") private var shelfFolded = false
     @State private var copied = false
     @State private var hovered: UUID?
     @State private var recordHovered = false
 
     static let width: CGFloat = 340
+    static let rowHeight: CGFloat = 44
     private static let corner: CGFloat = 13
 
     private var recording: Bool { controller.phase == .recording }
-    private var processing: Bool { controller.phase == .processing }
+    /// Text on its way between two Macs: the words name the other Mac.
+    private var remote: Bool { controller.phase == .receiving || (controller.phase == .processing && controller.capsuleStep == .sending) }
 
-    /// What is happening, in a word or two: the capsule's own words while busy, and otherwise the
-    /// panel's own reading of whether this Mac can record (or, receiving only, receive).
+    /// The first row shows what the capsule would: while busy, and while the capsule's moment lasts.
+    private var live: Bool { controller.busy || (controller.capsuleShown && controller.phase != .idle) }
+
+    private var notTyped: Bool {
+        if controller.phase == .done, case .notWritten = controller.capsuleResult { return true }
+        return false
+    }
+
+    /// Whether this Mac can record (or, receiving only, receive), in a word or two.
     private var state: String {
-        if recording { return tr("Recording") + " " + String(format: "%d:%02d", meter.elapsed / 60, meter.elapsed % 60) }
-        if processing || controller.phase == .receiving { return controller.capsuleSummary }
         if settings.receiverOnly {
             return settings.accessibilityAllowed && controller.remoteListening ? tr("Ready to receive") : tr("Setup needed")
         }
@@ -47,26 +61,43 @@ struct CompactBar: View {
             .first { !$0.isEmpty } ?? ""
     }
 
+    /// The capsule's tint, over the first row only.
+    private var rowTint: Color? {
+        guard live else { return nil }
+        switch controller.phase {
+        case .recording: return CapsuleTint.green.opacity(0.24 + Double(meter.level) * 0.26)
+        case .done: return (notTyped ? CapsuleTint.amber : CapsuleTint.green).opacity(0.18)
+        case .error: return CapsuleTint.red.opacity(0.18)
+        default: return nil
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            topRow.frame(height: 44)
-            Rectangle().fill(Palette.line).frame(height: 1)
-            shelfRow.frame(height: 54)
+            topRow.frame(height: Self.rowHeight)
+            if !shelfFolded {
+                Rectangle().fill(Palette.line).frame(height: 1)
+                shelfRow.frame(height: 54)
+            }
         }
         .frame(width: Self.width)
         .background {
-            ZStack {
+            ZStack(alignment: .top) {
                 if glass { Glass() } else { Color(nsColor: .windowBackgroundColor) }
+                if let rowTint { rowTint.frame(height: Self.rowHeight) }
                 if shelf.targeted { Palette.accent.opacity(0.16) }
                 // The bar moves by any part of it that is not a control.
                 WindowDragArea()
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Self.corner, style: .continuous).stroke(Palette.line, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Self.corner, style: .continuous)
+            .stroke(recording ? CapsuleTint.green.opacity(0.45) : Palette.line, lineWidth: 1))
         .foregroundStyle(Palette.ink).tint(Palette.accent)
         .controlSize(.small)
         .onDrop(of: ShelfModel.types, isTargeted: $shelf.targeted) { shelf.accept($0) }
+        .background(GeometryReader { proxy in Color.clear.preference(key: CompactSizeKey.self, value: proxy.size) })
+        .onPreferenceChange(CompactSizeKey.self) { size in if size.width > 0 && size.height > 0 { onSize?(size) } }
         .animation(Motion.quick, value: shelf.targeted)
         .animation(Motion.quick, value: hovered)
         .animation(Motion.standard, value: controller.phase)
@@ -74,68 +105,182 @@ struct CompactBar: View {
     }
 
     private var topRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
+            lead.frame(width: 28, height: 28)
+            middle.frame(maxWidth: .infinity, alignment: .leading)
+            if live && (controller.busy || controller.phase == .error) { closeButton }
+            Rectangle().fill(Palette.line).frame(width: 1, height: 20)
+            barButton(shelfFolded ? "chevron.down" : "chevron.up", shelfFolded ? tr("Show the Shelf") : tr("Hide the Shelf")) {
+                shelfFolded.toggle()
+            }
+            barButton("pin.fill", tr("Stop Keeping on Top"), help: tr("Stop keeping on top: shown only while dictating and with results"), tint: Palette.accent, action: onUnpin)
+            barButton("arrow.up.left.and.arrow.down.right", tr("Back to the full panel"), action: onExpand)
+        }
+        .padding(.leading, 8).padding(.trailing, 7)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The round button or sign at the start of the row: record, stop, or the capsule's sign.
+    @ViewBuilder private var lead: some View {
+        if !live {
             recordButton
-            Text(state)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(recording ? Color.red : Palette.ink)
-                // Its whole width before the last text's, but a long Mac name gives way in its middle
-                // rather than push the buttons out of the bar.
-                .lineLimit(1).truncationMode(.middle).layoutPriority(1)
-                .allowsHitTesting(false)
-            resultButton
-            Spacer(minLength: 0)
-            Button(action: onExpand) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 26, height: 24)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Palette.line, lineWidth: 0.8))
-                    .contentShape(Rectangle())
+        } else {
+            switch controller.phase {
+            case .recording:
+                Button { controller.finish() } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(CapsuleTint.green)
+                        .frame(width: 28, height: 28)
+                        .background(CapsuleTint.green.opacity(0.2), in: Circle())
+                        .overlay(Circle().stroke(CapsuleTint.green.opacity(0.55), lineWidth: 1))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(tr("Stop recording (%@)", settings.shortcutLabel))
+                .accessibilityLabel(tr("Stop recording"))
+            case .processing, .receiving:
+                CapsuleSpinner()
+            case .error:
+                Image(systemName: "exclamationmark.circle.fill").font(.system(size: 15)).foregroundStyle(CapsuleTint.red)
+            case .done, .idle:
+                Image(systemName: notTyped ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(notTyped ? CapsuleTint.amber : CapsuleTint.green)
+            }
+        }
+    }
+
+    @ViewBuilder private var middle: some View {
+        if !live {
+            HStack(spacing: 6) {
+                Text(state)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1).fixedSize()
+                    .allowsHitTesting(false)
+                if !settings.receiverOnly {
+                    Text(settings.shortcutLabel)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.muted)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(Palette.fill, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).stroke(Palette.line, lineWidth: 0.5))
+                        .lineLimit(1).fixedSize()
+                        .allowsHitTesting(false)
+                        .accessibilityLabel(tr("Shortcut: %@", settings.shortcutLabel))
+                }
+                resultButton
+                // What is left of the row moves the bar.
+                Spacer(minLength: 0)
+            }
+        } else if recording {
+            HStack(spacing: 5) {
+                MicroWaveform(meter: meter)
+                CapsuleClock(meter: meter, online: controller.connected)
+                if copied {
+                    Text(tr("Copied")).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Palette.accent)
+                } else if !controller.partial.isEmpty {
+                    Text("·").font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.muted)
+                    Button { copy(controller.partial) } label: {
+                        Text(controller.partial)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1).truncationMode(.head)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(tr("Click to copy the text recognized so far"))
+                }
+                Spacer(minLength: 0)
+            }
+        } else if case let .notWritten(title, detail) = controller.capsuleResult, controller.phase == .done {
+            Button { copy(controller.result) } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(copied ? tr("Copied") : title).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+                    Text(detail).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(tr("Back to the full panel"))
-            .accessibilityLabel(tr("Back to the full panel"))
+            .disabled(controller.result.isEmpty)
+            .help(tr("%@\nClick to copy", controller.message.isEmpty ? controller.capsuleSummary : controller.message))
+        } else {
+            HStack(spacing: 6) {
+                Text(controller.capsuleSummary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    // A long Mac name gives way in its middle, so the words around it stay.
+                    .truncationMode(remote ? .middle : .tail)
+                    .layoutPriority(1)
+                    .help(controller.phase == .error ? controller.message : controller.capsuleSummary)
+                if controller.phase == .done { resultButton }
+                Spacer(minLength: 0)
+            }
         }
-        .padding(.horizontal, 9)
+    }
+
+    private var closeButton: some View {
+        Button { controller.cancel() } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(Palette.ink.opacity(0.8))
+                .frame(width: 18, height: 18)
+                .background(Color.primary.opacity(0.09), in: Circle())
+                .frame(width: 21, height: 21)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(controller.busy ? tr("Cancel (Esc)") : tr("Close"))
+        .accessibilityLabel(controller.busy ? tr("Cancel this recording") : tr("Dismiss"))
+    }
+
+    private func barButton(_ symbol: String, _ label: String, help: String? = nil, tint: Color? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint ?? Palette.ink)
+                .frame(width: 26, height: 24)
+                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Palette.line, lineWidth: 0.8))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help ?? label)
+        .accessibilityLabel(label)
     }
 
     private var recordButton: some View {
-        let symbol = recording ? "stop.fill" : "mic.fill"
-        let tint: Color = recording ? .red : Palette.ink
-        let fill: Color = recording ? Color.red.opacity(recordHovered ? 0.24 : 0.18) : Color.primary.opacity(recordHovered ? 0.2 : 0.13)
+        let fill: Color = Color.primary.opacity(recordHovered ? 0.2 : 0.13)
         return Button { controller.toggle() } label: {
-            Image(systemName: symbol)
+            Image(systemName: "mic.fill")
                 .font(.system(size: 11, weight: .semibold))
-                .contentTransition(.symbolEffect(.replace))
-                .foregroundStyle(tint)
+                .foregroundStyle(Palette.ink)
                 .frame(width: 28, height: 28)
                 .background(fill, in: Circle())
-                .overlay(Circle().stroke(recording ? Color.red.opacity(0.35) : Palette.line, lineWidth: 1))
+                .overlay(Circle().stroke(Palette.line, lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { recordHovered = $0 }
-        .disabled(processing).opacity(processing ? 0.35 : 1)
-        .help(recording ? tr("Stop recording") : tr("Start recording"))
-        .accessibilityLabel(recording ? tr("Stop recording") : tr("Start recording"))
+        .help(tr("Start recording"))
+        .accessibilityLabel(tr("Start recording"))
     }
 
-    /// The last result on one line; a click copies it.
+    private func copy(_ text: String) {
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+    }
+
+    /// The last result on one line, as wide as its words (the rest of the row moves the bar); a click copies it.
     private var resultButton: some View {
         let text = lastText
-        return Button {
-            guard !text.isEmpty else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
-        } label: {
+        return Button { copy(text) } label: {
             Text(copied ? tr("Copied") : text.isEmpty ? tr("Nothing dictated yet") : "“" + text.replacingOccurrences(of: "\n", with: " ") + "”")
                 .font(.system(size: 11))
                 .foregroundStyle(copied ? Palette.accent : Palette.muted)
                 .lineLimit(1).truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -159,6 +304,9 @@ struct CompactBar: View {
                         ForEach(shelf.items) { tile($0).transition(Motion.pop) }
                     }
                 }
+                // Only as wide as its items: what is left of the strip moves the bar.
+                .frame(maxWidth: CGFloat(shelf.items.count) * 49 - 6)
+                Spacer(minLength: 0)
             }
             Button { shelf.addClipboard() } label: {
                 Image(systemName: "plus")
@@ -228,9 +376,17 @@ struct CompactBar: View {
 /// A view that moves its window when dragged, for a borderless window whose controls cover the rest.
 struct WindowDragArea: NSViewRepresentable {
     final class Area: NSView {
-        override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+        override func mouseDown(with event: NSEvent) {
+            (window as? FloatingPanel)?.onDragBegan?()
+            window?.performDrag(with: event)
+        }
         override var mouseDownCanMoveWindow: Bool { true }
     }
     func makeNSView(context: Context) -> NSView { Area() }
     func updateNSView(_ view: NSView, context: Context) {}
+}
+
+private struct CompactSizeKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }

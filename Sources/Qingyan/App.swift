@@ -54,6 +54,8 @@ final class PanelContainer: NSView {
 }
 
 final class FloatingPanel: NSPanel {
+    /// Told when the user starts dragging it by its background (WindowDragArea).
+    var onDragBegan: (() -> Void)?
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
@@ -133,6 +135,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
         let renewed = defaults.string(forKey: "panelShownForBuild") != build
         defaults.set(build, forKey: "panelShownForBuild")
+        // Where the compact bar was left, before it and the capsule became one window with one place.
+        for key in ["compactLeft", "compactTop"] { defaults.removeObject(forKey: key) }
         if defaults.bool(forKey: "panelCompact") { showCompact() }
         else if renewed { showWindow(activating: false, inFront: true) }
         else if defaults.object(forKey: "panelOpen") as? Bool != false { showWindow(activating: false) }
@@ -188,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording)) }
         if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard)) }
         item(menu, tr("Show Main Panel"), #selector(openMain))
+        item(menu, tr("Keep on Top"), #selector(togglePinned))?.state = pinned ? .on : .off
         item(menu, tr("Settings…"), #selector(openSettings))
         if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult)) }
         menu.addItem(.separator())
@@ -199,6 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item.target = self; menu.addItem(item); return item
     }
     @objc private func openMain() { showWindow() }
+    // Unchecked, it only stops keeping on top, as the bar's own pin does; the panel stays as it is.
+    @objc private func togglePinned() { if pinned { leaveCompact() } else { setCompact(true) } }
     @objc private func openSettings() { settings.reveal(.general) }
     @objc private func startRecording() { controller.toggle() }
     @objc private func typeClipboard() { controller.typeClipboard(from: .menu) }
@@ -440,15 +447,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         UserDefaults.standard.set(Double(frame.maxY), forKey: "panelTop")
     }
 
+    /// Sent when the user starts dragging a window, never when out moves it (checked on macOS 15).
+    func windowWillMove(_ notification: Notification) {
+        guard let moving = notification.object as? NSWindow, moving === overlay || moving === compactPanel else { return }
+        userMoving = moving
+    }
+
     func windowDidMove(_ notification: Notification) {
-        if let moved = notification.object as? NSWindow, moved === compactPanel {
-            UserDefaults.standard.set(Double(moved.frame.minX), forKey: "compactLeft")
-            UserDefaults.standard.set(Double(moved.frame.maxY), forKey: "compactTop")
-            return
-        }
-        if let moved = notification.object as? NSWindow, moved === overlay {
-            overlayDraggedByUser = true
-            overlayAnchorOrigin = moved.frame.origin
+        if let moved = notification.object as? NSWindow, moved === compactPanel || moved === overlay {
+            // out's own moves (placing, gliding, fitting a new size) move it too: only this window's
+            // drag, while the button is still down, is the user's place.
+            guard userMoving === moved, NSEvent.pressedMouseButtons & 1 == 1 else { return }
+            if moved === overlay {
+                overlayDraggedByUser = true
+                overlayAnchorOrigin = moved.frame.origin
+                // Its new screen, and its top center, are what later sizes keep.
+                overlayCorner = .topCenter
+                overlayScreenFrame = (moved.screen ?? NSScreen.main)?.visibleFrame
+                savedPlace = NSPoint(x: moved.frame.midX, y: moved.frame.maxY - Self.capsuleMargin)
+            } else {
+                savedPlace = NSPoint(x: moved.frame.midX, y: moved.frame.maxY)
+            }
             return
         }
         guard let window = notification.object as? NSWindow, window === self.window else { return }
@@ -467,47 +486,117 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         rememberPlace(window)
     }
 
-    // MARK: - Compact floating bar
+    // MARK: - Kept on top: the capsule and the bar as one window
 
-    /// The compact bar in place of the panel (on), or the panel back in place of the bar (off). The
-    /// choice is kept across starts.
+    /// Kept on top (the bar), or not (the capsule, only while something happens). The choice is kept across starts.
+    private var pinned: Bool { UserDefaults.standard.bool(forKey: "panelCompact") }
+
+    /// The capsule's window reaches this far above the capsule (VoiceBar's outer padding).
+    private static let capsuleMargin: CGFloat = 9
+
+    /// The one place of the capsule and the bar: the top center of what is drawn, in screen
+    /// coordinates, where the user last dragged either. None until then: the capsule finds its own
+    /// spot below the menu bar, and the bar goes to the top center of the main screen.
+    private var savedPlace: NSPoint? {
+        get {
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: "barCenterX") != nil else { return nil }
+            let point = NSPoint(x: defaults.double(forKey: "barCenterX"), y: defaults.double(forKey: "barTop"))
+            // A screen that is no longer there forgets it.
+            return NSScreen.screens.contains(where: { $0.frame.insetBy(dx: -2, dy: -2).contains(point) }) ? point : nil
+        }
+        set {
+            let defaults = UserDefaults.standard
+            if let newValue {
+                defaults.set(Double(newValue.x), forKey: "barCenterX"); defaults.set(Double(newValue.y), forKey: "barTop")
+            } else {
+                defaults.removeObject(forKey: "barCenterX"); defaults.removeObject(forKey: "barTop")
+            }
+        }
+    }
+    /// The window the user is dragging (from windowWillMove), so that its moves are the user's place.
+    private var userMoving: NSWindow?
+
+    /// The frame for something of this size with its top center at `place`, kept inside that screen.
+    private static func frame(_ size: CGSize, topCenter place: NSPoint, above margin: CGFloat = 0) -> NSRect {
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(place) }) ?? NSScreen.main ?? NSScreen.screens.first
+        let visible = screen?.visibleFrame ?? NSRect(x: place.x - 720, y: place.y - 900, width: 1440, height: 900)
+        var origin = NSPoint(x: round(place.x - size.width / 2), y: round(place.y + margin - size.height))
+        origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
+        origin.y = min(max(origin.y, visible.minY), visible.maxY - size.height)
+        return NSRect(origin: origin, size: size)
+    }
+
+    /// Kept on top (on: the bar, in place of the panel and of the capsule) or not (off: the panel
+    /// back, and the capsule for whatever happens).
     private func setCompact(_ on: Bool) {
         guard on else { leaveCompact(); showWindow(); return }
+        // Kept on top where the capsule is, when it is showing; that is the user's place only once dragged.
+        var here: NSPoint?
+        if let overlay, overlay.isVisible, !overlayLeaving {
+            here = NSPoint(x: overlay.frame.midX, y: overlay.frame.maxY - Self.capsuleMargin)
+        }
         UserDefaults.standard.set(true, forKey: "panelCompact")
-        showCompact()
+        overlayLeaving = false
+        overlay?.orderOut(nil)
+        showCompact(at: here)
         // Out of sight, not closed: the panel comes back as it was.
         window?.orderOut(nil)
     }
 
+    /// No longer kept on top: the bar goes, and what it was showing goes on in the capsule (at the
+    /// user's place, or where the capsule finds its own).
     private func leaveCompact() {
         UserDefaults.standard.set(false, forKey: "panelCompact")
         compactPanel?.orderOut(nil)
+        // The panel that keeping on top put out of sight stays so after a restart (showWindow, when it
+        // is the way out, opens it again).
+        if window?.isVisible != true { UserDefaults.standard.set(false, forKey: "panelOpen") }
+        if controller.capsuleShown { showOverlay() }
     }
 
-    private func showCompact() {
+    /// `here`: where the capsule was, for want of the user's place.
+    private func showCompact(at here: NSPoint? = nil) {
         guard settings != nil else { return }
-        if compactPanel == nil { compactPanel = makeCompact(onExpand: { [weak self] in self?.setCompact(false) }) }
-        guard let panel = compactPanel else { return }
-        // Where it was left, if that is still on a screen; else the top right of the main screen.
-        let defaults = UserDefaults.standard
-        let size = panel.frame.size
-        let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
-        var origin = NSPoint(x: visible.maxX - size.width - 12, y: visible.maxY - size.height - 8)
-        if defaults.object(forKey: "compactLeft") != nil {
-            let saved = NSPoint(x: defaults.double(forKey: "compactLeft"), y: defaults.double(forKey: "compactTop") - size.height)
-            if NSScreen.screens.contains(where: { $0.visibleFrame.insetBy(dx: -2, dy: -2).contains(NSRect(origin: saved, size: size)) }) { origin = saved }
+        if compactPanel == nil {
+            let panel = makeCompact(onExpand: { [weak self] in self?.setCompact(false) },
+                                    onUnpin: { [weak self] in self?.leaveCompact() })
+            panel.onDragBegan = { [weak self, weak panel] in self?.userMoving = panel }
+            compactPanel = panel
         }
-        panel.setFrameOrigin(origin)
+        guard let panel = compactPanel else { return }
+        let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
+        userMoving = nil
+        panel.setFrame(Self.frame(panel.frame.size, topCenter: savedPlace ?? here ?? NSPoint(x: visible.midX, y: visible.maxY - 8)), display: true)
         panel.orderFrontRegardless()
+    }
+
+    /// The Shelf hidden or shown: the bar keeps its top and its center.
+    private func resizeCompact(to size: CGSize) {
+        guard let panel = compactPanel else { return }
+        let size = CGSize(width: ceil(size.width), height: ceil(size.height))
+        guard abs(panel.frame.height - size.height) > 0.5 || abs(panel.frame.width - size.width) > 0.5 else { return }
+        var frame = NSRect(x: round(panel.frame.midX - size.width / 2), y: panel.frame.maxY - size.height, width: size.width, height: size.height)
+        // Too near the bottom of its screen for the Shelf: the bar moves up rather than off it.
+        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame, frame.minY < visible.minY {
+            frame.origin.y = min(visible.minY, visible.maxY - size.height)
+        }
+        panel.setFrame(frame, display: true)
     }
 
     /// A glass bar above every window on every Space, full-screen apps included, that never takes
     /// the keyboard from the app in front and moves by any part that is not a control.
-    private func makeCompact(onExpand: @escaping () -> Void, glass: Bool = true) -> NSPanel {
+    private func makeCompact(onExpand: @escaping () -> Void, onUnpin: @escaping () -> Void = {}, glass: Bool = true) -> FloatingPanel {
+        // At the top of its window, which follows it a moment later (the Shelf hidden or shown).
         let host = NSHostingView(rootView: CompactBar(settings: settings, controller: controller, shelf: controller.shelf,
-                                                      meter: controller.meter, glass: glass, onExpand: onExpand))
-        host.layoutSubtreeIfNeeded()
-        let size = NSSize(width: CompactBar.width, height: ceil(host.fittingSize.height))
+                                                      meter: controller.meter, glass: glass, onExpand: onExpand, onUnpin: onUnpin,
+                                                      onSize: { [weak self] size in DispatchQueue.main.async { self?.resizeCompact(to: size) } })
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
+        host.sizingOptions = []
+        let fitting = NSHostingView(rootView: CompactBar(settings: settings, controller: controller, shelf: controller.shelf,
+                                                         meter: controller.meter, glass: glass, onExpand: {}))
+        fitting.layoutSubtreeIfNeeded()
+        let size = NSSize(width: CompactBar.width, height: ceil(fitting.fittingSize.height))
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
                                   backing: .buffered, defer: false)
         panel.isFloatingPanel = true
@@ -540,6 +629,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     private func showOverlay() {
+        controller.capsuleShown = true
+        // Kept on top, the bar's first row shows it: the two never show at once.
+        guard !pinned else { return }
         if overlay == nil {
             let panel = FloatingPanel(
                 contentRect: NSRect(origin: .zero, size: OverlayPlacement.defaultSize),
@@ -562,23 +654,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 settings: settings,
                 onSize: { [weak self] size in
                     DispatchQueue.main.async { self?.resizeOverlay(to: size) }
-                }
+                },
+                onPin: { [weak self] in self?.setCompact(true) }
             ))
             host.sizingOptions = []
             panel.contentView = host
+            panel.onDragBegan = { [weak self, weak panel] in self?.userMoving = panel }
             overlay = panel
             overlayHost = host
         }
         guard let overlay else { return }
         let wasHidden = !overlay.isVisible || overlay.alphaValue < 0.05
-        if wasHidden { overlayDraggedByUser = false }
         overlayLeaving = false
+        userMoving = nil
 
         let size = measuredOverlaySize()
         let rest: CGPoint
-        if overlayDraggedByUser, let visible = overlayScreenFrame ?? NSScreen.main?.visibleFrame {
+        if wasHidden, let place = savedPlace {
+            // Where the user last put the capsule or the bar.
+            let frame = Self.frame(size, topCenter: place, above: Self.capsuleMargin)
+            overlayDraggedByUser = true
+            overlayCorner = .topCenter
+            overlayScreenFrame = (NSScreen.screens.first(where: { $0.frame.contains(place) }) ?? NSScreen.main)?.visibleFrame
+            overlayAnchorOrigin = frame.origin
+            rest = frame.origin
+        } else if !wasHidden, overlayDraggedByUser, let visible = overlayScreenFrame ?? NSScreen.main?.visibleFrame {
             rest = OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: overlayCorner, in: visible).origin
         } else if let captured = SightSensor.capture(excludingPanel: window, previousOrigin: wasHidden ? nil : overlayAnchorOrigin) {
+            overlayDraggedByUser = false
             let placement = OverlayPlacement.choose(size: size, in: captured.scene)
             overlayCorner = placement.corner
             overlayScreenFrame = captured.scene.visibleFrame
@@ -586,6 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             rest = placement.origin
         } else {
             let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            overlayDraggedByUser = false
             overlayScreenFrame = visible
             overlayCorner = .topCenter
             rest = CGPoint(x: round(visible.midX - size.width / 2), y: visible.maxY - size.height - 2)
@@ -667,6 +771,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var overlayLeaving = false
 
     private func hideOverlay() {
+        controller.capsuleShown = false
         guard let overlay, overlay.isVisible else { return }
         guard !Motion.reduced else { overlay.orderOut(nil); return }
         overlayLeaving = true
@@ -706,8 +811,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             settings.historyOpen = false
             count += 1
         }
-        func bar(_ name: String) async throws {
-            let host = NSHostingView(rootView: VoiceBar(controller: controller, meter: controller.meter, settings: settings, glass: false))
+        func bar(_ name: String, pin: Bool = false) async throws {
+            let make = { VoiceBar(controller: controller, meter: controller.meter, settings: settings, glass: false,
+                                  onPin: pin ? {} : nil, pinShownForPreview: pin) }
+            let host = NSHostingView(rootView: make())
             host.layoutSubtreeIfNeeded()
             let fit = host.fittingSize
             let size = NSSize(width: ceil(max(88, fit.width)), height: ceil(max(32, fit.height)))
@@ -717,8 +824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             // Glass like the panel, so light and dark both (the dark one is <name>-dark.png).
             for dark in [false, true] {
-                try await capture(VoiceBar(controller: controller, meter: controller.meter, settings: settings, glass: false),
-                                  size: size, dark: dark, path: "\(directory)/\(name)\(dark ? "-dark" : "").png")
+                try await capture(make(), size: size, dark: dark, path: "\(directory)/\(name)\(dark ? "-dark" : "").png")
                 count += 1
             }
         }
@@ -832,13 +938,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await bar("bar-not-reached")
         controller.capsuleResult = .notWritten(DictationController.missTitle(.notAllowed, peer: "Kitchen Mac mini 2023"), DictationController.missLine(.notAllowed, clipboard: .thisMac))
         try await bar("bar-not-typed-long")
+        // The pin that shows while the pointer is over the capsule, on the widest capsule there is.
+        try await bar("bar-not-typed-long-pin", pin: true)
         controller.capsuleResult = .inserted
         // Text on its way between two Macs, with a long Mac name: the sending and the receiving capsule.
         controller.phase = .processing; controller.capsuleStep = .sending; controller.sendingTo = "Kitchen Mac mini 2023"
         try await bar("bar-sending")
+        try await bar("bar-sending-pin", pin: true)
         controller.capsuleStep = .recognizing
         controller.phase = .receiving; controller.receivingFrom = "Kitchen Mac mini 2023"
         try await bar("bar-receiving")
+        try await bar("bar-receiving-pin", pin: true)
+        controller.phase = .done
+        try await bar("bar-done-pin", pin: true)
         controller.phase = .recording; controller.connected = false; controller.partial = ""
         try await bar("bar-offline")
         // The compact floating bar, light and dark: Shelf items and a result; recording; empty.
@@ -854,14 +966,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         controller.phase = .done
         controller.shelf.previewFill()
+        // The Shelf shown, whatever an earlier run left.
+        UserDefaults.standard.removeObject(forKey: "compactShelfFolded")
         try await compact("compact-shelf")
         controller.shelf.targeted = true
         try await compact("compact-drop")
         controller.shelf.targeted = false
-        controller.phase = .recording; controller.elapsed = 7
+        controller.capsuleShown = true
+        controller.phase = .recording; controller.elapsed = 7; controller.connected = true
+        controller.partial = "Preview: Discuss the new plan at 3 p.m. tomorrow."
         try await compact("compact-recording")
+        controller.partial = ""
+        controller.phase = .processing; controller.capsuleStep = .sending; controller.sendingTo = "Kitchen Mac mini 2023"
+        try await compact("compact-sending")
+        controller.capsuleStep = .recognizing
         controller.phase = .receiving; controller.receivingFrom = "Kitchen Mac mini 2023"
         try await compact("compact-receiving")
+        controller.phase = .done; controller.capsuleResult = .inserted
+        try await compact("compact-done")
+        controller.capsuleResult = .notWritten(DictationController.missTitle(.notAllowed, peer: "Kitchen Mac mini 2023"), DictationController.missLine(.notAllowed, clipboard: .thisMac))
+        try await compact("compact-not-typed")
+        controller.capsuleResult = .inserted
+        controller.phase = .error; controller.message = tr("No text field is focused, saved to history")
+        try await compact("compact-error")
+        controller.capsuleShown = false
+        controller.phase = .done
+        UserDefaults.standard.set(true, forKey: "compactShelfFolded")
+        try await compact("compact-folded")
+        UserDefaults.standard.removeObject(forKey: "compactShelfFolded")
         controller.phase = .idle; controller.result = ""; controller.shelf.items = []; controller.shelf.linked = 0
         let kept = settings.history; settings.history = []
         try await compact("compact-empty")
@@ -912,23 +1044,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try expect(controller.recordingShortcut, "the shortcut badge")
         try await press(35, fromTop: 62)
         try expect(!controller.recordingShortcut, "the shortcut badge, clicked again to keep the shortcut")
-        // The compact bar: its button in the title row, and the way back from the bar itself.
+        // Keeping on top: its button in the title row, and the bar's own buttons at the end of its first row.
         var compactAsked: Bool?
         settings.setCompact = { compactAsked = $0 }
         try await press(159, fromTop: 15)
-        try expect(compactAsked == true, "the compact bar's button in the title row")
-        var expanded = false
-        let bar = makeCompact(onExpand: { expanded = true }, glass: false)
+        try expect(compactAsked == true, "the Keep on Top button in the title row")
+        var expanded = false, unpinned = false
+        let bar = makeCompact(onExpand: { expanded = true }, onUnpin: { unpinned = true }, glass: false)
         bar.setFrameOrigin(NSPoint(x: live.frame.minX, y: live.frame.minY))
         bar.alphaValue = 0
         bar.ignoresMouseEvents = true
         bar.orderFrontRegardless()
         try await Task.sleep(nanoseconds: 400_000_000)
-        try await press(CompactBar.width - 22, fromTop: 22, in: bar)
-        try expect(expanded, "the compact bar's button back to the full panel")
+        try await press(CompactBar.width - 20, fromTop: 22, in: bar)
+        try expect(expanded, "the bar's button back to the full panel")
+        try await press(CompactBar.width - 53, fromTop: 22, in: bar)
+        try expect(unpinned, "the bar's Stop Keeping on Top button")
+        try await press(CompactBar.width - 86, fromTop: 22, in: bar)
+        try expect(UserDefaults.standard.bool(forKey: "compactShelfFolded"), "the bar's Hide the Shelf button")
+        try await press(CompactBar.width - 86, fromTop: 22, in: bar)
+        try expect(!UserDefaults.standard.bool(forKey: "compactShelfFolded"), "the bar's Show the Shelf button")
+        UserDefaults.standard.removeObject(forKey: "compactShelfFolded")
         bar.close()
         settings.setCompact = nil
-        print("Clicks reach the settings and history buttons, Text polishing's switch, the shortcut badge and both ends of the compact bar.")
+        print("Clicks reach the settings and history buttons, Text polishing's switch, the shortcut badge, Keep on Top, and the bar's Shelf, pin and full panel buttons.")
         live.close()
         for key in ["panelWishedHeight", "panelLeft", "panelTop"] { UserDefaults.standard.removeObject(forKey: key) }
         print("Rendered \(count) native UI states without recording, API calls, or permission changes.")
