@@ -55,6 +55,9 @@ struct Preferences: Codable, Equatable {
     var declinedWords: [String] = []
     /// Work with other Macs at all: answer their calls, send text to the one being operated, share the shelf.
     var linkEnabled = false
+    /// Show this Mac's screen on the owner's Monitor page, and let it be worked from there
+    /// (ScreenHost): off until it is turned on at this Mac.
+    var screenEnabled = false
     /// The Macs this one trusts, each by its key, with what it may do here.
     var devices: [TrustedDevice] = []
     /// Only take calls that arrive through Tailscale.
@@ -111,6 +114,7 @@ struct Preferences: Codable, Equatable {
         }
         devices = try values.decodeIfPresent([TrustedDevice].self, forKey: .devices) ?? devices
         tailscaleOnly = try values.decodeIfPresent(Bool.self, forKey: .tailscaleOnly) ?? tailscaleOnly
+        screenEnabled = try values.decodeIfPresent(Bool.self, forKey: .screenEnabled) ?? screenEnabled
         // A Mac that sent or received before keeps working with the others.
         linkEnabled = try values.decodeIfPresent(Bool.self, forKey: .linkEnabled) ?? (remoteRole != "off")
     }
@@ -384,6 +388,8 @@ final class SettingsStore: ObservableObject {
     @Published var savedKeys: Set<String> = []
     @Published var microphoneAllowed = false
     @Published var accessibilityAllowed = false
+    /// Whether macOS lets out record the screen, which showing it on the Monitor page takes.
+    @Published var screenRecordingAllowed = false
     /// Cached login-item state so opening or rendering Settings never blocks on XPC.
     @Published private(set) var loginItemEnabled = false
     @Published var loginMessage = ""
@@ -550,6 +556,8 @@ final class SettingsStore: ObservableObject {
         if microphoneAllowed != mic { microphoneAllowed = mic }
         let ax = AXIsProcessTrusted()
         if accessibilityAllowed != ax { accessibilityAllowed = ax }
+        let screen = ScreenHost.recordingAllowed
+        if screenRecordingAllowed != screen { screenRecordingAllowed = screen }
     }
 
     nonisolated private static func applyLoginItem(_ value: Bool) throws {
@@ -689,6 +697,14 @@ final class SettingsStore: ObservableObject {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         openPrivacy("Privacy_Accessibility")
+    }
+
+    /// Asks macOS for the permission to record the screen: its own prompt the first time, and its
+    /// settings after that, where the switch is.
+    func requestScreenRecording() {
+        guard !preview else { return }
+        if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
+        refreshPermissions()
     }
 
     func openPrivacy(_ anchor: String) {

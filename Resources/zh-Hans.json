@@ -638,5 +638,15 @@
  "Shortcut: %@": "快捷键：%@",
  "Back to the full panel": "回到完整面板",
  "Nothing dictated yet": "还没有听写内容",
- "Drop files, images or text here": "把文件、图片或文字拖到这里"
+ "Drop files, images or text here": "把文件、图片或文字拖到这里",
+ "The Monitor helper on this Mac is not installed, or is too old to show the screen. Install or update it from the Monitor page.": "这台 Mac 上没有安装 Monitor 探针，或版本太旧，无法显示屏幕。请在 Monitor 页面安装或更新。",
+ "Show this screen on Monitor": "在 Monitor 上显示本机屏幕",
+ "When on, this Mac’s screen can be viewed and controlled from your Monitor page, through the Monitor helper: the picture, the Mac’s sound, the pointer, the keys and the clipboard. Only a browser the helper on this Mac trusts can open it.": "开启后，可以在 Monitor 页面通过 Monitor 探针查看并操作这台 Mac 的屏幕：画面、声音、指针、按键和剪贴板。只有这台 Mac 的探针信任的浏览器才能打开。",
+ "out needs macOS’s permission to record the screen before it can show it. After it is given, macOS asks for out to be reopened.": "显示屏幕之前，需要 macOS 的屏幕录制权限。授予后，macOS 会要求重新打开 out。",
+ "Allow Screen Recording": "允许屏幕录制",
+ "Being viewed from the Monitor page": "正在 Monitor 页面上显示",
+ "Ready. Open this Mac’s screen from its terminal on the Monitor page.": "已就绪。在 Monitor 页面这台 Mac 的终端里打开屏幕。",
+ "Without the Accessibility permission, the page can view this screen but not control it.": "没有辅助功能权限时，页面只能查看这块屏幕，不能操作。",
+ "Stop Showing the Screen": "停止显示屏幕",
+ "Stop": "停止"
 }

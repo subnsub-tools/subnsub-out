@@ -138,6 +138,18 @@ On each Mac, install out, and install the Monitor helper from the Monitor page w
 - Recordings transcribed later, after the network returns, go only to History and are not sent to another Mac, as they are not written to this Mac's field either.
 - When the receiving Mac is recording itself, received text is still pasted and saved to History without interrupting its own capsule.
 
+## The screen on the Monitor page
+
+out can show this Mac's screen on your Monitor page, where it can be controlled as well as viewed. It stays off until you turn it on with the "Show this screen on Monitor" switch in the panel's Multiple Macs block.
+
+- What is sent: the main display as video (H.264, or HEVC where the browser decodes it), the Mac's sound, and the pointer's shape. What comes back: pointer movement and clicks, key presses by physical key position (this Mac's own keyboard layout decides what they type), vertical and horizontal scrolling, text an input method commits on the viewing side, and clipboard text, which goes both ways.
+- How it travels: through the Monitor helper on this Mac, like Multiple Macs. The page starts the session with a command signed by a key the helper has pinned, and the helper passes the session's two streams to out without reading them. out asks for no password of its own, and macOS Screen Sharing does not need to be on.
+- Permissions: macOS's permission to record the screen, requested the first time the switch is turned on (macOS then asks to reopen out), and Accessibility, which out already uses for typing. Without Accessibility, the screen can be viewed but not controlled.
+- One page at a time. While a page is viewing the screen, the panel says so and has a Stop button, and the menu bar menu has Stop Showing the Screen; macOS also shows its own recording indicator.
+- The picture is the display's own size, or the size of the page's window when the page chooses Dynamic resolution; this Mac's display itself does not change. The page's quality setting changes the video's rate at once.
+- A Mac's screen can be shown on the Monitor page only when out is installed on it.
+- The helper is the gate. out shows the screen to the session the Monitor helper on this Mac hands it, and the helper's own files in your account decide which browsers may ask. A program running as you on this Mac that can change those files, or take the helper's place at its socket, could start a session too: out cannot tell it from the helper. Leave the switch off on a Mac where that matters.
+
 ## Releases and updates
 
 - Builds: every push to `main` is checked (`swift run QingyanChecks`) and built by GitHub Actions (`.github/workflows/release.yml`). A build is published when the maintainers tag it `v0.1.<build>`: the workflow signs it and makes one release for that version, the only one that holds it, containing `out-0.1.<build>.zip` (the app, which `install.sh` and installed copies download) and `out.json` naming it. There is no disk image or other installer. The build number only increases. 0.1.50 also carried the app as `put-0.1.50.zip` with a `put.json`, for copies installed while it was called put, which moved themselves to `out.app`; now that every Mac runs out, that pair is gone from it, later releases do not carry it, and the old pre-release `builds` that copies up to 0.1.48 read is deleted.
@@ -202,3 +214,5 @@ swift run Qingyan --render-previews <output folder>
 ```
 
 Final acceptance still needs a real key and the user's permissions: short and long sentences, mixed Chinese and English, spoken corrections, writing back across apps, switching fields while recording, and the recognition accuracy and actual latency for Chinese. Text in the interface previews is a labeled test sample, not evidence of cloud recognition.
+
+A debug build also has `Qingyan --screen-selftest <dir> [avc|hevc]`: it runs a screen session with no page at the other end and writes the video, the sound and `report.json` to `<dir>`.

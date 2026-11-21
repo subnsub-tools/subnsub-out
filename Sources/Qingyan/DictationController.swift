@@ -96,6 +96,9 @@ final class DictationController: ObservableObject {
     private var checkJob: Task<Void, Never>?
     private var hadSignal = false
     private let receiver = RemoteReceiver()
+    /// This Mac's screen on the owner's Monitor page.
+    let screen = ScreenHost()
+    @Published var screenState = ScreenHost.State.off
     /// Sender side, one dictation: the armed links, and the knock typed when recording stopped.
     private var remoteSession: RemoteSession?
     private struct Delivered {
@@ -253,6 +256,10 @@ final class DictationController: ObservableObject {
                 if self?.recordingShortcut == true { self?.endShortcutRecording() }
             }
         }
+        screen.onChange = { [weak self] in
+            guard let self else { return }
+            if self.screenState != self.screen.state { self.screenState = self.screen.state }
+        }
         receiver.onChange = { [weak self] in
             guard let self, self.settings.preferences.linkEnabled else { return }
             if self.remoteListening != self.receiver.listening { self.remoteListening = self.receiver.listening }
@@ -336,6 +343,8 @@ final class DictationController: ObservableObject {
         }
         if shortcutStatus != nextStatus { shortcutStatus = nextStatus }
         syncRemote()
+        // The screen is offered while its switch is on, whatever the other settings say.
+        if settings.preferences.screenEnabled { screen.start() } else if screen.state != .off { screen.stop() }
         shelf.sync?.listening = settings.preferences.remotePort
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
         refreshHelper()

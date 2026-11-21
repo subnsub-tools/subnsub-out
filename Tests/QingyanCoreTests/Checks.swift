@@ -105,7 +105,8 @@ struct Checks {
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
             ("Microphone binding: a bound device is used only while connected and never falls back; unbound follows the system", microphoneBinding),
-            ("Localization: the language setting, words from a table, formats, English where the table has no word", localization)
+            ("Localization: the language setting, words from a table, formats, English where the table has no word", localization),
+            ("Screen on the Monitor page: frames cut from pieces, the page's commands and their bounds, pointer, key and wheel, the picture's size, clicks in a row", screenWire)
         ]
         for (name, test) in cases {
             do { try test(); print("PASS \(name)") }
@@ -155,6 +156,60 @@ struct Checks {
         try check(follow == .systemDefault(headset) && follow.canRecord && !follow.isBound && follow.missingMessage == nil, "unbound follows the system default")
         let none = MicrophoneBinding.resolve(boundUID: "", boundName: "", available: [], systemDefault: nil)
         try check(none == .noInputDevices && !none.canRecord && none.missingMessage != nil, "no input at all is said")
+    }
+
+    static func screenWire() throws {
+        // A frame to the page: kind, three bytes of length, the body.
+        let status = ScreenWire.status(["s": "hello"])
+        try check(status.first == 1 && Int(status[1]) << 16 | Int(status[2]) << 8 | Int(status[3]) == status.count - 4, "a frame's length is its body's")
+        // What the page sends arrives in pieces of any size and is cut into the same frames.
+        func page(_ kind: UInt8, _ body: [UInt8]) -> Data { Data([kind, UInt8(body.count >> 16 & 0xFF), UInt8(body.count >> 8 & 0xFF), UInt8(body.count & 0xFF)] + body) }
+        let open = Array(#"{"t":"open","codecs":["hevc","avc","vp9"],"audio":false,"w":1512,"h":982,"scale":2,"kbps":9000}"#.utf8)
+        let all = page(1, open) + page(2, [1, 0x02, 0x80, 0x01, 0x68]) + page(3, [1, 0x00, 0x24]) + page(4, [0xFF, 0xF6, 0x00, 0x1E, 0, 10, 0, 20])
+        for cut in [1, 3, 4, 5, 50, all.count - 1] {
+            var parser = ScreenWire.Parser()
+            let first = parser.feed(all.prefix(cut)) ?? [], second = parser.feed(all.dropFirst(cut)) ?? []
+            let frames = first + second
+            try check(frames.count == 4 && frames.map(\.kind) == [1, 2, 3, 4] && frames[0].body == Data(open), "cut at \(cut), the same four frames")
+        }
+        var parser = ScreenWire.Parser()
+        try check(parser.feed(Data([1, 0xFF, 0xFF, 0xFF])) == nil, "a frame longer than a page may send ends the session before it is read")
+        // The first word, with a codec this Mac does not know left out and the rate kept in bounds.
+        try check(ScreenWire.command(Data(open)) == .open(codecs: [.hevc, .avc], audio: false, size: .init(width: 1512, height: 982, scale: 2), kbps: 9000),
+                  "the page's first word is read")
+        try check(ScreenWire.command(Data(#"{"t":"open"}"#.utf8)) == .open(codecs: [.avc], audio: true, size: nil, kbps: ScreenWire.kbpsDefault),
+                  "a first word that says nothing gets H.264, the sound, the display's own size and the usual rate")
+        try check(ScreenWire.command(Data(#"{"t":"kbps","kbps":9999999}"#.utf8)) == .kbps(ScreenWire.kbpsRange.upperBound)
+                  && ScreenWire.command(Data(#"{"t":"kbps","kbps":1}"#.utf8)) == .kbps(ScreenWire.kbpsRange.lowerBound), "a rate is kept within its range")
+        try check(ScreenWire.command(Data(#"{"t":"size","w":10,"h":10}"#.utf8)) == .size(nil) && ScreenWire.command(Data(#"{"t":"size"}"#.utf8)) == .size(nil),
+                  "a size too small to be a window, or none, is the display's own")
+        try check(ScreenWire.command(Data(#"{"t":"text","text":"\u4f60\u597d"}"#.utf8)) == .text("\u{4F60}\u{597D}")
+                  && ScreenWire.command(Data(#"{"t":"clip","text":"a\nb"}"#.utf8)) == .clipboard("a\nb"), "text to type and text for the clipboard, in any script")
+        try check(ScreenWire.command(Data(#"{"t":"nothing"}"#.utf8)) == nil && ScreenWire.command(Data("{".utf8)) == nil, "what is not a command is not acted on")
+        // The pointer, a key and the wheel.
+        try check(ScreenWire.pointer(Data([5, 0x02, 0x80, 0x01, 0x68])) == .init(buttons: 5, x: 640, y: 360) && ScreenWire.pointer(Data([1, 2, 3])) == nil, "a pointer")
+        try check(ScreenWire.key(Data([1, 0, 0x24])) == .init(down: true, code: 0x24) && ScreenWire.key(Data([1, 0x01, 0x00])) == nil, "a key, and not a code no Mac key has")
+        try check(ScreenWire.scroll(Data([0xFF, 0xF6, 0x00, 0x1E, 0, 10, 0, 20])) == .init(dx: -10, dy: 30, x: 10, y: 20), "the wheel, both ways")
+        try check(ScreenWire.modifier(0x37) == .maskCommand && ScreenWire.modifier(0x3C) == .maskShift && ScreenWire.modifier(0x24) == nil, "which keys are modifiers")
+        // The picture's size: the display's own, or the window's, never larger than the display, even sides.
+        let display = (width: 3024, height: 1964)
+        try check(ScreenWire.pictureSize(displayPixels: display, window: nil) == (3024, 1964), "no window size: the display's")
+        let fitted = ScreenWire.pictureSize(displayPixels: display, window: .init(width: 1200, height: 700, scale: 1))
+        try check(fitted.width % 2 == 0 && fitted.height % 2 == 0 && fitted.width <= 1200 && fitted.height <= 700
+                  && abs(Double(fitted.width) / Double(fitted.height) - 3024.0 / 1964.0) < 0.01, "a window's size, in the display's proportions: \(fitted)")
+        try check(ScreenWire.pictureSize(displayPixels: display, window: .init(width: 5000, height: 4000, scale: 2)) == (3024, 1964), "never larger than the display")
+        let small = ScreenWire.pictureSize(displayPixels: display, window: .init(width: 200, height: 150, scale: 1))
+        try check(small.width >= 640 && small.width < 1000, "and not smaller than can be read: \(small)")
+        // Presses in a row.
+        var clicks = ScreenWire.Clicks()
+        try check(clicks.press(button: 1, at: 10, x: 5, y: 5, within: 0.5) == 1 && clicks.press(button: 1, at: 10.2, x: 6, y: 5, within: 0.5) == 2
+                  && clicks.press(button: 1, at: 10.3, x: 6, y: 6, within: 0.5) == 3, "a second and a third press in time and in place count up")
+        try check(clicks.press(button: 1, at: 12, x: 6, y: 6, within: 0.5) == 1 && clicks.press(button: 4, at: 12.1, x: 6, y: 6, within: 0.5) == 1
+                  && clicks.press(button: 4, at: 12.2, x: 60, y: 6, within: 0.5) == 1, "too late, another button, or elsewhere starts again")
+        // A cursor's pixels drawn premultiplied become plain colour and alpha.
+        var pixels: [UInt8] = [128, 0, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0]
+        ScreenWire.unpremultiply(&pixels)
+        try check(pixels == [255, 0, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0], "a half-transparent red is red at half alpha")
     }
 
     static func localization() throws {

@@ -1358,10 +1358,44 @@ struct RemoteSection: View {
             Reveal(open: !on) {
                 caption(tr("Text is typed on this Mac only. When on, results go to the Mac you are controlling by remote desktop, and the Shelf is shared.")).padding(.top, 8)
             }
+            Row(tr("Show this screen on Monitor"), info: tr("When on, this Mac’s screen can be viewed and controlled from your Monitor page, through the Monitor helper: the picture, the Mac’s sound, the pointer, the keys and the clipboard. Only a browser the helper on this Mac trusts can open it.")) {
+                Toggle(tr("Show this screen on Monitor"), isOn: $settings.preferences.screenEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                    .onChange(of: settings.preferences.screenEnabled) { _, _ in controller.refresh() }
+            }.padding(.top, 10)
+            Reveal(open: settings.preferences.screenEnabled) { screenStatus.padding(.top, 8) }
         }
         .onAppear { controller.refreshHelper(force: true); controller.testPeers() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             controller.refreshHelper(); controller.testPeers()
+        }
+    }
+
+    /// Under the screen's switch: the permission it still needs, who is watching, or that it is ready.
+    @ViewBuilder private var screenStatus: some View {
+        if !settings.screenRecordingAllowed {
+            VStack(alignment: .leading, spacing: 8) {
+                CopyableText(tr("out needs macOS’s permission to record the screen before it can show it. After it is given, macOS asks for out to be reopened."), font: .system(size: 11), color: .orange)
+                Button(tr("Allow Screen Recording")) { settings.requestScreenRecording() }.buttonStyle(QuietButton())
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                switch controller.screenState {
+                case .viewing:
+                    HStack(spacing: 6) {
+                        Circle().fill(Palette.accent).frame(width: 6, height: 6)
+                        Text(tr("Being viewed from the Monitor page")).font(.system(size: 11)).foregroundStyle(Palette.ink).lineLimit(1)
+                        Spacer(minLength: 6)
+                        Button(tr("Stop")) { controller.screen.stopViewing() }.buttonStyle(QuietButton())
+                    }
+                case .unavailable(let why):
+                    CopyableText(why, font: .system(size: 11), color: .orange)
+                case .waiting, .off:
+                    caption(tr("Ready. Open this Mac’s screen from its terminal on the Monitor page."))
+                }
+                if !settings.accessibilityAllowed {
+                    caption(tr("Without the Accessibility permission, the page can view this screen but not control it."))
+                }
+            }
         }
     }
 

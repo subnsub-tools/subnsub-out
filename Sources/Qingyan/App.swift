@@ -89,6 +89,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--screen-selftest"), CommandLine.arguments.count > index + 1 {
+            let codec = CommandLine.arguments.count > index + 2 ? CommandLine.arguments[index + 2] : "avc"
+            Task { @MainActor in
+                do { try await ScreenSelfTest.run(to: CommandLine.arguments[index + 1], codec: codec); exit(0) }
+                catch { fputs("Screen self-test failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         #endif
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: "local.hopo.qingyan")
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
@@ -158,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         settings?.flushPersistence()
-        controller?.suspend(); controller?.shortcut.stop()
+        controller?.suspend(); controller?.shortcut.stop(); controller?.screen.stop()
         PasteboardLease.general.restore()
         observations.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
     }
@@ -191,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording)) }
         if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording)) }
         if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard)) }
+        if controller.screenState == .viewing { item(menu, tr("Stop Showing the Screen"), #selector(stopScreen)) }
         item(menu, tr("Show Main Panel"), #selector(openMain))
         item(menu, tr("Keep on Top"), #selector(togglePinned))?.state = pinned ? .on : .off
         item(menu, tr("Settings…"), #selector(openSettings))
@@ -204,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item.target = self; menu.addItem(item); return item
     }
     @objc private func openMain() { showWindow() }
+    @objc private func stopScreen() { controller.screen.stopViewing() }
     // Unchecked, it only stops keeping on top, as the bar's own pin does; the panel stays as it is.
     @objc private func togglePinned() { if pinned { leaveCompact() } else { setCompact(true) } }
     @objc private func openSettings() { settings.reveal(.general) }
