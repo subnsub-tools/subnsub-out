@@ -467,6 +467,8 @@ final class DictationController: ObservableObject {
             if let roster, !roster.tunnel { next = .noTunnel }
             if self.helperState != next { self.helperState = next }
             if let roster { self.shelf.sync?.selfID = HelperLink.id(roster.agent) }
+            // Without an answer the helper is not there to make a link either.
+            self.shelf.helperSaid(linkable: roster?.host ?? false)
             // A helper that is down for a moment keeps the Macs it named; one that is not there has none.
             guard roster != nil || next == .missing else { return }
             let devices = (roster?.peers ?? []).map { peer -> TrustedDevice in

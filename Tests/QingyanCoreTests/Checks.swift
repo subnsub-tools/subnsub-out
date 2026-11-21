@@ -128,6 +128,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Shelf store: \(error.localizedDescription)") }
         do { try await shelfSync(); print("PASS Shelf between Macs over real TCP: both directions, multi-frame file intact, removal, catching up, relay, large items as cards fetched on demand, resume, fetch through a third Mac, untrusted Mac, two Macs calling each other") }
         catch { failed += 1; print("FAIL Shelf sync: \(error.localizedDescription)") }
+        do { try await links(); print("PASS Links through the helper: the helper says whether it can, a file goes whole and its link comes back, hosted already sends nothing, a card with no file, each refusal in words, taken down") }
+        catch { failed += 1; print("FAIL Links: \(error.localizedDescription)") }
         do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
         do { try await platformCalls(); print("PASS Other platforms over real HTTP: nothing sent until the recording ends, upload and reply, hint only where taken, no key no header, short and cancelled recordings, tidying through chat and through Responses, cut-off replies refused, model list, errors without the reply's text") }
@@ -728,6 +730,139 @@ struct Checks {
             if let nonce = decoder.feed(step, at: 100 + Double(index) * 0.012) { interrupted.append(nonce) }
         }
         try check(interrupted.isEmpty, "an ordinary key in the middle cancels the knock")
+    }
+
+    /// The helper's put.sock as far as links go: a line asked, its answers, and the file between.
+    @MainActor final class FakeLinkHelper {
+        private let listener: NWListener
+        var hosted: [String: Data] = [:]
+        var names: [String: String] = [:]
+        var refuse: String?
+        var asked = 0
+
+        init(path: String) throws {
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = NWEndpoint.unix(path: path)
+            listener = try NWListener(using: parameters)
+            listener.newConnectionHandler = { [weak self] connection in
+                MainActor.assumeIsolated {
+                    connection.start(queue: .main)
+                    Task { @MainActor in await self?.serve(connection) }
+                }
+            }
+            listener.start(queue: .main)
+        }
+
+        func stop() { listener.cancel() }
+
+        private func line(_ connection: NWConnection) async throws -> [String: Any] {
+            var data = Data()
+            while true {
+                let byte = try await RemoteIO.read(connection, count: 1)
+                if byte.first == 0x0A { break }
+                data.append(byte)
+            }
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        }
+
+        private func answer(_ connection: NWConnection, _ object: [String: Any]) async throws {
+            var data = try JSONSerialization.data(withJSONObject: object)
+            data.append(0x0A)
+            try await RemoteIO.write(connection, data)
+        }
+
+        private func serve(_ connection: NWConnection) async {
+            defer { connection.cancel() }
+            do {
+                let ask = try await line(connection)
+                asked += 1
+                let id = ask["id"] as? String ?? ""
+                switch ask["op"] as? String {
+                case "peers":
+                    try await answer(connection, ["ok": true, "self": ["agent": "selfMac", "name": "Self"], "peers": [[String: Any]](),
+                                                  "tunnel": true, "version": "test", "host": refuse == nil])
+                case "unhost":
+                    hosted[id] = nil
+                    try await answer(connection, ["ok": true])
+                case "host":
+                    if let refuse { try await answer(connection, ["ok": false, "error": refuse]); return }
+                    if hosted[id] == nil {
+                        guard ask["have"] as? Bool == true, let size = ask["size"] as? Int else {
+                            try await answer(connection, ["ok": false, "error": "not-hosted"]); return
+                        }
+                        try await answer(connection, ["ok": true, "send": true])
+                        var body = Data()
+                        while body.count < size { body.append(try await RemoteIO.read(connection, count: min(64 << 10, size - body.count))) }
+                        hosted[id] = body
+                        names[id] = ask["name"] as? String
+                    }
+                    try await answer(connection, ["ok": true, "url": "http://primary.test:8126/s/\(id)/x"])
+                default:
+                    try await answer(connection, ["ok": false, "error": "unknown-op"])
+                }
+            } catch {}
+        }
+    }
+
+    final class Fractions: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Double] = []
+        func add(_ value: Double) { lock.lock(); values.append(value); lock.unlock() }
+        var all: [Double] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+
+    @MainActor static func links() async throws {
+        let path = "/tmp/qy-link-\(UInt32.random(in: 0..<UInt32.max)).sock"
+        let helper = try FakeLinkHelper(path: path)
+        defer { helper.stop(); try? FileManager.default.removeItem(atPath: path) }
+        HelperLink.socketOverride = path
+        defer { HelperLink.socketOverride = nil }
+        try await settle("the stand-in helper listens") { FileManager.default.fileExists(atPath: path) }
+        let able = try await HelperLink.roster()
+        try check(able.host, "the helper says a link can be made")
+        let folder = try scratch("link")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("Screen Shot.png")
+        let bytes = pattern(900_000, seed: 7)
+        try bytes.write(to: file)
+        let id = UUID(), key = id.uuidString.lowercased()
+        let fractions = Fractions()
+        let link = try await HelperLink.host(id: id, name: "Screen Shot.png", size: bytes.count, file: file) { fractions.add($0) }
+        try check(link == "http://primary.test:8126/s/\(key)/x", "the link the helper gave comes back")
+        try check(helper.hosted[key] == bytes && helper.names[key] == "Screen Shot.png", "the file reaches the helper whole, under its name")
+        try check(fractions.all.count >= 3 && fractions.all.last == 1 && fractions.all == fractions.all.sorted(), "the progress rises to the end")
+        let asked = helper.asked
+        let again = try await HelperLink.host(id: id, name: "Screen Shot.png", size: bytes.count, file: nil)
+        try check(again == link && helper.asked == asked + 1, "an item hosted already gives its link, from a Mac that holds only its card too")
+        func refused(_ what: String, _ sentence: String, _ call: () async throws -> String) async throws {
+            do { _ = try await call() }
+            catch let error as VoiceError { try check(error.message == sentence, "\(what): \(error.message)"); return }
+            try check(false, "\(what): a link was given")
+        }
+        try await refused("a card whose file is on no Mac here", HelperLink.hostRefusal("not-hosted")) {
+            try await HelperLink.host(id: UUID(), name: "Card.mov", size: 5, file: nil)
+        }
+        for code in ["no-primary", "unreachable", "no-tailnet", "full", "off", "not-allowed", "unknown-op", "something-new"] {
+            helper.refuse = code
+            try await refused("refused \(code)", HelperLink.hostRefusal(code)) {
+                try await HelperLink.host(id: UUID(), name: "a.png", size: bytes.count, file: file)
+            }
+        }
+        let unable = try await HelperLink.roster()
+        try check(!unable.host, "a helper with no primary says no link can be made")
+        try check(Set(["no-primary", "unreachable", "no-tailnet", "full", "off", "not-allowed", "unknown-op", "not-hosted"].map(HelperLink.hostRefusal)).count == 8,
+                  "each refusal has its own sentence")
+        helper.refuse = nil
+        try await refused("a file shorter than it was said to be", tr("The file changed while it was being sent. Try again.")) {
+            try await HelperLink.host(id: UUID(), name: "short.bin", size: bytes.count + 10, file: file)
+        }
+        try await HelperLink.unhost(id: id)
+        try check(helper.hosted[key] == nil, "taken down at the helper")
+        // A socket's path is short: one under the scratch folder is too long to be given to a connection.
+        HelperLink.socketOverride = "/tmp/qy-none-\(UInt32.random(in: 0..<UInt32.max)).sock"
+        try await refused("no helper answering", HelperLink.sentence(.notRunning)) {
+            try await HelperLink.host(id: id, name: "Screen Shot.png", size: bytes.count, file: file)
+        }
     }
 
     static func scratch(_ label: String) throws -> URL {
