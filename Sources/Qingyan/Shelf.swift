@@ -42,6 +42,21 @@ final class ShelfModel: ObservableObject {
     private var copiedToken = UUID()
     /// Items the user clicked before their bytes were here: copy them once they arrive.
     private var copyWhenHere: Set<UUID> = []
+    /// Items asked to be downloaded to this Mac: shown in the Finder once they arrive.
+    private var revealWhenHere: Set<UUID> = []
+    private var expiryChecked = Date.distantPast
+    private var peeks: [UUID: NSImage] = [:]
+    /// Clicked while its link was still being made for it, as it was put on the Shelf: copied when it comes.
+    private var copyWhenLinked: Set<UUID> = []
+    /// This Mac's own images and files not yet kept on the primary helper, and when to try again.
+    private var hostAgain: [UUID: (at: Date, wait: TimeInterval)] = [:]
+    /// The images and files on the Shelf at the last look: any one of them that leaves it is taken
+    /// down at the primary helper by every Mac, which any may do, whoever sent it there.
+    private var hostable: Set<UUID> = []
+    /// Drags of a card waiting for its bytes, each told the file when it has come (nil: it will not).
+    private var dragWaiters: [UUID: [(URL?) -> Void]] = [:]
+    /// Downloads straight from the primary helper, when no Mac that holds the file is online.
+    private var helperDownloads: [UUID: Task<Void, Never>] = [:]
     let name: String
     /// What a drop on the panel may carry.
     static let types: [UTType] = [.fileURL, .image, .url, .utf8PlainText, .plainText]
@@ -75,11 +90,16 @@ final class ShelfModel: ObservableObject {
         let present = Set(next.map(\.id))
         thumbnails = thumbnails.filter { present.contains($0.key) }
         snippets = snippets.filter { present.contains($0.key) }
+        peeks = peeks.filter { present.contains($0.key) }
         // An item removed from the Shelf, here or on another Mac, takes its link with it. Removed,
         // not merely missing: a Shelf that could not be read has no items and no removals, and takes
         // nothing down.
         if let store {
-            let orphaned = Set(links.keys).union(maybeLinked).filter { !present.contains($0) && store.isGone($0) }
+            let wasHostable = hostable
+            hostable = Set(next.filter { $0.kind != .text && $0.card == true }.map(\.id))
+            // Taken down by whichever Mac sees it leave (any may), but only where a primary helper keeps files.
+            let left = linkable ? wasHostable.filter { !present.contains($0) && store.isGone($0) } : []
+            let orphaned = Set(links.keys).union(maybeLinked).filter { !present.contains($0) && store.isGone($0) }.union(left)
             if !orphaned.isEmpty {
                 for id in orphaned { links[id] = nil; maybeLinked.remove(id); unlinking.insert(id); linkTasks[id]?.cancel() }
                 saveLinks()
@@ -166,19 +186,48 @@ final class ShelfModel: ObservableObject {
         if large { say(tr("Adding “%@”…", url.lastPathComponent), for: 60) }
         Task { [weak self] in
             guard let self else { return }
-            let thumbnail = large ? await Self.quickLook(url) : nil
+            // Every file and image is a card on the other Macs: each has its thumbnail.
+            let thumbnail = await Self.quickLook(url)
             do {
                 let item = try await store.add(copying: url, kind: image ? .image : .file, origin: self.name, thumbnail: thumbnail)
                 if large { self.say(tr("Added “%@”. Other Macs fetch it when it is needed.", item.name), for: 3.5) }
+                self.keep(item)
             } catch { self.say(error.localizedDescription, for: 4) }
         }
     }
 
+    /// The thumbnail the other Macs' card shows, and the picture that floats out of a tile: large
+    /// enough for that, small enough to travel with the card (under 200 KB).
+    private static let thumbnailSide: CGFloat = 280
+
     private static func quickLook(_ url: URL) async -> Data? {
-        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 128, height: 128), scale: 2, representationTypes: .thumbnail)
-        guard let representation = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request),
-              let tiff = representation.nsImage.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
-        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7])
+        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: thumbnailSide, height: thumbnailSide), scale: 2, representationTypes: .thumbnail)
+        guard let representation = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) else { return nil }
+        return jpeg(representation.nsImage)
+    }
+
+    private static func jpeg(_ image: NSImage) -> Data? {
+        guard image.size.width > 0, image.size.height > 0 else { return nil }
+        let k = min(1, thumbnailSide * 2 / max(image.size.width, image.size.height))
+        let size = NSSize(width: max(1, (image.size.width * k).rounded()), height: max(1, (image.size.height * k).rounded()))
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height), bitsPerSample: 8,
+                                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        NSColor.white.setFill(); NSRect(origin: .zero, size: size).fill()
+        image.draw(in: NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        for quality in [0.7, 0.5, 0.35] {
+            if let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]), data.count <= 190_000 { return data }
+        }
+        return nil
+    }
+
+    /// Kept on the primary helper as it is put on the Shelf here, so that a click on any Mac copies
+    /// its link at once; nothing is copied now.
+    private func keep(_ item: ShelfItem) {
+        guard item.kind != .text, linkable else { return }
+        link(item, copying: false)
     }
 
     private func addImage(_ data: Data) {
@@ -193,8 +242,11 @@ final class ShelfModel: ObservableObject {
         else if let bitmap = NSBitmapImageRep(data: data), let png = bitmap.representation(using: .png, properties: [:]) { payload = png }
         else { say(tr("This image format is not supported, so it was not put on the Shelf."), for: 4); return }
         // The name is for people to read (it becomes the file's name when dragged out); nothing matches on it.
-        do { try store.add(payload, kind: .image, name: tr("Image %@.%@", stamp, kind), origin: name) }
-        catch { say(error.localizedDescription, for: 4) }
+        do {
+            let item = try store.add(payload, kind: .image, name: tr("Image %@.%@", stamp, kind), origin: name,
+                                     thumbnail: NSImage(data: payload).flatMap(Self.jpeg))
+            keep(item)
+        } catch { say(error.localizedDescription, for: 4) }
     }
 
     private func addText(_ text: String) {
@@ -266,13 +318,132 @@ final class ShelfModel: ObservableObject {
         if let failure = sync.failures[item.id] { say(failure, for: 4) }
     }
 
-    func cancelFetch(_ item: ShelfItem) { copyWhenHere.remove(item.id); sync?.cancel(item.id) }
+    func cancelFetch(_ item: ShelfItem) { copyWhenHere.remove(item.id); revealWhenHere.remove(item.id); sync?.cancel(item.id) }
+
+    /// A click on a tile (user 2026-11-22): an image's or a file's link, kept on the primary helper;
+    /// text, the text itself. Without a primary helper to keep files on, the item itself, as before.
+    func click(_ item: ShelfItem) {
+        if item.kind == .text || !canLink(item) { copy(item) } else { link(item) }
+    }
+
+    /// Whether a click copies the item's link rather than the item.
+    func clickCopiesLink(_ item: ShelfItem) -> Bool { item.kind != .text && canLink(item) }
+
+    /// What a tile says when the pointer rests on it: what it is, where from, what a click does, and
+    /// the day it leaves the Shelf.
+    func hint(_ item: ShelfItem, _ stage: Stage) -> String {
+        let title = item.kind == .text ? snippet(item) : "\(item.name) · \(Self.size(item.size))"
+        let leaves = tr("Removed from the Shelf on %@", item.expires.formatted(date: .abbreviated, time: .omitted))
+        let line: String
+        switch stage {
+        case .fetching(let progress): line = tr("%@\nFetching %ld%% · Click to pause; what has arrived is kept", title, Int(progress * 100))
+        case .failed(let reason): line = clickCopiesLink(item) ? tr("%@\n%@ · Click to copy its link · Right-click to try the download again", title, reason)
+                                                                : tr("%@\n%@ · Click to try again", title, reason)
+        case .here: line = clickCopiesLink(item) ? tr("%@\nFrom %@ · Click to copy its link, or drag it out", title, item.origin)
+                                                 : tr("%@\nFrom %@ · Click to copy, or drag it out", title, item.origin)
+        case .elsewhere: line = clickCopiesLink(item) ? tr("%@\nFrom %@ · Click to copy its link · Right-click to download it to this Mac", title, item.origin)
+                                                      : tr("%@\nFrom %@ · Click to fetch it to this Mac", title, item.origin)
+        case .unreachable: line = clickCopiesLink(item) ? tr("%@\nFrom %@ · Click to copy its link · No Mac that holds this file is online to download it from", title, item.origin)
+                                                        : tr("%@\nFrom %@ · No Mac that holds this file is online", title, item.origin)
+        }
+        return line + "\n" + leaves
+    }
+
+    /// Right-click, Download to This Mac: the file is fetched here and shown in the Finder when it has come.
+    func download(_ item: ShelfItem) {
+        guard stage(item) != .here else { reveal(item); return }
+        revealWhenHere.insert(item.id)
+        fetch(item)
+        if case .fetching = stage(item) {
+            say(tr("Downloading “%@” (%@). It is shown in the Finder when it arrives.", item.name, Self.size(item.size)), for: 4)
+        } else if canLink(item) {
+            // No Mac that holds it is online: the primary helper keeps it.
+            fromHelper(item)
+        } else { revealWhenHere.remove(item.id) }
+    }
+
+    /// The file as the primary helper keeps it, through its link, when no Mac that holds it is online.
+    private func fromHelper(_ item: ShelfItem) {
+        guard let store, helperDownloads[item.id] == nil else { return }
+        let id = item.id
+        say(tr("Downloading “%@” (%@) from the primary helper. It is shown in the Finder when it arrives.", item.name, Self.size(item.size)), for: 4)
+        helperDownloads[id] = Task { [weak self] in
+            var failure: String?
+            do {
+                let known = await MainActor.run { self?.links[id] }
+                let address: String
+                if let known { address = known }
+                else { address = try await HelperLink.host(id: id, name: item.name, size: item.size, file: nil, progress: nil) }
+                guard let url = URL(string: address) else { throw VoiceError(tr("Could not get this file.")) }
+                let (file, response) = try await URLSession.shared.download(from: url)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) == item.size else {
+                    try? FileManager.default.removeItem(at: file)
+                    throw VoiceError(tr("The primary helper no longer has “%@”.", item.name))
+                }
+                await MainActor.run {
+                    guard let self, store.has(id), !store.isPresent(id) else { try? FileManager.default.removeItem(at: file); return }
+                    try? FileManager.default.removeItem(at: store.partialURL(item))
+                    do { try FileManager.default.moveItem(at: file, to: store.partialURL(item)); try store.finishFetch(item) }
+                    catch { failure = error.localizedDescription }
+                }
+            } catch { failure = error.localizedDescription }
+            await MainActor.run {
+                guard let self else { return }
+                self.helperDownloads[id] = nil
+                if let failure {
+                    self.revealWhenHere.remove(id)
+                    self.answerDrags(id, with: nil)
+                    self.say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5)
+                } else { self.transferMoved() }
+            }
+        }
+    }
+
+    private func answerDrags(_ id: UUID, with url: URL?) {
+        for waiter in dragWaiters.removeValue(forKey: id) ?? [] { waiter(url) }
+    }
+
+    /// The picture that floats out of a tile: the image itself where it is here, else the card's thumbnail.
+    func peek(_ item: ShelfItem) -> NSImage? {
+        if let known = peeks[item.id] { return known }
+        guard let store, item.kind != .text else { return nil }
+        // The card's picture is made for this size; an image put on the Shelf before it had one is
+        // read at that size from the file, never whole.
+        var image = store.thumbnail(item).flatMap(NSImage.init(data:))
+        if image == nil, item.kind == .image, store.isPresent(item.id),
+           let source = CGImageSourceCreateWithURL(store.url(item) as CFURL, nil),
+           let small = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                                                        kCGImageSourceThumbnailMaxPixelSize: Int(Self.thumbnailSide * 2),
+                                                                        kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
+            image = NSImage(cgImage: small, size: NSSize(width: small.width / 2, height: small.height / 2))
+        }
+        if let image { peeks[item.id] = image }
+        return image
+    }
     func release(_ item: ShelfItem) { store?.release(item.id) }
     func canRelease(_ item: ShelfItem) -> Bool { store.map { item.isLarge && $0.isPresent(item.id) && !$0.isOwn(item.id) } ?? false }
 
     private func transferMoved() {
         objectWillChange.send()
         guard let store, let sync else { return }
+        for id in Array(dragWaiters.keys) {
+            guard let item = store.item(id) else { answerDrags(id, with: nil); continue }
+            if store.isPresent(id) { answerDrags(id, with: store.url(item)) }
+            else if sync.progress(id) == nil, helperDownloads[id] == nil {
+                if sync.failures[id] != nil, canLink(item) { fromHelper(item) } else { answerDrags(id, with: nil) }
+            }
+        }
+        for id in revealWhenHere {
+            guard let item = store.item(id) else { revealWhenHere.remove(id); continue }
+            if store.isPresent(id) { revealWhenHere.remove(id); reveal(item) }
+            else if sync.progress(id) == nil, helperDownloads[id] == nil {
+                // The Mac it was coming from went away: the primary helper keeps it too.
+                if sync.failures[id] != nil, canLink(item) { fromHelper(item); continue }
+                revealWhenHere.remove(id)
+                if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5) }
+            }
+        }
         for id in copyWhenHere {
             guard let item = store.item(id) else { copyWhenHere.remove(id); continue }
             if store.isPresent(id) { copyWhenHere.remove(id); copy(item) }
@@ -313,7 +484,8 @@ final class ShelfModel: ObservableObject {
         case .image:
             let entry = NSPasteboardItem()
             entry.setString(store.url(item).absoluteString, forType: .fileURL)
-            if !item.isLarge, let tiff = NSImage(contentsOf: store.url(item))?.tiffRepresentation { entry.setData(tiff, forType: .tiff) }
+            // Pixels too for a small image, whether or not it travels as a card.
+            if item.size <= ShelfStore.eagerBytes, let tiff = NSImage(contentsOf: store.url(item))?.tiffRepresentation { entry.setData(tiff, forType: .tiff) }
             board.writeObjects([entry])
         case .file:
             board.writeObjects([store.url(item) as NSURL])
@@ -325,9 +497,26 @@ final class ShelfModel: ObservableObject {
     func provider(_ item: ShelfItem) -> NSItemProvider {
         guard let store else { return NSItemProvider() }
         guard store.isPresent(item.id) else {
-            fetch(item)
-            if case .fetching = stage(item) { say(tr("Fetching “%@” from the other Mac. It can be dragged out when it arrives.", item.name), for: 4) }
-            return NSItemProvider()
+            // The file is promised to where it is dropped, and handed over once it has come.
+            let id = item.id
+            let provider = NSItemProvider()
+            provider.suggestedName = item.name
+            let type = UTType(filenameExtension: (item.name as NSString).pathExtension)?.identifier ?? UTType.data.identifier
+            provider.registerFileRepresentation(forTypeIdentifier: type, fileOptions: [], visibility: .all) { [weak self] completion in
+                let progress = Progress(totalUnitCount: 1)
+                Task { @MainActor in
+                    guard let self else { completion(nil, false, nil); return }
+                    self.dragWaiters[id, default: []].append { url in
+                        progress.completedUnitCount = 1
+                        completion(url, false, url == nil ? VoiceError(tr("Could not get this file.")) : nil)
+                    }
+                    self.fetch(item)
+                    if case .fetching = self.stage(item) {} else if self.canLink(item) { self.fromHelper(item) } else { self.answerDrags(id, with: nil) }
+                }
+                return progress
+            }
+            say(tr("Fetching “%@” from the other Mac. It can be dragged out when it arrives.", item.name), for: 4)
+            return provider
         }
         store.touch(item.id)
         if item.kind == .text { return NSItemProvider(object: (store.text(item) ?? "") as NSString) }
@@ -373,8 +562,23 @@ final class ShelfModel: ObservableObject {
 
     /// What the helper on this Mac says about links, each time it is asked for the other Macs.
     func helperSaid(linkable next: Bool) {
+        let became = next && !linkable
         if linkable != next { linkable = next }
         if next { takeDown() }
+        if became { hostPending(all: true) }
+    }
+
+    /// This Mac's own images and files the primary helper does not keep yet: a helper that learned of
+    /// one only after they were put on the Shelf, or a send that did not go through.
+    private func hostPending(all: Bool = false) {
+        guard linkable, let store else { return }
+        let now = Date()
+        for item in store.items where item.kind != .text && item.card == true && store.isOwn(item.id) && store.isPresent(item.id)
+            && links[item.id] == nil && linkTasks[item.id] == nil {
+            if !all, let again = hostAgain[item.id], again.at > now { continue }
+            if hostAgain[item.id] == nil { hostAgain[item.id] = (now, 30) }
+            link(item, copying: false)
+        }
     }
 
     func hasLink(_ item: ShelfItem) -> Bool { links[item.id] != nil }
@@ -397,15 +601,23 @@ final class ShelfModel: ObservableObject {
 
     /// Copies the item's link. The primary helper keeps the item and gives the address it opens at
     /// on the tailnet; a link this Mac was given before is copied at once and checked afterwards.
-    func link(_ item: ShelfItem) {
-        guard let store, linkTasks[item.id] == nil else { return }
+    /// `copying: false`: the item is only kept on the primary helper (as it is put on the Shelf).
+    func link(_ item: ShelfItem, copying: Bool = true) {
+        if linkTasks[item.id] != nil {
+            // Being made already (as it was put on the Shelf): its link is copied when it comes.
+            if copying, copyWhenLinked.insert(item.id).inserted {
+                say(tr("Sending “%@” to the primary helper. Its link is copied when it arrives.", title(item)), for: 4)
+            }
+            return
+        }
+        guard let store else { return }
         let id = item.id
         let known = links[id]
-        if let known { place(known, for: item) }
+        if let known, copying { place(known, for: item) }
         let file = store.isPresent(id) ? store.url(item) : nil
         if known == nil {
             linking[id] = 0
-            if item.isLarge, file != nil {
+            if copying, item.size > ShelfStore.eagerBytes, file != nil {
                 say(tr("Sending “%@” (%@) to the primary helper. Its link is copied when it arrives.", item.name, Self.size(item.size)), for: 4)
             }
         }
@@ -413,14 +625,14 @@ final class ShelfModel: ObservableObject {
         let called = unlinking.remove(id) != nil
         let sending = known == nil && file != nil && maybeLinked.insert(id).inserted
         if called || sending { saveLinks() }
-        linkTasks[id] = ask(id) { [weak self] in await self?.makeLink(item, known: known, file: file) }
+        linkTasks[id] = ask(id) { [weak self] in await self?.makeLink(item, known: known, file: file, copying: copying) }
     }
 
     private func progress(for id: UUID) -> @Sendable (Double) -> Void {
         { [weak self] fraction in self?.sent(id, fraction) }
     }
 
-    private func makeLink(_ item: ShelfItem, known: String?, file: URL?) async {
+    private func makeLink(_ item: ShelfItem, known: String?, file: URL?, copying: Bool) async {
         let id = item.id
         var made: String?
         var failure: Error?
@@ -438,12 +650,18 @@ final class ShelfModel: ObservableObject {
             takeDown(now: true)
             return
         }
+        let wanted = copyWhenLinked.remove(id) != nil
         if let made {
+            hostAgain[id] = nil
             let changed = links[id] != made
             if changed || maybeLinked.contains(id) { links[id] = made; maybeLinked.remove(id); saveLinks() }
-            if known == nil { place(made, for: item) }
-            else if changed, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(made) }
-        } else if let failure, known == nil, !(failure is CancellationError) {
+            if known == nil, copying || wanted { place(made, for: item) }
+            else if changed, let known, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(made) }
+        } else if let failure, known == nil, !copying, !wanted, !(failure is CancellationError) {
+            // Kept on the primary helper as it was put on the Shelf, and that did not go: tried again later.
+            let wait = min((hostAgain[id]?.wait ?? 30) * 2, 3600)
+            hostAgain[id] = (Date().addingTimeInterval(wait), wait)
+        } else if let failure, known == nil, copying || wanted, !(failure is CancellationError) {
             // A link copied already stays as it is; only a first try says why it failed.
             say(failure.localizedDescription, for: 6)
         }
@@ -502,6 +720,11 @@ final class ShelfModel: ObservableObject {
 
     func probe() {
         guard let store else { return }
+        if Date().timeIntervalSince(expiryChecked) > 60 {
+            expiryChecked = Date()
+            store.expire()
+            hostPending()
+        }
         let trigger = store.directory.deletingLastPathComponent().appendingPathComponent("shelf-probe.trigger")
         guard access(trigger.path, F_OK) == 0,
               let request = (try? String(contentsOf: trigger, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
@@ -641,9 +864,9 @@ struct ShelfBar: View {
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(copied ? Palette.accent.opacity(0.6) : Palette.line, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .onTapGesture {
-                if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.copy(item) }
+                if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
             }
-            .onDrag { shelf.provider(item) }
+            .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
             if hovered == item.id {
                 Button { shelf.remove(item) } label: {
                     Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold)).foregroundStyle(Palette.ink)
@@ -656,21 +879,10 @@ struct ShelfBar: View {
             }
         }
         .overlay(alignment: .topLeading) { linkControl(item) }
+        .background(ShelfPeekSource(item: item, shelf: shelf))
         .onHover { inside in hovered = inside ? item.id : (hovered == item.id ? nil : hovered) }
         .help(hint(item, stage))
-        .contextMenu {
-            if shelf.canLink(item) { Button(tr("Copy link")) { shelf.link(item) } }
-            if shelf.hasLink(item) { Button(tr("Remove link")) { shelf.unlink(item) } }
-            switch stage {
-            case .here:
-                Button(tr("Copy")) { shelf.copy(item) }
-                if item.kind != .text { Button(tr("Show in Finder")) { shelf.reveal(item) } }
-                if shelf.canRelease(item) { Button(tr("Free the copy on this Mac")) { shelf.release(item) } }
-            case .fetching: Button(tr("Stop transfer")) { shelf.cancelFetch(item) }
-            default: Button(tr("Fetch to this Mac")) { shelf.fetch(item) }
-            }
-            Button(tr("Remove")) { shelf.remove(item) }
-        }
+        .contextMenu { ShelfItemMenu(shelf: shelf, item: item) }
         .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, hint(item, stage)))
     }
 
@@ -686,15 +898,6 @@ struct ShelfBar: View {
                 }
                 .frame(width: 17, height: 17).frame(width: 22, height: 22).contentShape(Rectangle())
             }.buttonStyle(.plain).offset(x: -5, y: -5).help(tr("Sending to the primary helper. Click to stop.")).accessibilityLabel(tr("Stop sending %@", item.name))
-        } else if hovered == item.id, shelf.canLink(item) {
-            Button { shelf.link(item) } label: {
-                Image(systemName: "link").font(.system(size: 8, weight: .bold)).foregroundStyle(Palette.ink)
-                    .frame(width: 17, height: 17)
-                    .background(Color.primary.opacity(0.24), in: Circle())
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }.buttonStyle(.plain).offset(x: -5, y: -5).help(tr("Copy a link that opens on your tailnet")).accessibilityLabel(tr("Copy link to %@", item.name))
-                .transition(Motion.pop)
         } else if shelf.hasLink(item) {
             Image(systemName: "link").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
                 .frame(width: 13, height: 13).background(.regularMaterial, in: Circle()).offset(x: -3, y: -3)
@@ -724,13 +927,215 @@ struct ShelfBar: View {
     }
 
     private func hint(_ item: ShelfItem, _ stage: ShelfModel.Stage) -> String {
-        let title = item.kind == .text ? shelf.snippet(item) : "\(item.name) · \(ShelfModel.size(item.size))"
+        shelf.hint(item, stage)
+    }
+}
+
+/// What a right-click on a tile offers, the same on the panel and on the bar kept on top (user
+/// 2026-11-22: a click copies the link; a right-click downloads it to this Mac, or shows it in the
+/// Finder when it is here already).
+struct ShelfItemMenu: View {
+    @ObservedObject var shelf: ShelfModel
+    let item: ShelfItem
+
+    var body: some View {
+        let stage = shelf.stage(item)
+        if shelf.canLink(item) { Button(tr("Copy link")) { shelf.link(item) } }
+        if shelf.hasLink(item) { Button(tr("Remove link")) { shelf.unlink(item) } }
         switch stage {
-        case .here: return tr("%@\nFrom %@ · Click to copy, or drag it out", title, item.origin)
-        case .elsewhere: return tr("%@\nFrom %@ · Click to fetch it to this Mac", title, item.origin)
-        case .unreachable: return tr("%@\nFrom %@ · No Mac that holds this file is online", title, item.origin)
-        case .fetching(let progress): return tr("%@\nFetching %ld%% · Click to pause; what has arrived is kept", title, Int(progress * 100))
-        case .failed(let reason): return tr("%@\n%@ · Click to try again", title, reason)
+        case .here:
+            if item.kind != .text { Button(tr("Show in Finder")) { shelf.reveal(item) } }
+            Button(item.kind == .text ? tr("Copy") : tr("Copy the file")) { shelf.copy(item) }
+            if shelf.canRelease(item) { Button(tr("Free the copy on this Mac")) { shelf.release(item) } }
+        case .fetching: Button(tr("Stop transfer")) { shelf.cancelFetch(item) }
+        default: Button(tr("Download to This Mac")) { shelf.download(item) }
+        }
+        Divider()
+        Button(tr("Remove")) { shelf.remove(item) }
+    }
+}
+
+/// The tile's picture, larger, floating out beside it while the pointer is over it (user 2026-11-22),
+/// on the panel and on the bar kept on top alike. It takes no click and no keys.
+@MainActor
+final class ShelfPeek {
+    static let shared = ShelfPeek()
+    private var panel: NSPanel?
+    private var host: NSHostingView<ShelfPeekView>?
+    private var shown: UUID?
+    private var pending: DispatchWorkItem?
+    /// While shown: the tile's place and window. The peek goes when the pointer is no longer over
+    /// the tile or the window is put away, whatever events did or did not come.
+    private var watch: Timer?
+    private var tile = NSRect.zero
+    private weak var source: NSWindow?
+
+    /// The pointer came over a tile (`rect`, in screen coordinates) or left it.
+    func hover(_ item: ShelfItem, shelf: ShelfModel, rect: NSRect, inside: Bool, window: NSWindow? = nil) {
+        pending?.cancel()
+        guard inside else {
+            if shown == item.id { hide() }
+            return
+        }
+        let work = DispatchWorkItem { [weak self, weak shelf, weak window] in
+            guard let self, let shelf, window?.isVisible != false, rect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) else { return }
+            self.source = window
+            self.show(item, shelf: shelf, rect: rect)
+        }
+        pending = work
+        // A pointer passing over the Shelf on its way elsewhere brings nothing up.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (shown == nil ? 0.3 : 0.05), execute: work)
+    }
+
+    func hide() {
+        pending?.cancel()
+        watch?.invalidate(); watch = nil
+        shown = nil
+        panel?.orderOut(nil)
+    }
+
+    private func show(_ item: ShelfItem, shelf: ShelfModel, rect: NSRect) {
+        let view = ShelfPeekView(item: item, image: shelf.peek(item), text: item.kind == .text ? String(shelf.fullText(item).prefix(600)) : nil,
+                                 icon: item.kind == .file ? shelf.icon(item) : nil, size: ShelfModel.size(item.size))
+        let content = view.fitted
+        let size = NSSize(width: content.width + 24, height: content.height + 24)
+        if panel == nil {
+            let made = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            made.isFloatingPanel = true
+            // Above the bar kept on top, which floats itself.
+            made.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+            made.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            made.ignoresMouseEvents = true
+            made.isOpaque = false
+            made.backgroundColor = .clear
+            made.hasShadow = false
+            made.hidesOnDeactivate = false
+            let hosting = NSHostingView(rootView: view)
+            made.contentView = hosting
+            panel = made; host = hosting
+        }
+        guard let panel, let host else { return }
+        host.rootView = view
+        // Above the tile, else below it, inside the pointer's screen.
+        let pointer = NSEvent.mouseLocation
+        let screen = (NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.screens.first { $0.frame.intersects(rect) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame ?? rect
+        var origin = NSPoint(x: rect.midX - size.width / 2, y: rect.maxY - 4)
+        if origin.y + size.height > screen.maxY { origin.y = rect.minY - size.height + 4 }
+        origin.x = min(max(origin.x, screen.minX + 4), screen.maxX - size.width - 4)
+        origin.y = min(max(origin.y, screen.minY + 4), screen.maxY - size.height - 4)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        shown = item.id
+        tile = rect
+        watch?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.source?.isVisible == false || !self.tile.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) { self.hide() }
+            }
+        }
+        watch = timer
+        panel.alphaValue = Motion.reduced ? 1 : 0
+        panel.orderFrontRegardless()
+        if !Motion.reduced {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                panel.animator().alphaValue = 1
+            }
         }
     }
+}
+
+/// The floating picture: as large as fits 280 points, its name and size under it.
+struct ShelfPeekView: View {
+    let item: ShelfItem
+    let image: NSImage?
+    let text: String?
+    let icon: NSImage?
+    let size: String
+
+    static let side: CGFloat = 280
+
+    /// The picture's size in points, in its own proportions.
+    private var picture: CGSize {
+        guard let image, image.size.width > 0, image.size.height > 0 else { return CGSize(width: 96, height: 96) }
+        let k = min(Self.side / image.size.width, Self.side / image.size.height, 2)
+        return CGSize(width: max(60, image.size.width * k), height: max(40, image.size.height * k))
+    }
+
+    /// The whole view's size, without its margin for the shadow.
+    var fitted: CGSize {
+        if let text {
+            // As tall as the text, up to a few lines more than a tile shows.
+            let laid = (text as NSString).boundingRect(with: NSSize(width: Self.side - 16, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                                       attributes: [.font: NSFont.systemFont(ofSize: 12)])
+            let lines = (laid.height / 15).rounded(.up)
+            return CGSize(width: Self.side, height: min(220, max(44, laid.height + lines * 2 + 16)))
+        }
+        let p = picture
+        return CGSize(width: max(p.width, 160), height: p.height + 34)
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        VStack(spacing: 6) {
+            if let text {
+                Text(text).font(.system(size: 12)).lineSpacing(2).foregroundStyle(Palette.ink)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if let image {
+                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                    .frame(width: picture.width, height: picture.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else if let icon {
+                Image(nsImage: icon).resizable().frame(width: 96, height: 96)
+            } else {
+                Image(systemName: item.kind == .image ? "photo" : "doc").font(.system(size: 40)).foregroundStyle(Palette.muted).frame(width: 96, height: 96)
+            }
+            if text == nil {
+                HStack(spacing: 4) {
+                    Text(item.name).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                    Text("·").foregroundStyle(Palette.muted)
+                    Text(size).font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize()
+                }
+                .foregroundStyle(Palette.ink).frame(maxWidth: picture.width)
+            }
+        }
+        .padding(8)
+        .frame(width: fitted.width, height: fitted.height)
+        .background(Glass())
+        .clipShape(shape)
+        .overlay(shape.stroke(Palette.line, lineWidth: 1))
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+        .padding(12)
+    }
+}
+
+/// Under a tile: tells ShelfPeek where the tile is on screen when the pointer comes over it and
+/// leaves, whichever app is in front.
+struct ShelfPeekSource: NSViewRepresentable {
+    let item: ShelfItem
+    let shelf: ShelfModel
+
+    final class Area: NSView {
+        var item: ShelfItem?
+        weak var shelf: ShelfModel?
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        }
+        private func tell(_ inside: Bool) {
+            guard let item, let shelf, let window else { return }
+            ShelfPeek.shared.hover(item, shelf: shelf, rect: window.convertToScreen(convert(bounds, to: nil)), inside: inside, window: window)
+        }
+        override func mouseEntered(with event: NSEvent) { tell(true) }
+        override func mouseExited(with event: NSEvent) { tell(false) }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil { ShelfPeek.shared.hide() }
+        }
+    }
+
+    func makeNSView(context: Context) -> Area { let area = Area(); area.item = item; area.shelf = shelf; return area }
+    func updateNSView(_ area: Area, context: Context) { area.item = item; area.shelf = shelf }
 }

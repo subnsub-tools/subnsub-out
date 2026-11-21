@@ -969,7 +969,9 @@ struct Checks {
         try Data((0..<70_000).map { UInt8($0 % 249) }).write(to: source)
         let file = try await store.add(copying: source, kind: .file, origin: "Study")
         try check(store.items.map(\.id) == [file.id, image.id, text.id], "newest first")
-        try check(store.isPresent(file.id) && store.isOwn(file.id) && !file.isLarge && store.held.isEmpty, "a small item is simply here")
+        // An image or a file travels as a card whatever its size, its bytes kept here; text goes whole.
+        try check(store.isPresent(file.id) && store.isOwn(file.id) && file.isLarge && image.isLarge && !text.isLarge && file.card == true
+                  && text.card == nil && store.held == [file.id, image.id], "a file or image added here is a card for the others, its bytes here; text is not")
         try check(store.text(text) == "Thursday at 3 p.m." && store.text(image) == nil, "text reads back, an image is not text")
         try check(try Data(contentsOf: store.url(image)) == png && store.url(file).lastPathComponent == "Report final.pdf" && file.size == 70_000,
                   "bytes and the file's own name are kept")
@@ -1004,7 +1006,7 @@ struct Checks {
         let movieBytes = pattern(ShelfStore.eagerBytes + 300_000, seed: 1)
         try movieBytes.write(to: movie)
         let mine = try await store.add(copying: movie, kind: .file, origin: "Study", thumbnail: Data([0xff, 0xd8, 0xff, 1, 2, 3]))
-        try check(mine.isLarge && store.isPresent(mine.id) && store.isOwn(mine.id) && store.held == [mine.id]
+        try check(mine.isLarge && store.isPresent(mine.id) && store.isOwn(mine.id) && store.held == [mine.id, file.id]
                   && store.thumbnail(mine) == Data([0xff, 0xd8, 0xff, 1, 2, 3]), "a large item added here keeps its bytes and its picture")
         func card(_ name: String, _ size: Int) throws -> ShelfItem {
             let item = ShelfItem(kind: .file, name: name, size: size, origin: "Office")
@@ -1016,13 +1018,13 @@ struct Checks {
             try store.finishFetch(item)
         }
         let first = try card("Interview.mp4", ShelfStore.eagerBytes + 1000), second = try card("Footage.zip", ShelfStore.eagerBytes + 2000)
-        try check(store.has(first.id) && !store.isPresent(first.id) && !store.isOwn(first.id) && store.held == [mine.id] && store.thumbnail(first) == Data([9, 9]),
+        try check(store.has(first.id) && !store.isPresent(first.id) && !store.isOwn(first.id) && store.held == [mine.id, file.id] && store.thumbnail(first) == Data([9, 9]),
                   "another Mac's large item is a card: listed, pictured, without bytes")
         store = try ShelfStore(directory: directory)
         try check(store.has(first.id) && !store.isPresent(first.id) && store.isPresent(mine.id) && store.isOwn(mine.id), "cards and ownership survive a restart")
         store.announce = { if case .presence = $0 { announced.append("~") } }
         try arrive(first, seed: 2)
-        try check(store.isPresent(first.id) && !store.isOwn(first.id) && store.held == [mine.id, first.id] && announced.last == "~"
+        try check(store.isPresent(first.id) && !store.isOwn(first.id) && store.held == [mine.id, first.id, file.id] && announced.last == "~"
                   && (try Data(contentsOf: store.url(first))) == pattern(first.size, seed: 2), "fetched bytes become the item, and the others are told")
         store.release(mine.id)
         try check(store.isPresent(mine.id), "this Mac's own item is never let go")
@@ -1031,7 +1033,7 @@ struct Checks {
         try check(store.isPresent(second.id) && !store.isPresent(first.id) && store.has(first.id) && store.isPresent(mine.id),
                   "over the limit the least recently used fetched copy goes; its card and this Mac's own items stay")
         store.release(second.id)
-        try check(!store.isPresent(second.id) && store.has(second.id) && store.held == [mine.id], "a fetched copy can be let go by hand")
+        try check(!store.isPresent(second.id) && store.has(second.id) && store.held == [mine.id, file.id], "a fetched copy can be let go by hand")
         store.remove(first.id); store.remove(second.id); store.remove(mine.id)
         try check(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(mine.id.uuidString).path), "removing a large item removes its folder")
         let stray = directory.appendingPathComponent("incoming-leftover")
@@ -1040,6 +1042,21 @@ struct Checks {
         try check(store.items.count == ShelfStore.maxItems && !store.has(text.id) && store.isGone(text.id), "the oldest make room and are remembered as removed")
         store = try ShelfStore(directory: directory)
         try check(!FileManager.default.fileExists(atPath: stray.path) && store.items.count == ShelfStore.maxItems, "a transfer cut off by quitting leaves nothing behind")
+
+        // What an earlier version put on a shelf has no card flag, and goes by its size as it did.
+        let older = try JSONDecoder().decode(ShelfItem.self, from: Data(#"{"id":"0B6C3B2A-1E7F-4C3B-9F3D-2A1B0C9D8E7F","kind":"image","name":"a.png","size":5000,"date":0,"origin":"Office"}"#.utf8))
+        try check(older.card == nil && !older.isLarge && ShelfItem(kind: .image, name: "b.png", size: 5000, origin: "Office", card: true).isLarge,
+                  "an item without the flag goes by size; one with it is a card")
+        // Thirty days on the shelf, then off it everywhere; nothing that old is taken in.
+        let stale = ShelfItem(kind: .file, name: "Old.pdf", size: 10, date: Date().addingTimeInterval(-ShelfStore.lifetime - 60), origin: "Office", card: true)
+        try store.acceptCard(stale, thumbnail: nil)
+        try check(!store.has(stale.id), "a card older than thirty days is not taken in")
+        var removedByAge = 0
+        store.announce = { if case .removed = $0 { removedByAge += 1 } }
+        let count = store.items.count
+        try check(store.expire() == 0 && store.items.count == count, "nothing younger than thirty days goes")
+        try check(store.expire(now: Date().addingTimeInterval(ShelfStore.lifetime + 60)) == count && store.items.isEmpty && removedByAge == count,
+                  "after thirty days every item goes, and the other Macs are told")
     }
 
     @MainActor static func shelfSync() async throws {
@@ -1077,9 +1094,20 @@ struct Checks {
         var bytes = [UInt8](repeating: 0, count: 900_000)
         for index in bytes.indices { bytes[index] = UInt8((index &* 31 &+ index / 7) % 256) }
         let big = Data(bytes)
-        let image = try laptop.add(big, kind: .image, name: "Screenshot.png", origin: "Laptop")
-        try await settle("a file larger than one frame arrives") { office.has(image.id) }
-        try check(try Data(contentsOf: office.url(office.items.first { $0.id == image.id }!)) == big, "every byte of a multi-chunk file is the same")
+        // Text goes whole, however long.
+        let image = try laptop.add(big, kind: .text, name: "Long note.txt", origin: "Laptop")
+        try await settle("text larger than one frame arrives") { office.has(image.id) }
+        try check(try Data(contentsOf: office.url(office.items.first { $0.id == image.id }!)) == big, "every byte of a multi-chunk text is the same")
+        // A picture, however small, travels as its card; its bytes come when a Mac asks.
+        let png = Data([0x89, 0x50, 0x4e, 0x47] + (0..<5000).map { UInt8($0 % 241) })
+        let picture = try laptop.add(png, kind: .image, name: "Screenshot.png", origin: "Laptop", thumbnail: Data([0xff, 0xd8, 0xff, 9]))
+        try await settle("a small picture's card arrives") { office.has(picture.id) }
+        try check(!office.isPresent(picture.id) && office.item(picture.id)?.card == true && office.thumbnail(office.item(picture.id)!) == Data([0xff, 0xd8, 0xff, 9]),
+                  "a small picture is a card there, with its thumbnail and without its bytes")
+        try await settle("its bytes can be had") { officeSync.isAvailable(picture.id) }
+        officeSync.fetch(picture.id)
+        try await settle("a picture fetched arrives") { office.isPresent(picture.id) }
+        try check(try Data(contentsOf: office.url(office.item(picture.id)!)) == png, "every byte of it")
         let back = try office.add(Data("Put up at the office".utf8), kind: .text, name: "Note.txt", origin: "Office")
         try await settle("the receiving Mac's additions reach the sender") { laptop.has(back.id) }
 

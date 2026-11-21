@@ -12,13 +12,20 @@ public struct ShelfItem: Codable, Identifiable, Equatable, Sendable {
     public var date: Date
     /// The Mac it was put on the shelf at.
     public var origin: String
+    /// Said by the Mac that put it on the shelf: it travels as a card whatever its size. Every image
+    /// and file does since 2026-11-22 (user: one copy kept on the primary helper, a card on the other
+    /// Macs, fetched to a Mac when asked); nil for what an earlier version put there, which goes by size.
+    public var card: Bool?
 
-    public init(id: UUID = UUID(), kind: Kind, name: String, size: Int, date: Date = Date(), origin: String) {
-        self.id = id; self.kind = kind; self.name = name; self.size = size; self.date = date; self.origin = origin
+    public init(id: UUID = UUID(), kind: Kind, name: String, size: Int, date: Date = Date(), origin: String, card: Bool? = nil) {
+        self.id = id; self.kind = kind; self.name = name; self.size = size; self.date = date; self.origin = origin; self.card = card
     }
 
-    /// A large item travels as a card — name, size, thumbnail — and its bytes only when a Mac asks.
-    public var isLarge: Bool { size > ShelfStore.eagerBytes }
+    /// An item that travels as a card — name, size, thumbnail — its bytes only when a Mac asks.
+    public var isLarge: Bool { card ?? (size > ShelfStore.eagerBytes) }
+
+    /// When it leaves every shelf: thirty days after it was put on one (user 2026-11-22).
+    public var expires: Date { date.addingTimeInterval(ShelfStore.lifetime) }
 }
 
 /// The shelf on this Mac: a folder with one sub-folder per item and an index. Newest first.
@@ -33,6 +40,8 @@ public final class ShelfStore {
     public nonisolated static let maxDataBytes = 64 << 20
     /// How much fetched content this Mac keeps before the least recently used is let go.
     public nonisolated static let cacheBytes = 5 << 30
+    /// How long an item stays on the shelf, here and on every other Mac, card or bytes.
+    public nonisolated static let lifetime: TimeInterval = 30 * 24 * 3600
     public enum Change { case added(ShelfItem), removed(UUID), presence }
 
     public let directory: URL
@@ -102,14 +111,17 @@ public final class ShelfStore {
         return String(cleaned.prefix(200))
     }
 
+    /// `thumbnail`: a small JPEG for the other Macs' card of an image.
     @discardableResult
-    public func add(_ data: Data, kind: ShelfItem.Kind, name: String, origin: String) throws -> ShelfItem {
+    public func add(_ data: Data, kind: ShelfItem.Kind, name: String, origin: String, thumbnail: Data? = nil) throws -> ShelfItem {
         guard !data.isEmpty else { throw VoiceError(tr("The content is empty and was not added to the Shelf.")) }
         guard data.count <= Self.maxDataBytes else { throw VoiceError(tr("The content is larger than 64 MB. Save it as a file, then drag the file in.")) }
-        let item = ShelfItem(kind: kind, name: Self.cleanName(name), size: data.count, origin: origin)
+        // Text is sent whole; an image travels as a card.
+        let item = ShelfItem(kind: kind, name: Self.cleanName(name), size: data.count, origin: origin, card: kind == .text ? nil : true)
         try makeFolder(item)
         do { try data.write(to: url(item), options: .atomic) }
         catch { discardFolder(item); throw VoiceError(tr("Cannot write to the Shelf folder. Check the free disk space.")) }
+        if let thumbnail { try? thumbnail.write(to: thumbnailURL(item)) }
         own.insert(item.id); present.insert(item.id)
         insert(item)
         announce?(.added(item))
@@ -125,7 +137,7 @@ public final class ShelfStore {
         guard values?.isDirectory != true else { throw VoiceError(tr("Folders cannot be dragged in yet. Compress the folder into a single file first.")) }
         guard let size = values?.fileSize else { throw VoiceError(tr("Cannot read this file.")) }
         guard size > 0 else { throw VoiceError(tr("The file is empty and was not added to the Shelf.")) }
-        let item = ShelfItem(kind: kind, name: Self.cleanName(file.lastPathComponent), size: size, origin: origin)
+        let item = ShelfItem(kind: kind, name: Self.cleanName(file.lastPathComponent), size: size, origin: origin, card: kind == .text ? nil : true)
         try makeFolder(item)
         let destination = url(item)
         do { try await Task.detached { try FileManager.default.copyItem(at: file, to: destination) }.value }
@@ -159,12 +171,23 @@ public final class ShelfStore {
 
     public func clear() { for item in items { remove(item.id) } }
 
+    /// Takes off what has been on the shelf for its thirty days, as a removal the other Macs hear of.
+    /// Every Mac does this for every item, so a shelf whose Mac was away when the time came agrees too.
+    @discardableResult
+    public func expire(now: Date = Date()) -> Int {
+        let old = items.filter { $0.expires <= now }
+        for item in old { remove(item.id) }
+        return old.count
+    }
+
+    private func expired(_ item: ShelfItem) -> Bool { item.expires <= Date() }
+
     /// Where a transfer from another Mac is written until it is complete.
     public func incomingURL() -> URL { directory.appendingPathComponent("incoming-\(UUID().uuidString)") }
 
     /// Takes in a small item that another Mac sent whole. Whoever received it passes it on.
     public func accept(_ item: ShelfItem, from file: URL) throws {
-        guard !has(item.id), !isGone(item.id) else { try? FileManager.default.removeItem(at: file); return }
+        guard !has(item.id), !isGone(item.id), !expired(item) else { try? FileManager.default.removeItem(at: file); return }
         var item = item
         item.name = Self.cleanName(item.name)
         try makeFolder(item)
@@ -176,7 +199,7 @@ public final class ShelfStore {
 
     /// Takes in the card of a large item: everything but its bytes.
     public func acceptCard(_ item: ShelfItem, thumbnail: Data?) throws {
-        guard !has(item.id), !isGone(item.id) else { return }
+        guard !has(item.id), !isGone(item.id), !expired(item) else { return }
         var item = item
         item.name = Self.cleanName(item.name)
         try makeFolder(item)
@@ -280,6 +303,9 @@ public final class ShelfSync {
         var holds: Set<UUID> = []
         var offers: Set<UUID> = []
         var told: (holds: Set<UUID>, offers: Set<UUID>)?
+        /// The Mac at the other end reads the card flag (0.1.59 and later): an image or a file of
+        /// any size goes to it as a card. One that does not gets a small one whole, as before.
+        var takesCards = false
         /// The file currently being sent for each item. A serve that is no longer the one listed
         /// here was cancelled or replaced, and stops at its next chunk.
         var serving: [UUID: Serve] = [:]
@@ -359,7 +385,7 @@ public final class ShelfSync {
     }
 
     private func greeting() -> [String: Any] {
-        ["shelf": "hello", "have": store.items.map(\.id.uuidString), "gone": store.gone.map(\.uuidString)]
+        ["shelf": "hello", "have": store.items.map(\.id.uuidString), "gone": store.gone.map(\.uuidString), "cards": true]
     }
 
     private static func ids(_ value: Any?) -> Set<UUID> {
@@ -399,6 +425,7 @@ public final class ShelfSync {
         }
         deadline.cancel()
         let link = Link(channel, dialled: true)
+        link.takesCards = reply["cards"] as? Bool == true
         guard settle(link) else { return }
         listen(link)
         reconcile(link, have: Self.ids(reply["have"]), gone: Self.ids(reply["gone"]))
@@ -410,6 +437,7 @@ public final class ShelfSync {
         var reply = greeting()
         reply["ok"] = true
         let link = Link(channel, dialled: false)
+        link.takesCards = hello["cards"] as? Bool == true
         let have = Self.ids(hello["have"]), gone = Self.ids(hello["gone"])
         // After this turn, so that the reply is on the wire before anything else.
         Task { @MainActor [weak self] in
@@ -509,7 +537,12 @@ public final class ShelfSync {
         guard let item = store.item(item.id) else { return }
         var card: [String: Any] = ["shelf": "item", "id": item.id.uuidString, "kind": item.kind.rawValue, "name": item.name,
                                    "size": item.size, "date": item.date.timeIntervalSince1970, "origin": item.origin]
-        if item.isLarge {
+        // An earlier version reads the size alone, and would wait for the bytes of a small item for ever:
+        // it gets them, from a Mac that has them.
+        if let flag = item.card { card["card"] = flag }
+        let asCard = item.isLarge && (link.takesCards || item.size > ShelfStore.eagerBytes)
+        if item.isLarge, !asCard, !store.isPresent(item.id) { return }
+        if asCard {
             if let thumbnail = store.thumbnail(item), thumbnail.count <= 200_000 { card["thumbnail"] = thumbnail.base64EncodedString() }
             try await write(link, card)
             return
@@ -564,7 +597,14 @@ public final class ShelfSync {
                   let name = frame["name"] as? String, let size = frame["size"] as? Int, size > 0 else { return }
             let item = ShelfItem(id: id, kind: kind, name: ShelfStore.cleanName(name), size: size,
                                  date: Date(timeIntervalSince1970: frame["date"] as? Double ?? Date().timeIntervalSince1970),
-                                 origin: String((frame["origin"] as? String ?? "").prefix(80)))
+                                 origin: String((frame["origin"] as? String ?? "").prefix(80)), card: frame["card"] as? Bool)
+            if item.expires <= Date() {
+                // Its thirty days are over: remembered as removed, and the Mac that sent it is told so too.
+                store.remove(id, announce: false)
+                link.jobs.append(.remove(id)); pump(link)
+                pass(.remove(id), except: link)
+                return
+            }
             if item.isLarge {
                 let thumbnail = (frame["thumbnail"] as? String).flatMap { Data(base64Encoded: $0) }.flatMap { $0.count <= 200_000 ? $0 : nil }
                 guard (try? store.acceptCard(item, thumbnail: thumbnail)) != nil, store.has(id) else { return }

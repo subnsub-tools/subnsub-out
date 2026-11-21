@@ -863,6 +863,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await panel("panel-shelf-dark", dark: true)
         controller.shelf.targeted = true
         try await panel("panel-shelf-drop")
+        // The picture that floats out of a Shelf tile: a wide image, and a piece of text.
+        let wide = NSImage(size: NSSize(width: 1600, height: 1000), flipped: false) { rect in
+            NSGradient(starting: NSColor(hue: 0.58, saturation: 0.5, brightness: 0.9, alpha: 1), ending: NSColor(hue: 0.68, saturation: 0.7, brightness: 0.6, alpha: 1))?.draw(in: rect, angle: 60)
+            return true
+        }
+        let peeks = [("shelf-peek-image", ShelfPeekView(item: ShelfItem(kind: .image, name: "Screenshot 2026-11-22 at 10.41.03.png", size: 482_000, origin: "Study"),
+                                                        image: wide, text: nil, icon: nil, size: ShelfModel.size(482_000))),
+                     ("shelf-peek-text", ShelfPeekView(item: ShelfItem(kind: .text, name: "Text.txt", size: 120, origin: "Study"), image: nil,
+                                                       text: "Plan review on Thursday at 3 p.m., third-floor meeting room. Bring the quote and last week's numbers.",
+                                                       icon: nil, size: ShelfModel.size(120)))]
+        for (name, peek) in peeks {
+            let fitted = peek.fitted
+            for dark in [false, true] {
+                try await capture(peek, size: NSSize(width: fitted.width + 24, height: fitted.height + 24), dark: dark, path: "\(directory)/\(name)\(dark ? "-dark" : "").png")
+                count += 1
+            }
+        }
         controller.shelf.targeted = false
         controller.shelf.items = []; controller.shelf.linked = 0
         controller.phase = .idle; controller.result = ""; controller.message = ""; controller.latency = nil

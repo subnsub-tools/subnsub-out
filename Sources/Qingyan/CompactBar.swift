@@ -352,10 +352,12 @@ struct CompactBar: View {
             .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(copiedHere ? Palette.accent.opacity(0.6) : Palette.line, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .onTapGesture {
-                if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.copy(item) }
+                if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
             }
-            .onDrag { shelf.provider(item) }
-            .help(item.name)
+            .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
+            .help(shelf.hint(item, stage))
+            .contextMenu { ShelfItemMenu(shelf: shelf, item: item) }
+            .background(ShelfPeekSource(item: item, shelf: shelf))
             if hovered == item.id {
                 Button { shelf.remove(item) } label: {
                     Image(systemName: "xmark").font(.system(size: 6.5, weight: .bold)).foregroundStyle(Palette.ink)

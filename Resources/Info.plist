@@ -18,5 +18,5 @@
     <key>NSSpeechRecognitionUsageDescription</key><string>out recognizes speech on this Mac only when This Mac is chosen for speech recognition.</string>
     <key>NSLocalNetworkUsageDescription</key><string>out passes recognized text between two Macs: you speak on one and it is typed on the other. Used only after you turn on Multiple Macs.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/><key>NSExceptionDomains</key><dict><key>ts.net</key><dict><key>NSIncludesSubdomains</key><true/><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict></dict></dict>
 </dict></plist>
