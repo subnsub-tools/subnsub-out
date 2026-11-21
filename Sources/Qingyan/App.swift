@@ -833,6 +833,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.capsuleResult = .notWritten(DictationController.missTitle(.notAllowed, peer: "Kitchen Mac mini 2023"), DictationController.missLine(.notAllowed, clipboard: .thisMac))
         try await bar("bar-not-typed-long")
         controller.capsuleResult = .inserted
+        // Text on its way between two Macs, with a long Mac name: the sending and the receiving capsule.
+        controller.phase = .processing; controller.capsuleStep = .sending; controller.sendingTo = "Kitchen Mac mini 2023"
+        try await bar("bar-sending")
+        controller.capsuleStep = .recognizing
+        controller.phase = .receiving; controller.receivingFrom = "Kitchen Mac mini 2023"
+        try await bar("bar-receiving")
         controller.phase = .recording; controller.connected = false; controller.partial = ""
         try await bar("bar-offline")
         // The compact floating bar, light and dark: Shelf items and a result; recording; empty.
@@ -854,6 +860,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.shelf.targeted = false
         controller.phase = .recording; controller.elapsed = 7
         try await compact("compact-recording")
+        controller.phase = .receiving; controller.receivingFrom = "Kitchen Mac mini 2023"
+        try await compact("compact-receiving")
         controller.phase = .idle; controller.result = ""; controller.shelf.items = []; controller.shelf.linked = 0
         let kept = settings.history; settings.history = []
         try await compact("compact-empty")

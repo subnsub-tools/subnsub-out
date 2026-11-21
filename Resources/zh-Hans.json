@@ -328,6 +328,7 @@
  "Select the text to rewrite in the target app first.": "请先在目标应用中选中待改写的文本。",
  "Sending": "发送中",
  "Sending to %@…": "正在发送至 %@…",
+ "Receiving from %@…": "正在从 %@ 接收…",
  "Sent to %@ · No text field found; the text stays on the clipboard (⌘V)": "已发送至 %@ · 未识别到输入框，文本已保留在剪贴板（⌘V）",
  "Set up": "设置",
  "Settings": "偏好设置",

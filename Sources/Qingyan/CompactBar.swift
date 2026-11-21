@@ -28,7 +28,7 @@ struct CompactBar: View {
     /// panel's own reading of whether this Mac can record (or, receiving only, receive).
     private var state: String {
         if recording { return tr("Recording") + " " + String(format: "%d:%02d", meter.elapsed / 60, meter.elapsed % 60) }
-        if processing { return controller.capsuleSummary }
+        if processing || controller.phase == .receiving { return controller.capsuleSummary }
         if settings.receiverOnly {
             return settings.accessibilityAllowed && controller.remoteListening ? tr("Ready to receive") : tr("Setup needed")
         }
@@ -79,7 +79,9 @@ struct CompactBar: View {
             Text(state)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(recording ? Color.red : Palette.ink)
-                .lineLimit(1).fixedSize()
+                // Its whole width before the last text's, but a long Mac name gives way in its middle
+                // rather than push the buttons out of the bar.
+                .lineLimit(1).truncationMode(.middle).layoutPriority(1)
                 .allowsHitTesting(false)
             resultButton
             Spacer(minLength: 0)

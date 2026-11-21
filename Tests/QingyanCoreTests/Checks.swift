@@ -127,7 +127,7 @@ struct Checks {
         catch { failed += 1; print("FAIL Shelf store: \(error.localizedDescription)") }
         do { try await shelfSync(); print("PASS Shelf between Macs over real TCP: both directions, multi-frame file intact, removal, catching up, relay, large items as cards fetched on demand, resume, fetch through a third Mac, untrusted Mac, two Macs calling each other") }
         catch { failed += 1; print("FAIL Shelf sync: \(error.localizedDescription)") }
-        do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
+        do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
         do { try await platformCalls(); print("PASS Other platforms over real HTTP: nothing sent until the recording ends, upload and reply, hint only where taken, no key no header, short and cancelled recordings, tidying through chat and through Responses, cut-off replies refused, model list, errors without the reply's text") }
         catch { failed += 1; print("FAIL Platform calls: \(error.localizedDescription)") }
@@ -939,6 +939,9 @@ struct Checks {
         func makeSession(_ devices: [TrustedDevice], as identity: DeviceIdentity? = nil, nonce: Int = Knock.newNonce()) -> RemoteSession {
             RemoteSession(devices: devices, identity: identity ?? me, name: "Laptop", listening: 30001, nonce: nonce)
         }
+        var incomingAtOffice: [String] = [], endedAtOffice = 0
+        office.onIncoming = { incomingAtOffice.append($0) }
+        office.onIncomingEnded = { endedAtOffice += 1 }
         study.start(port: base, probe: { (true, "ready") }, context: { studyField },
                     deliver: { atStudy.append($0); return "Pasted into Notes" })
         office.start(port: base + 1, probe: { officeReady ? (true, "ready") : (false, "No Accessibility permission") },
@@ -959,10 +962,12 @@ struct Checks {
 
         let first = await session.locate { office.knocked(session.nonce) }
         try check(first == 1, "the Mac that saw the knock claims it")
+        try check(incomingAtOffice == ["Laptop"] && endedAtOffice == 0, "and is told which Mac's text is on the way")
         let nobody = await session.locate { }
         try check(nobody == nil, "a knock nobody saw means this Mac — and an old claim is not reused")
         let foreign = await session.locate { office.knocked((session.nonce + 1) % (1 << Knock.bits)) }
         try check(foreign == nil, "someone else's knock is not claimed")
+        try check(incomingAtOffice.count == 1, "nor does it say any text is on the way")
         let second = await session.locate { study.knocked(session.nonce) }
         try check(second == 0, "a later knock can land on a different Mac")
 
@@ -974,6 +979,29 @@ struct Checks {
         try check(atStudy.count == 1 && atStudy[0].text == text && atStudy[0].mode == .translate && atOffice.isEmpty, "text reaches the claiming Mac only")
         try check(atStudy[0].replace == nil, "ordinary text replaces nothing")
         session.close()
+        let ending = Date().addingTimeInterval(2)
+        while endedAtOffice == 0 && Date() < ending { try await Task.sleep(nanoseconds: 20_000_000) }
+        try check(endedAtOffice == 1, "a Mac told text was on the way learns it is not coming when the sender closes")
+        // Two Macs' text on the way at once: the end of the one named last names the other again,
+        // and only the end of both is an end.
+        let tablet = DeviceIdentity()
+        office.trusted = { $0 == me.publicKey ? TrustedDevice(key: me.publicKey, name: "Laptop", host: "", port: 30001)
+            : $0 == tablet.publicKey ? TrustedDevice(key: tablet.publicKey, name: "", host: "", port: 30003) : nil }
+        let fromLaptop = makeSession([peers[1]]), fromOther = RemoteSession(devices: [peers[1]], identity: tablet, name: "Tablet", listening: 30003, nonce: (fromLaptop.nonce + 1) % (1 << Knock.bits))
+        await fromLaptop.arm(timeout: 2); await fromOther.arm(timeout: 2)
+        _ = await fromLaptop.locate { office.knocked(fromLaptop.nonce) }
+        _ = await fromOther.locate { office.knocked(fromOther.nonce) }
+        try check(incomingAtOffice.suffix(2) == ["Laptop", "Tablet"], "a Mac without a name in the list is called by the name it gave itself")
+        fromOther.close()
+        let renamed = Date().addingTimeInterval(2)
+        while incomingAtOffice.count < 4 && Date() < renamed { try await Task.sleep(nanoseconds: 20_000_000) }
+        try check(incomingAtOffice.count == 4 && incomingAtOffice.last == "Laptop" && endedAtOffice == 1, "the end of the Mac named last names the one still on the way")
+        fromLaptop.close()
+        let both = Date().addingTimeInterval(2)
+        while endedAtOffice < 2 && Date() < both { try await Task.sleep(nanoseconds: 20_000_000) }
+        try check(endedAtOffice == 2 && incomingAtOffice.count == 4, "and the end of both is the end")
+        office.trusted = { $0 == me.publicKey ? TrustedDevice(key: me.publicKey, name: "Laptop", host: "", port: 30001) : nil }
+        office.onIncoming = nil; office.onIncomingEnded = nil
 
         let revising = makeSession([peers[0]])
         await revising.arm(timeout: 2)

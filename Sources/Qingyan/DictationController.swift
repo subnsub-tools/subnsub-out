@@ -7,7 +7,9 @@ import QingyanCore
 import SystemConfiguration
 
 enum DictationPhase: Equatable {
-    case idle, recording, processing, done, error
+    /// `receiving`: another Mac's text is on its way here (this Mac answered its knock). Not busy:
+    /// a recording of this Mac's own can start meanwhile.
+    case idle, recording, processing, done, error, receiving
 }
 
 @MainActor
@@ -129,6 +131,10 @@ final class DictationController: ObservableObject {
     enum CapsuleResult { case inserted, onClipboard, savedToHistory, typed, notWritten(String, String) }
     var capsuleStep = CapsuleStep.recognizing
     var capsuleResult = CapsuleResult.inserted
+    /// The Mac the text is being sent to (`sending`), and the Mac whose text is on its way here (`receiving`).
+    var sendingTo = ""
+    var receivingFrom = ""
+    private var receivingID: UUID?
     var presentOverlay: (() -> Void)?
     var dismissOverlay: (() -> Void)?
     var openSettings: (() -> Void)?
@@ -189,7 +195,7 @@ final class DictationController: ObservableObject {
             case .polishing: return tr("Polishing")
             case .writing: return tr("Writing")
             case .editing: return tr("Editing")
-            case .sending: return tr("Sending")
+            case .sending: return sendingTo.isEmpty ? tr("Sending") : tr("Sending to %@…", sendingTo)
             case .typing: return tr("Typing %ld / %ld", typedCount, typingTotal)
             }
         case .done:
@@ -202,6 +208,8 @@ final class DictationController: ObservableObject {
             }
         case .error:
             return message.isEmpty ? tr("Not finished") : message
+        case .receiving:
+            return tr("Receiving from %@…", receivingFrom)
         }
     }
 
@@ -247,6 +255,8 @@ final class DictationController: ObservableObject {
             guard let self, self.settings.preferences.linkEnabled else { return nil }
             return self.settings.preferences.devices.first { $0.key == key }
         }
+        receiver.onIncoming = { [weak self] from in self?.receivingStarted(from: from) }
+        receiver.onIncomingEnded = { [weak self] in self?.receivingEnded() }
         microphones.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &microphoneSubscriptions)
@@ -348,6 +358,26 @@ final class DictationController: ObservableObject {
     /// The Macs running put that this one sees through Tailscale, told to a trusted Mac that asks: one
     /// lookup at a time, kept for 30 seconds, and only Macs that answered as put at a Tailscale address.
 
+    /// Another Mac's knock was answered here: its text is on the way, and the capsule says from which
+    /// Mac until the text is written (`receive` takes the capsule over) or that Mac's connection ends
+    /// without it. A recording, processing or typing of this Mac's own keeps its capsule.
+    private func receivingStarted(from name: String) {
+        guard !busy, !starting, typingJob == nil else { return }
+        let id = UUID()
+        sessionID = id; receivingID = id
+        receivingFrom = name
+        phase = .receiving
+        presentOverlay?()
+    }
+
+    private func receivingEnded() {
+        guard let id = receivingID else { return }
+        receivingID = nil
+        guard sessionID == id, phase == .receiving else { return }
+        phase = .idle
+        dismissOverlay?()
+    }
+
     private func receive(_ request: RemoteReceiver.Request) throws -> DeliveryOutcome {
         if !request.text.isEmpty && request.field == nil {
             do { try settings.addHistory(HistoryEntry(text: request.text, mode: request.mode, seconds: request.seconds)) }
@@ -364,7 +394,8 @@ final class DictationController: ObservableObject {
                     ?? TextTarget.insertAtFocus(request.text)
                 if outcome.miss == nil { notePasted(request.text) } else { pasted = nil }
             }
-            guard !busy else { return DeliveryOutcome(message: outcome.summary, miss: outcome.miss) }
+            // A recording of this Mac's own, or one starting, keeps its capsule (and its session).
+            guard !busy, !starting else { return DeliveryOutcome(message: outcome.summary, miss: outcome.miss) }
             sessionID = id
             result = request.field == nil ? request.text : ""; latency = nil
             phase = .done
@@ -381,7 +412,7 @@ final class DictationController: ObservableObject {
             return DeliveryOutcome(message: outcome.summary, miss: outcome.miss)
         } catch {
             let kept = keepOnClipboard(request.text)
-            if !busy {
+            if !busy, !starting {
                 sessionID = id
                 result = request.text; latency = nil
                 phase = .error
@@ -595,6 +626,7 @@ final class DictationController: ObservableObject {
         try Task.checkCancellation()
         if let session, let target {
             let name = session.name(target), id = session.key(target)
+            sendingTo = name
             capsuleStep = .sending
             message = tr("Sending to %@…", name)
             var replace: String?, field: String?
@@ -1357,7 +1389,8 @@ final class DictationController: ObservableObject {
                 completed.failures = nil
                 try self.settings.updateHistory(completed)
                 self.retryAfter[id] = nil
-                if self.keepOnClipboard(final), !self.busy {
+                // Another Mac's text on its way here keeps the capsule; the text is on the clipboard either way.
+                if self.keepOnClipboard(final), !self.busy, self.phase != .receiving {
                     let session = UUID()
                     self.sessionID = session
                     self.result = final; self.latency = nil

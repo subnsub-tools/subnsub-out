@@ -1590,12 +1590,12 @@ private struct CapsuleSurface: View {
         case .recording: CapsuleTint.green
         case .done: warning ? CapsuleTint.amber : CapsuleTint.green
         case .error: CapsuleTint.red
-        case .processing, .idle: nil
+        case .processing, .receiving, .idle: nil
         }
         let strength: Double = switch phase {
         case .recording: 0.24 + level * 0.26
         case .done, .error: 0.18
-        case .processing, .idle: 0
+        case .processing, .receiving, .idle: 0
         }
         ZStack {
             if glass { Glass() } else { Color(nsColor: .windowBackgroundColor).opacity(0.94) }
@@ -1643,6 +1643,8 @@ struct VoiceBar: View {
     }
 
     private var copyablePayload: String {
+        // Nothing of the incoming text is here yet.
+        if controller.phase == .receiving { return "" }
         if controller.phase == .recording, !controller.partial.isEmpty { return controller.partial }
         if !controller.result.isEmpty { return controller.result }
         if controller.phase == .error, !controller.message.isEmpty { return controller.message }
@@ -1687,7 +1689,7 @@ struct VoiceBar: View {
         switch controller.phase {
         case .recording:
             MicroWaveform(meter: meter)
-        case .processing:
+        case .processing, .receiving:
             TimelineView(.animation(minimumInterval: 0.05)) { context in
                 Circle().trim(from: 0.08, to: 0.78)
                     .stroke(Palette.ink.opacity(0.85), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
@@ -1753,14 +1755,19 @@ struct VoiceBar: View {
             .help(tr("%@\nClick to copy", controller.message.isEmpty ? controller.capsuleSummary : controller.message))
         } else {
             let text = controller.capsuleSummary
+            // Text on its way between two Macs names the other Mac: more room than a step's word.
+            // Up to the capsule window's 284 pt: the sending capsule also holds its Cancel button.
+            let remote: CGFloat? = controller.phase == .receiving ? 210
+                : controller.phase == .processing && controller.capsuleStep == .sending ? 194 : nil
             if !copyablePayload.isEmpty {
                 Button(action: copyFromCapsule) {
                     Text(text)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Palette.ink)
                         .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 152, alignment: .leading)
+                        // A long Mac name gives way in its middle, so the words around it stay.
+                        .truncationMode(remote == nil ? .tail : .middle)
+                        .frame(maxWidth: remote ?? 152, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1770,7 +1777,8 @@ struct VoiceBar: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
-                    .frame(maxWidth: 140, alignment: .leading)
+                    .truncationMode(remote == nil ? .tail : .middle)
+                    .frame(maxWidth: remote ?? 140, alignment: .leading)
                     .help(text)
             }
         }

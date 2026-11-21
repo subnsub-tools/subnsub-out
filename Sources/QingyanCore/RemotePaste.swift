@@ -747,6 +747,14 @@ public final class RemoteReceiver {
     public var tailscaleOnly = true
     /// Connections that say a shelf hello are handed over to this, and no longer read here.
     public weak var shelf: ShelfSync?
+    /// A Mac that armed here had its knock seen: its text is on the way to this Mac. Told that Mac's
+    /// name; `onIncomingEnded` follows when its connection ends, whether the text was written or not
+    /// (cancelled there, nothing recognized, the connection lost). With two Macs on the way at once,
+    /// the end of the one named last names the other again, and only the end of both is an end.
+    public var onIncoming: ((String) -> Void)?
+    public var onIncomingEnded: (() -> Void)?
+    /// The connections of the Macs whose text is on the way, the latest knock last.
+    private var incoming: [(connection: NWConnection, from: String)] = []
 
     private var listener: NWListener?
     private var port = 0
@@ -868,8 +876,19 @@ public final class RemoteReceiver {
         update(false, "")
     }
 
-    /// The event tap saw a complete knock. Tell the Mac that armed it, if there is one.
-    public func knocked(_ nonce: Int) { armed[nonce]?.post(["seen": true]) }
+    /// The event tap saw a complete knock. Tell the Mac that armed it, if there is one: its text
+    /// comes here.
+    public func knocked(_ nonce: Int) {
+        guard let channel = armed[nonce] else { return }
+        channel.post(["seen": true])
+        // The name the owner's Mac list gives it, else the one it gave itself.
+        let device = trusted(channel.peerKey)
+        let from = device.flatMap { $0.name.isEmpty ? nil : $0.name }
+            ?? (channel.peerName.isEmpty ? device?.label ?? tr("Unnamed Mac") : channel.peerName)
+        incoming.removeAll { $0.connection === channel.connection }
+        incoming.append((channel.connection, from))
+        onIncoming?(from)
+    }
 
     private func update(_ listening: Bool, _ status: String) {
         guard self.listening != listening || self.status != status else { return }
@@ -906,6 +925,11 @@ public final class RemoteReceiver {
         defer {
             expire(connection, after: nil)
             armed = armed.filter { $0.value.connection !== connection }
+            if let index = incoming.firstIndex(where: { $0.connection === connection }) {
+                let named = index == incoming.count - 1
+                incoming.remove(at: index)
+                if let last = incoming.last { if named { onIncoming?(last.from) } } else { onIncomingEnded?() }
+            }
         }
         if helperAgent == nil {
             guard (try? await RemoteIO.ready(connection, queue: .main)) != nil, admissible(connection) else { connection.cancel(); return }
