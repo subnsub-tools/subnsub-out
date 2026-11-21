@@ -1,8 +1,11 @@
 #if DEBUG
 import AppKit
+import AVFoundation
+import CoreMedia
 import Foundation
 import Network
 import QingyanCore
+import VideoToolbox
 
 /// A run of the screen session with nobody at the other end but this: a socket where the helper's
 /// would be, the page's first words, a window whose picture keeps changing so that there is
@@ -171,6 +174,131 @@ enum ScreenSelfTest {
         try record.write(to: out.appendingPathComponent("record.bin"))
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: out.appendingPathComponent("report.json"))
         print(String(data: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), encoding: .utf8) ?? "")
+    }
+}
+#endif
+
+#if DEBUG
+/// Another Mac's screen in out, with this Mac on both ends: the session (ScreenHost) at a socket of
+/// its own, and out's own viewer (ScreenLink, the window's view) at the other end. Each picture the
+/// viewer makes for its display layer is also decoded here, so that a format or sample it gets wrong
+/// shows as a count of zero rather than as a black window nobody looks at. For a machine that builds
+/// out: `Qingyan --screen-viewer-selftest <dir> [avc|hevc]`; it exits 1 when nothing was decoded.
+enum ScreenViewerSelfTest {
+    @MainActor private static var keep: [AnyObject] = []
+
+    @MainActor static func run(to directory: String, codec: String) async throws -> Bool {
+        let out = URL(fileURLWithPath: directory, isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let path = NSTemporaryDirectory() + "out-viewer-\(getpid()).sock"
+        unlink(path)
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = NWEndpoint.unix(path: path)
+        let listener = try NWListener(using: parameters)
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .main)
+            let session = ScreenSession(connection: connection)
+            Task { @MainActor in keep.append(session) }
+            session.start()
+        }
+        listener.start(queue: .main)
+        keep.append(listener)
+
+        // Something on the screen that moves, as the session's own self-test has.
+        let moving = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 360), styleMask: [.titled], backing: .buffered, defer: false)
+        let label = NSTextField(labelWithString: "0")
+        label.font = .monospacedDigitSystemFont(ofSize: 120, weight: .bold)
+        label.frame = NSRect(x: 20, y: 100, width: 480, height: 160)
+        moving.contentView?.addSubview(label)
+        moving.level = .floating
+        moving.makeKeyAndOrderFront(nil)
+        var tick = 0
+        let animation = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+            tick += 1
+            label.stringValue = String(tick)
+            moving.backgroundColor = NSColor(hue: CGFloat(tick % 90) / 90, saturation: 0.6, brightness: 0.9, alpha: 1)
+        }
+        keep.append(moving); keep.append(animation)
+
+        // The viewer, in a window of its own as out shows it.
+        let viewerWindow = NSWindow(contentRect: NSRect(x: 640, y: 80, width: 640, height: 400), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let view = ScreenView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        viewerWindow.contentView = view
+        viewerWindow.orderFrontRegardless()
+        keep.append(viewerWindow)
+
+        let link = ScreenLink(name: "self")
+        link.preferAVC = codec != "hevc"
+        view.displayLayer = link.displayLayer
+        var statuses: [String] = [], layouts: [[Int]] = [], clipboard: [String] = [], cursors = 0
+        link.onStatus = { status in statuses.append(status["s"] as? String ?? "?") }
+        link.onLayout = { layout in view.remoteLayout = layout; layouts.append([layout.width, layout.height, layout.pictureWidth, layout.pictureHeight]) }
+        link.onClipboard = { text in clipboard.append(text) }
+        link.onCursor = { cursor in view.remoteCursor = cursor; cursors += 1 }
+        var ended: String?
+        link.onEnd = { why in ended = why }
+
+        // Each picture the viewer makes, decoded here too.
+        let decoder = SampleDecoder()
+        link.onSample = { sample in decoder.decode(sample) }
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let client = NWConnection(to: .unix(path: path), using: .tcp)
+        client.start(queue: .main)
+        link.start(client, scale: 2)
+        try await Task.sleep(nanoseconds: 4_000_000_000)
+        // The window's own words: a smaller picture, a key, the pointer, the wheel, the clipboard.
+        link.send(ScreenWire.control(["t": "size", "w": 640, "h": 400, "scale": 1]))
+        link.send(ScreenWire.pointerFrame(buttons: 0, x: 200, y: 150))
+        link.send(ScreenWire.scrollFrame(dx: 0, dy: 30, x: 200, y: 150))
+        link.send(ScreenWire.control(["t": "clip", "text": "from the viewer self-test"]))
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        let counts = link.counts
+        let renderer = link.displayLayer.sampleBufferRenderer
+        var report: [String: Any] = ["screenRecording": CGPreflightScreenCaptureAccess(), "asked": codec, "viewer": counts,
+                                     "decoded": decoder.decoded, "decodeErrors": decoder.errors, "decodedSize": decoder.size,
+                                     "renderer": renderer.status == .failed ? "failed" : renderer.status == .rendering ? "rendering" : "unknown",
+                                     "rendererError": renderer.error.map { "\($0)" } ?? "", "statuses": statuses, "layouts": layouts,
+                                     "clipboardFrames": clipboard.count, "cursorsShown": cursors, "ended": ended ?? "",
+                                     // Whether the window's clipboard text landed, and not what else is on the clipboard.
+                                     "clipboardLanded": NSPasteboard.general.string(forType: .string) == "from the viewer self-test"]
+        if let session = keep.compactMap({ $0 as? ScreenSession }).first { report["session"] = session.counts }
+        link.close()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: out.appendingPathComponent("viewer-report.json"))
+        print(String(data: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), encoding: .utf8) ?? "")
+        return decoder.decoded > 0 && renderer.status != .failed
+    }
+}
+
+/// Decodes the viewer's samples with VideoToolbox, counting what comes out.
+final class SampleDecoder: @unchecked Sendable {
+    private var session: VTDecompressionSession?
+    private var described: CMFormatDescription?
+    private let lock = NSLock()
+    private(set) var decoded = 0, errors = 0
+    private(set) var size: [Int] = []
+
+    func decode(_ sample: CMSampleBuffer) {
+        guard let format = CMSampleBufferGetFormatDescription(sample) else { return }
+        if session == nil || described.map({ !CMFormatDescriptionEqual($0, otherFormatDescription: format) }) ?? true {
+            if let session { VTDecompressionSessionInvalidate(session) }
+            var made: VTDecompressionSession?
+            let attributes = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange] as CFDictionary
+            guard VTDecompressionSessionCreate(allocator: nil, formatDescription: format, decoderSpecification: nil,
+                                               imageBufferAttributes: attributes, outputCallback: nil, decompressionSessionOut: &made) == noErr else {
+                lock.lock(); errors += 1; lock.unlock(); return
+            }
+            session = made; described = format
+        }
+        guard let session else { return }
+        let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sample, flags: [], infoFlagsOut: nil) { [weak self] status, _, image, _, _ in
+            guard let self else { return }
+            self.lock.lock(); defer { self.lock.unlock() }
+            if status == noErr, let image { self.decoded += 1; self.size = [CVPixelBufferGetWidth(image), CVPixelBufferGetHeight(image)] }
+            else { self.errors += 1 }
+        }
+        if status != noErr { lock.lock(); errors += 1; lock.unlock() }
     }
 }
 #endif

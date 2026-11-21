@@ -271,6 +271,11 @@ final class DictationController: ObservableObject {
             return self.settings.preferences.devices.first { $0.key == key }
         }
         receiver.onIncoming = { [weak self] from in self?.receivingStarted(from: from) }
+        // Another Mac's out shows this screen in its window (user 2026-11-21: no switch for that).
+        receiver.onScreen = { [weak self] connection, key, viewer in
+            guard let self else { connection.cancel(); return }
+            self.screen.serveRemote(connection, key: key, viewer: viewer)
+        }
         receiver.onIncomingEnded = { [weak self] in self?.receivingEnded() }
         microphones.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -343,8 +348,14 @@ final class DictationController: ObservableObject {
         }
         if shortcutStatus != nextStatus { shortcutStatus = nextStatus }
         syncRemote()
-        // The screen is offered while its switch is on, whatever the other settings say.
-        if settings.preferences.screenEnabled { screen.start() } else if screen.state != .off { screen.stop() }
+        // The screen is offered to the Monitor page while its switch is on, whatever the other
+        // settings say; to the other Macs' out without it (RemoteReceiver.onScreen).
+        if settings.preferences.screenEnabled { screen.start() } else { screen.stopWaiting() }
+        // Another Mac's view lasts only while that Mac is still trusted to type here.
+        if let key = screen.viewerKey,
+           !settings.preferences.linkEnabled || !settings.preferences.devices.contains(where: { $0.key == key && $0.canWrite }) {
+            screen.stopViewing()
+        }
         shelf.sync?.listening = settings.preferences.remotePort
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
         refreshHelper()
@@ -524,7 +535,20 @@ final class DictationController: ObservableObject {
 
     /// Whether the window in front shows another computer's screen: only then can the text be for
     /// one of the other Macs, and only then are they asked.
-    private var remoteInFront: Bool { KeystrokePlan.isRemoteClient(NSWorkspace.shared.frontmostApplication?.bundleIdentifier) }
+    /// The Mac whose screen out shows in the window in front (ScreenViewer): the text is for it, and
+    /// no knock is needed to say which Mac that is.
+    private var viewedInFront: TrustedDevice? {
+        guard let key = ScreenViewer.frontKey else { return nil }
+        return settings.preferences.devices.first { $0.key == key }
+    }
+    /// A window in front that shows another Mac's screen: a remote desktop's, or out's own.
+    private var anotherScreenInFront: Bool {
+        viewedInFront != nil || RemoteWire.showsAnotherScreen(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+    /// The session armed for the Mac in out's own screen window, and which Mac.
+    private var remoteViewing: String?
+
+    private var remoteInFront: Bool { viewedInFront != nil || KeystrokePlan.isRemoteClient(NSWorkspace.shared.frontmostApplication?.bundleIdentifier) }
 
     /// Starts looking for the Mac behind the remote desktop in front, while the recording is being
     /// transcribed. In front of any other window there is nothing to look for: the text is typed on
@@ -533,6 +557,20 @@ final class DictationController: ObservableObject {
         endRemote()
         let devices = settings.preferences.devices.filter(\.reachable)
         guard let identity, settings.sendsRemotely, !settings.preview, !devices.isEmpty, AXIsProcessTrusted(), remoteInFront else { return }
+        if let shown = viewedInFront {
+            // out's own window of that Mac's screen: only that Mac is armed, and nothing is knocked.
+            let session = RemoteSession(devices: [shown], identity: identity, name: deviceName, listening: settings.preferences.remotePort)
+            remoteSession = session
+            remoteViewing = shown.key
+            remoteScout = Task { @MainActor [weak self] in
+                await session.arm([0], timeout: 1.5, dial: Self.scoutDial)
+                guard let self, self.remoteSession === session else { return (nil, nil) }
+                self.peerReachable.merge(session.reachable) { _, new in new }
+                // No mark: the claim is that window's, which destination() checks itself.
+                return (nil, session.armedCount > 0 ? 0 : nil)
+            }
+            return
+        }
         let session = RemoteSession(devices: devices, identity: identity, name: deviceName, listening: settings.preferences.remotePort)
         remoteSession = session
         remoteScout = Task { @MainActor [weak self] in
@@ -567,7 +605,7 @@ final class DictationController: ObservableObject {
     }
 
     private func endRemote() {
-        remoteSession?.close(); remoteSession = nil; remoteScout = nil
+        remoteSession?.close(); remoteSession = nil; remoteScout = nil; remoteViewing = nil
     }
 
     private func recentDictation(on peer: String?) -> String? {
@@ -587,6 +625,15 @@ final class DictationController: ObservableObject {
     /// recording stopped is looked behind now. A claim counts only for the window still in front.
     private func destination() async -> Destination {
         guard remoteInFront else { return Destination(session: remoteSession, target: nil) }
+        if let shown = viewedInFront {
+            // The window in front is out's own of that Mac's screen: the text is for that Mac.
+            if remoteViewing != shown.key || remoteScout == nil { scoutRemote() }
+            guard let session = remoteSession, let scout = remoteScout else { return Destination(session: remoteSession, target: nil) }
+            let (_, armed) = await scout.value
+            return Destination(session: session, target: viewedInFront?.key == shown.key ? armed : nil)
+        }
+        // What was armed for out's own window says nothing about the remote desktop in front now.
+        if remoteViewing != nil { scoutRemote() }
         if remoteSession == nil { scoutRemote() }
         guard let session = remoteSession, let scout = remoteScout else { return Destination(session: remoteSession, target: nil) }
         let (mark, early) = await scout.value
@@ -609,7 +656,7 @@ final class DictationController: ObservableObject {
         if let target = found.target, let session = found.session {
             peer = session.key(target)
             if let field = await session.context(of: target) { context = field; plan = .field(old: field.before + field.after) }
-        } else if found.session == nil || !RemoteWire.showsAnotherScreen(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
+        } else if found.session == nil || !anotherScreenInFront {
             if let field = TextTarget.field() { context = field; plan = .field(old: field.before + field.after) }
         } else { return .content }
         let previous = recentDictation(on: peer)
@@ -666,7 +713,7 @@ final class DictationController: ObservableObject {
                 : Delivered(text: text, peer: id, mark: FocusMark.current(), at: Date())
             return WriteResult(summary: tr("%@: %@", name, reply.message), onClipboard: reply.onClipboard, miss: reply.miss, peer: name)
         }
-        if settings.preferences.linkEnabled, RemoteWire.showsAnotherScreen(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier),
+        if settings.preferences.linkEnabled, anotherScreenInFront,
            session != nil || helperState != .ready || !settings.preferences.devices.isEmpty {
             // A remote desktop in front, and Macs to send to (or a helper that should name them): the
             // text is for the Mac behind it, never this one.

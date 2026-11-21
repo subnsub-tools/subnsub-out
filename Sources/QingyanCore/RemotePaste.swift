@@ -319,6 +319,41 @@ public enum RemoteSender {
         return Found(key: channel.peerKey, name: channel.peerName, host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
     }
 
+    /// Opens a trusted Mac's screen in this out: the channel's handshake proves which Mac it is, and
+    /// once that Mac has said yes, the connection carries the screen session (ScreenWire) as it is.
+    /// Only through the Monitor helper, whose tunnel seals the session's frames.
+    public static func openScreen(_ device: TrustedDevice, identity: DeviceIdentity, name: String, listening: Int,
+                                  timeout: TimeInterval = 8) async throws -> NWConnection {
+        guard HelperLink.agent(of: device.host) != nil else {
+            throw VoiceError(tr("%@ is not reached through the Monitor helper, so its screen cannot be shown.", device.label))
+        }
+        let channel = try await Channel.open(host: device.host, port: device.port, identity: identity, name: name, listening: listening,
+                                             queue: DispatchQueue(label: "local.hopo.qingyan.remote.screen"), timeout: timeout)
+        guard channel.peerKey == device.key else {
+            channel.close()
+            throw VoiceError(tr("A different Mac answers at this address, not the paired “%@”.", device.label))
+        }
+        let deadline = Task {
+            try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            channel.close()
+        }
+        defer { deadline.cancel() }
+        do {
+            try await channel.write(["screen": "open"])
+            let reply = try await channel.readObject()
+            guard reply["ok"] as? Bool == true else {
+                channel.close()
+                throw VoiceError(reply["message"] as? String ?? tr("%@ did not show its screen.", device.label))
+            }
+            return channel.connection
+        } catch let error as VoiceError { throw error }
+        catch {
+            channel.close()
+            if Task.isCancelled { throw CancellationError() }
+            throw VoiceError(tr("%@ did not answer. Make sure out is running there.", device.label))
+        }
+    }
+
     /// Checks that a trusted Mac is where it was, is still the same Mac, and can paste. Nothing is pasted.
     public static func ping(_ device: TrustedDevice, identity: DeviceIdentity, name: String, listening: Int,
                             timeout: TimeInterval = 6) async throws -> Reply {
@@ -753,6 +788,10 @@ public final class RemoteReceiver {
     /// the end of the one named last names the other again, and only the end of both is an end.
     public var onIncoming: ((String) -> Void)?
     public var onIncomingEnded: (() -> Void)?
+    /// One of the owner's other Macs asks to show this screen in its out (a trusted Mac allowed to
+    /// type here, reached through the Monitor helper): the connection is the screen session's from
+    /// here on (ScreenWire), with that Mac's key and name. Not set: no other Mac is shown this screen.
+    public var onScreen: ((NWConnection, String, String) -> Void)?
     /// The connections of the Macs whose text is on the way, the latest knock last.
     private var incoming: [(connection: NWConnection, from: String)] = []
 
@@ -765,7 +804,7 @@ public final class RemoteReceiver {
     private var deadlines: [ObjectIdentifier: DispatchWorkItem] = [:]
     /// A dictation may be transcribed for a while before its text arrives.
     private static let armedLifetime: TimeInterval = 300
-    private enum Next { case close, keep, handOver }
+    private enum Next { case close, keep, handOver, screen }
 
     public init() {}
 
@@ -951,6 +990,11 @@ public final class RemoteReceiver {
             case .close: connection.cancel(); return
             // The shelf reads this connection from now on, for as long as it lives.
             case .handOver: return
+            // So does the screen session, once its yes has gone out.
+            case .screen:
+                guard let onScreen else { connection.cancel(); return }
+                onScreen(connection, channel.peerKey, trusted(channel.peerKey)?.label ?? channel.peerName)
+                return
             }
         }
         connection.cancel()
@@ -976,6 +1020,16 @@ public final class RemoteReceiver {
         }
         guard device.canWrite else {
             return (["ok": false, "message": tr("The other Mac does not allow this Mac to type text there."), "miss": MissReason.notAllowed.rawValue], .close)
+        }
+        if object["screen"] as? String == "open" {
+            // The session's frames are not sealed as the channel's are: they go only on the road the
+            // helpers keep between the owner's Macs, whose tunnel seals them.
+            guard HelperLink.agent(of: channel.peerKey) != nil else {
+                return refuse(tr("This Mac shows its screen only to a Mac that reaches it through the Monitor helper."))
+            }
+            guard onScreen != nil else { return refuse(tr("out on the other Mac cannot show its screen.")) }
+            expire(channel.connection, after: nil)
+            return (["ok": true], .screen)
         }
         if let nonce = object["arm"] as? Int {
             guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }

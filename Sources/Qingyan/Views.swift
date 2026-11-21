@@ -1362,7 +1362,8 @@ struct RemoteSection: View {
                 Toggle(tr("Show this screen on Monitor"), isOn: $settings.preferences.screenEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                     .onChange(of: settings.preferences.screenEnabled) { _, _ in controller.refresh() }
             }.padding(.top, 10)
-            Reveal(open: settings.preferences.screenEnabled) { screenStatus.padding(.top, 8) }
+            // Shown while another Mac's out views this screen too, which needs no switch.
+            Reveal(open: settings.preferences.screenEnabled || controller.screenState == .viewing) { screenStatus.padding(.top, 8) }
         }
         .onAppear { controller.refreshHelper(force: true); controller.testPeers() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
@@ -1383,7 +1384,8 @@ struct RemoteSection: View {
                 case .viewing:
                     HStack(spacing: 6) {
                         Circle().fill(Palette.accent).frame(width: 6, height: 6)
-                        Text(tr("Being viewed from the Monitor page")).font(.system(size: 11)).foregroundStyle(Palette.ink).lineLimit(1)
+                        Text(controller.screen.viewer.map { tr("Being viewed from %@", $0) } ?? tr("Being viewed from the Monitor page"))
+                            .font(.system(size: 11)).foregroundStyle(Palette.ink).lineLimit(1).truncationMode(.middle)
                         Spacer(minLength: 6)
                         Button(tr("Stop")) { controller.screen.stopViewing() }.buttonStyle(QuietButton())
                     }
@@ -1420,6 +1422,20 @@ struct RemoteSection: View {
                 .frame(width: 6, height: 6)
             CopyableText(device.label, font: .system(size: 12))
                 .lineLimit(1)
+            // Its screen in a window of out's own (user 2026-11-21): a Mac reached through the helper.
+            if HelperLink.agent(of: device.host) != nil {
+                Button { ScreenViewer.show(device, controller: controller) } label: {
+                    Image(systemName: "display")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Palette.ink.opacity(0.8))
+                        .frame(width: 22, height: 18)
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(tr("Show %@’s screen and work it from here", device.label))
+                .accessibilityLabel(tr("Show %@’s screen", device.label))
+            }
             Spacer(minLength: 6)
             Text(status).font(.system(size: 10.5)).foregroundStyle(ok == false ? Color.orange : Palette.muted).lineLimit(1).fixedSize()
         }

@@ -151,6 +151,16 @@ out can show this Mac's screen on your Monitor page, where it can be controlled 
 - A Mac's screen can be shown on the Monitor page only when out is installed on it.
 - The helper is the gate. out shows the screen to the session the Monitor helper on this Mac hands it, and the helper's own files in your account decide which browsers may ask. A program running as you on this Mac that can change those files, or take the helper's place at its socket, could start a session too: out cannot tell it from the helper. Leave the switch off on a Mac where that matters.
 
+## Another Mac's screen in out
+
+Each Mac in Multiple Macs that is reached through the Monitor helper has a screen button after its name. It opens that Mac's screen in a window of this out, where it can be worked as well as viewed: the session the Monitor page gets, without a browser. The picture, the sound, the pointer's shape and the clipboard come over; the pointer, the keys by their place on the keyboard and the wheel go back.
+
+- No switch is needed on the other Mac: any Mac of yours in Multiple Macs that may type text on it can open its screen. The "Show this screen on Monitor" switch is for the Monitor page alone. The other Mac still needs out running, macOS's permission to record the screen, and Accessibility to be controlled; the window says which is missing.
+- How it travels: this out proves which Mac it is to the other Mac's out, with the same handshake as for sending text, and asks for the screen; from then on the session runs on that connection, which goes only through the two Macs' helpers and their tunnel. A Mac reached at a plain address, not through the helper, is not offered.
+- In the window, the picture keeps that display's proportions and is sent at the window's size; that display itself does not change. Command shortcuts such as ⌘Q and ⌘W go to that Mac, not to out here (system shortcuts such as ⌘Tab stay on this Mac); close the window with its close button. Keys and buttons held when the window goes to the back are let go there. While the window is in front, text copied here goes to that Mac's clipboard, and text copied there comes here.
+- Speaking into it: with the window in front, a dictation goes to that Mac, as it does behind a remote desktop, but without the knock, since out knows which Mac the window shows. Fn stays this Mac's.
+- One viewer at a time: while the Monitor page or another Mac views a screen, the window says so. On the Mac being viewed, the panel says which Mac is viewing and has a Stop button, and so does the menu bar menu.
+
 ## Releases and updates
 
 - Builds: every push to `main` is checked (`swift run QingyanChecks`) and built by GitHub Actions (`.github/workflows/release.yml`). A build is published when the maintainers tag it `v0.1.<build>`: the workflow signs it and makes one release for that version, the only one that holds it, containing `out-0.1.<build>.zip` (the app, which `install.sh` and installed copies download) and `out.json` naming it. There is no disk image or other installer. The build number only increases. 0.1.50 also carried the app as `put-0.1.50.zip` with a `put.json`, for copies installed while it was called put, which moved themselves to `out.app`; now that every Mac runs out, that pair is gone from it, later releases do not carry it, and the old pre-release `builds` that copies up to 0.1.48 read is deleted.
@@ -216,4 +226,4 @@ swift run Qingyan --render-previews <output folder>
 
 Final acceptance still needs a real key and the user's permissions: short and long sentences, mixed Chinese and English, spoken corrections, writing back across apps, switching fields while recording, and the recognition accuracy and actual latency for Chinese. Text in the interface previews is a labeled test sample, not evidence of cloud recognition.
 
-A debug build also has `Qingyan --screen-selftest <dir> [avc|hevc]`: it runs a screen session with no page at the other end and writes the video, the sound and `report.json` to `<dir>`.
+A debug build also has `Qingyan --screen-selftest <dir> [avc|hevc]`: it runs a screen session with no page at the other end and writes the video, the sound and `report.json` to `<dir>`. `Qingyan --screen-viewer-selftest <dir> [avc|hevc]` runs out's own viewer against a session on the same Mac, decodes each picture the viewer makes for its window, writes `viewer-report.json` and exits with 1 when nothing was decoded.

@@ -26,6 +26,10 @@ final class ScreenHost: ObservableObject {
     }
     /// Called when the state changes; set by the controller, which shows it.
     var onChange: (() -> Void)?
+    /// While viewing: the other Mac whose out shows this screen, or nil for the Monitor page.
+    @Published private(set) var viewer: String?
+    /// That Mac's key, so that its view ends once it is no longer trusted to work this Mac.
+    private(set) var viewerKey: String?
 
     private var loops: [Task<Void, Never>] = []
     private var generation = 0
@@ -39,7 +43,8 @@ final class ScreenHost: ObservableObject {
     func start() {
         guard loops.isEmpty else { return }
         let generation = generation
-        state = .waiting
+        // Another Mac may be viewing already; it still is.
+        if session == nil { state = .waiting }
         for _ in 0..<2 { loops.append(Task { @MainActor [weak self] in await self?.loop(generation) }) }
     }
 
@@ -52,6 +57,19 @@ final class ScreenHost: ObservableObject {
         session?.end("off")
         session = nil
         state = .off
+    }
+
+    /// The Monitor page's switch is off: out no longer waits at the helper for a page, and a page's
+    /// view ends; another Mac's out that shows this screen goes on.
+    func stopWaiting() {
+        guard !loops.isEmpty || (session != nil && viewer == nil) else { return }
+        generation += 1
+        for loop in loops { loop.cancel() }
+        loops.removeAll()
+        for connection in parked.values { connection.cancel() }
+        parked.removeAll()
+        if session != nil, viewer == nil { session?.end("off") }
+        if session == nil { state = .off }
     }
 
     /// Ends the page's view; out goes on waiting for the next.
@@ -86,19 +104,31 @@ final class ScreenHost: ObservableObject {
         }
     }
 
-    private func serve(_ connection: NWConnection) {
+    /// Another Mac's out asks to show this screen (RemoteReceiver.onScreen): a trusted Mac, allowed
+    /// to type here, through the Monitor helper. It needs no switch (user 2026-11-21: the Macs in
+    /// Multiple Macs can be worked from each other's out); the switch is the Monitor page's.
+    func serveRemote(_ connection: NWConnection, key: String, viewer: String) {
+        // Started already: it came through the helper, as a page's does.
+        serve(connection, viewer: viewer, key: key)
+    }
+
+    private func serve(_ connection: NWConnection, viewer: String? = nil, key: String? = nil) {
         guard session == nil else {
-            // One page at a time: the second is told so and let go.
+            // One at a time: the second is told so and let go.
             connection.send(content: ScreenWire.status(["s": "end", "why": "busy"]), completion: .contentProcessed { _ in connection.cancel() })
             return
         }
         let next = ScreenSession(connection: connection)
         session = next
+        self.viewer = viewer
+        viewerKey = key
         state = .viewing
         next.onEnd = { [weak self, weak next] in
             Task { @MainActor in
                 guard let self, self.session === next else { return }
                 self.session = nil
+                self.viewer = nil
+                self.viewerKey = nil
                 if self.state == .viewing { self.state = self.loops.isEmpty ? .off : .waiting }
             }
         }

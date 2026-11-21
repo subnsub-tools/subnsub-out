@@ -49,25 +49,28 @@ public enum ScreenWire {
         frame(.status, (try? JSONSerialization.data(withJSONObject: fields)) ?? Data("{}".utf8))
     }
 
-    /// What the page sends, cut into frames as it arrives in pieces of any size.
+    /// What arrives, cut into frames as it comes in pieces of any size: what the page sends (no
+    /// frame over `controlLimit`), or, for out showing another Mac's screen, what that Mac sends.
     public struct Parser {
         private var held = Data()
-        public init() {}
+        private let limit: Int
+        public init(limit: Int = ScreenWire.controlLimit) { self.limit = limit }
 
-        /// The whole frames in what has arrived so far; nil when a frame is longer than a page
-        /// may send, which ends the session.
+        /// The whole frames in what has arrived so far; nil when a frame is longer than the other
+        /// end may send, which ends the session.
         public mutating func feed(_ piece: Data) -> [(kind: UInt8, body: Data)]? {
             held.append(piece)
             var frames: [(kind: UInt8, body: Data)] = []
             var at = held.startIndex
             while held.endIndex - at >= 4 {
                 let n = Int(held[at + 1]) << 16 | Int(held[at + 2]) << 8 | Int(held[at + 3])
-                guard n <= ScreenWire.controlLimit else { return nil }
+                guard n <= limit else { return nil }
                 guard held.endIndex - at >= 4 + n else { break }
                 frames.append((held[at], Data(held[(at + 4)..<(at + 4 + n)])))
                 at += 4 + n
             }
-            held = Data(held[at...])
+            // Only what was read is let go: a picture arriving in many pieces is not copied once a piece.
+            if at > held.startIndex { held.removeSubrange(held.startIndex..<at) }
             return frames
         }
     }
@@ -214,6 +217,165 @@ public enum ScreenWire {
             i += 4
         }
     }
+}
+
+/// The other end of a session, for out showing another Mac's screen in a window of its own (user
+/// 2026-11-21: a screen button after each Mac in Multiple Macs). What it sends is what the page
+/// sends, and what it reads is what the page reads.
+public extension ScreenWire {
+    static func frame(from kind: FromPage, _ body: Data) -> Data {
+        var out = Data(capacity: 4 + body.count)
+        let n = min(body.count, 0xFF_FFFF)
+        out.append(contentsOf: [kind.rawValue, UInt8(n >> 16 & 0xFF), UInt8(n >> 8 & 0xFF), UInt8(n & 0xFF)])
+        out.append(body.prefix(n))
+        return out
+    }
+
+    static func control(_ fields: [String: Any]) -> Data {
+        frame(from: .control, (try? JSONSerialization.data(withJSONObject: fields)) ?? Data("{}".utf8))
+    }
+
+    /// Buttons as the page counts them: 1 the left, 2 the middle, 4 the right.
+    static func pointerFrame(buttons: UInt8, x: Int, y: Int) -> Data {
+        let x = UInt16(clamping: max(x, 0)), y = UInt16(clamping: max(y, 0))
+        return frame(from: .pointer, Data([buttons & 7, UInt8(x >> 8), UInt8(x & 0xFF), UInt8(y >> 8), UInt8(y & 0xFF)]))
+    }
+
+    static func keyFrame(down: Bool, code: UInt16) -> Data {
+        frame(from: .key, Data([down ? 1 : 0, UInt8(code >> 8), UInt8(code & 0xFF)]))
+    }
+
+    /// `dx` `dy`: how far the content moves, in pixels, as a browser's wheel says it.
+    static func scrollFrame(dx: Int, dy: Int, x: Int, y: Int) -> Data {
+        func bytes(_ v: Int) -> [UInt8] { let u = UInt16(bitPattern: Int16(clamping: v)); return [UInt8(u >> 8), UInt8(u & 0xFF)] }
+        let x = UInt16(clamping: max(x, 0)), y = UInt16(clamping: max(y, 0))
+        return frame(from: .scroll, Data(bytes(dx) + bytes(dy) + [UInt8(x >> 8), UInt8(x & 0xFF), UInt8(y >> 8), UInt8(y & 0xFF)]))
+    }
+
+    /// A Mac's wheel or trackpad, as the page's wheel would say it: AppKit counts the other way,
+    /// and in lines where the device has no finer steps.
+    static func wheel(deltaX: Double, deltaY: Double, precise: Bool) -> (dx: Int, dy: Int) {
+        let unit = precise ? 1.0 : 16.0
+        func one(_ v: Double) -> Int { Int((-v * unit).rounded()).clamped(-32000, 32000) }
+        return (one(deltaX), one(deltaY))
+    }
+
+    struct Layout: Equatable, Sendable {
+        /// The display in points, and the picture in pixels.
+        public let width: Int, height: Int, pictureWidth: Int, pictureHeight: Int
+        public init(width: Int, height: Int, pictureWidth: Int, pictureHeight: Int) {
+            self.width = width; self.height = height; self.pictureWidth = pictureWidth; self.pictureHeight = pictureHeight
+        }
+    }
+
+    static func layout(_ body: Data) -> Layout? {
+        guard body.count >= 8 else { return nil }
+        let b = [UInt8](body.prefix(8))
+        func u(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
+        let layout = Layout(width: u(0), height: u(2), pictureWidth: u(4), pictureHeight: u(6))
+        return layout.width > 0 && layout.height > 0 && layout.pictureWidth > 0 && layout.pictureHeight > 0 ? layout : nil
+    }
+
+    /// A picture: whether it is a key frame, its time (90 kHz), and its units, each after four bytes of length.
+    static func videoFrame(_ body: Data) -> (key: Bool, stamp: UInt32, units: Data)? {
+        guard body.count > 5 else { return nil }
+        let b = body.startIndex
+        let stamp = UInt32(body[b + 1]) << 24 | UInt32(body[b + 2]) << 16 | UInt32(body[b + 3]) << 8 | UInt32(body[b + 4])
+        return (body[b] & 1 == 1, stamp, Data(body[(b + 5)...]))
+    }
+
+    /// A sound packet: its codec, its first sample, its sequence and its bytes.
+    static func audioPacket(_ body: Data) -> (codec: UInt8, samples: UInt32, sequence: UInt16, bytes: Data)? {
+        guard body.count > 7 else { return nil }
+        let b = body.startIndex
+        let samples = UInt32(body[b + 1]) << 24 | UInt32(body[b + 2]) << 16 | UInt32(body[b + 3]) << 8 | UInt32(body[b + 4])
+        return (body[b], samples, UInt16(body[b + 5]) << 8 | UInt16(body[b + 6]), Data(body[(b + 7)...]))
+    }
+
+    struct CursorShape: Equatable, Sendable {
+        public let id: UInt32
+        /// The hot spot and the size in pixels, and the pixels to a point.
+        public let hotX: Int, hotY: Int, width: Int, height: Int, scale: Int
+        public let rgba: Data
+    }
+
+    static func cursorShape(_ body: Data) -> CursorShape? {
+        guard body.count >= 13 else { return nil }
+        let b = [UInt8](body.prefix(13))
+        func u(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
+        let width = u(8), height = u(10)
+        guard width > 0, height > 0, width <= 512, height <= 512, body.count >= 13 + width * height * 4 else { return nil }
+        let start = body.startIndex + 13
+        return CursorShape(id: cursorID(body) ?? 0, hotX: u(4), hotY: u(6), width: width, height: height, scale: max(1, Int(b[12])),
+                           rgba: Data(body[start..<(start + width * height * 4)]))
+    }
+
+    static func cursorID(_ body: Data) -> UInt32? {
+        guard body.count >= 4 else { return nil }
+        let b = body.startIndex
+        return UInt32(body[b]) << 24 | UInt32(body[b + 1]) << 16 | UInt32(body[b + 2]) << 8 | UInt32(body[b + 3])
+    }
+
+    /// The parameter sets in an H.264 decoder record (avcC): its sequence and picture sets.
+    static func avcParameterSets(_ record: Data) -> [Data]? {
+        let b = [UInt8](record)
+        guard b.count >= 7, b[0] == 1 else { return nil }
+        var at = 5, sets: [Data] = []
+        for group in 0..<2 {
+            guard at < b.count else { return nil }
+            let count = group == 0 ? Int(b[at] & 0x1F) : Int(b[at])
+            at += 1
+            for _ in 0..<count {
+                guard at + 2 <= b.count else { return nil }
+                let n = Int(b[at]) << 8 | Int(b[at + 1]); at += 2
+                guard n > 0, at + n <= b.count else { return nil }
+                sets.append(Data(b[at..<(at + n)])); at += n
+            }
+        }
+        return sets.count >= 2 ? sets : nil
+    }
+
+    /// The parameter sets in an HEVC decoder record (hvcC): video, sequence and picture sets.
+    static func hevcParameterSets(_ record: Data) -> [Data]? {
+        let b = [UInt8](record)
+        guard b.count >= 23, b[0] == 1 else { return nil }
+        var at = 22
+        let arrays = Int(b[at]); at += 1
+        var sets: [Data] = []
+        for _ in 0..<arrays {
+            guard at + 3 <= b.count else { return nil }
+            let count = Int(b[at + 1]) << 8 | Int(b[at + 2]); at += 3
+            for _ in 0..<count {
+                guard at + 2 <= b.count else { return nil }
+                let n = Int(b[at]) << 8 | Int(b[at + 1]); at += 2
+                guard n > 0, at + n <= b.count else { return nil }
+                sets.append(Data(b[at..<(at + n)])); at += n
+            }
+        }
+        return sets.count >= 3 ? sets : nil
+    }
+
+    /// Where a place in the window's picture is on the other Mac's display, in its points; nil
+    /// outside the picture. `picture`: where the picture is drawn in the window.
+    static func remotePoint(_ point: CGPoint, picture: CGRect, display: (width: Int, height: Int), flipped: Bool) -> (x: Int, y: Int)? {
+        guard picture.width > 0, picture.height > 0, display.width > 0, display.height > 0, picture.contains(point) else { return nil }
+        let fx = (point.x - picture.minX) / picture.width
+        let fy = flipped ? (point.y - picture.minY) / picture.height : (picture.maxY - point.y) / picture.height
+        return (Int((fx * Double(display.width)).rounded(.down)).clamped(0, display.width - 1),
+                Int((fy * Double(display.height)).rounded(.down)).clamped(0, display.height - 1))
+    }
+
+    /// Where a picture of these proportions is drawn in a window of this size: as large as fits, centered.
+    static func fit(_ size: (width: Int, height: Int), in bounds: CGRect) -> CGRect {
+        guard size.width > 0, size.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
+        let k = min(bounds.width / CGFloat(size.width), bounds.height / CGFloat(size.height))
+        let w = CGFloat(size.width) * k, h = CGFloat(size.height) * k
+        return CGRect(x: bounds.minX + (bounds.width - w) / 2, y: bounds.minY + (bounds.height - h) / 2, width: w, height: h)
+    }
+}
+
+extension Int {
+    func clamped(_ low: Int, _ high: Int) -> Int { Swift.min(Swift.max(self, low), high) }
 }
 
 extension HelperLink {

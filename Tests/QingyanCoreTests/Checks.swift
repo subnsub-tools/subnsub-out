@@ -106,7 +106,8 @@ struct Checks {
             ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
             ("Microphone binding: a bound device is used only while connected and never falls back; unbound follows the system", microphoneBinding),
             ("Localization: the language setting, words from a table, formats, English where the table has no word", localization),
-            ("Screen on the Monitor page: frames cut from pieces, the page's commands and their bounds, pointer, key and wheel, the picture's size, clicks in a row", screenWire)
+            ("Screen on the Monitor page: frames cut from pieces, the page's commands and their bounds, pointer, key and wheel, the picture's size, clicks in a row", screenWire),
+            ("Another Mac's screen in out: large pictures cut from pieces, what the window sends read as the page's, the wheel, layout, picture, sound and pointer frames, decoder records, where a click lands", screenViewerWire)
         ]
         for (name, test) in cases {
             do { try test(); print("PASS \(name)") }
@@ -118,6 +119,15 @@ struct Checks {
         catch { failed += 1; print("FAIL History: \(error.localizedDescription)") }
         do { try await channel(); print("PASS Encrypted channel over real TCP: both ends prove their keys, frames round-trip, a forged or replayed frame ends the connection") }
         catch { failed += 1; print("FAIL Channel: \(error.localizedDescription)") }
+        do {
+            // A Mac not reached through the helper is not asked at all: the session's frames are sealed only by the helpers' tunnel.
+            _ = try await RemoteSender.openScreen(TrustedDevice(key: DeviceIdentity().publicKey, name: "Desk", host: "127.0.0.1", port: 30001),
+                                                  identity: DeviceIdentity(), name: "Laptop", listening: 30001, timeout: 1)
+            failed += 1; print("FAIL Another Mac's screen: a Mac at a plain address was asked")
+        } catch {
+            if error.localizedDescription.contains("Monitor helper") { print("PASS Another Mac's screen is asked for only through the Monitor helper") }
+            else { failed += 1; print("FAIL Another Mac's screen: \(error.localizedDescription)") }
+        }
         if ProcessInfo.processInfo.environment["QINGYAN_FAKE_HELPER"] != nil {
             do { try await throughHelper(); print("PASS Through the Monitor helper: roster, ping, knock armed, text delivered") }
             catch { failed += 1; print("FAIL Through the Monitor helper: \(error.localizedDescription)") }
@@ -158,6 +168,62 @@ struct Checks {
         try check(follow == .systemDefault(headset) && follow.canRecord && !follow.isBound && follow.missingMessage == nil, "unbound follows the system default")
         let none = MicrophoneBinding.resolve(boundUID: "", boundName: "", available: [], systemDefault: nil)
         try check(none == .noInputDevices && !none.canRecord && none.missingMessage != nil, "no input at all is said")
+    }
+
+    static func screenViewerWire() throws {
+        // A picture larger than a control frame, arriving in pieces, comes whole; past its own bound it ends the session.
+        let picture = Data((0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let framed = ScreenWire.frame(.videoFrame, picture) + ScreenWire.frame(.layout, Data([0x05, 0xA0, 0x03, 0x84, 0x0B, 0x40, 0x07, 0x08]))
+        var reader = ScreenWire.Parser(limit: ScreenWire.frameLimit + 8)
+        var got: [(kind: UInt8, body: Data)] = []
+        var at = 0
+        while at < framed.count {
+            let piece = framed[at..<min(at + 65_536, framed.count)]
+            got += reader.feed(Data(piece)) ?? []
+            at += 65_536
+        }
+        try check(got.count == 2 && got[0].kind == 3 && got[0].body == picture && got[1].kind == 8, "a picture of a megabyte, in 64 KB pieces, comes whole and in order")
+        var strict = ScreenWire.Parser()
+        try check(strict.feed(ScreenWire.frame(.videoFrame, picture).prefix(8)) == nil, "but not where only the page's frames are taken")
+        // What the window sends is what the page sends.
+        var host = ScreenWire.Parser()
+        let sent = ScreenWire.control(["t": "open", "codecs": ["hevc", "avc"], "audio": true, "kbps": 12000]) + ScreenWire.pointerFrame(buttons: 4, x: 1511, y: 981)
+            + ScreenWire.keyFrame(down: false, code: 0x37) + ScreenWire.scrollFrame(dx: -40, dy: 300, x: 10, y: 20)
+        let frames = host.feed(sent) ?? []
+        try check(frames.count == 4 && ScreenWire.command(frames[0].body) == .open(codecs: [.hevc, .avc], audio: true, size: nil, kbps: 12000), "the first word")
+        try check(ScreenWire.pointer(frames[1].body) == .init(buttons: 4, x: 1511, y: 981) && ScreenWire.key(frames[2].body) == .init(down: false, code: 0x37)
+                  && ScreenWire.scroll(frames[3].body) == .init(dx: -40, dy: 300, x: 10, y: 20), "the pointer, a key and the wheel, read as the page's")
+        try check(ScreenWire.wheel(deltaX: 0, deltaY: 12.4, precise: true) == (0, -12) && ScreenWire.wheel(deltaX: -1, deltaY: 1, precise: false) == (16, -16),
+                  "AppKit's wheel the other way round, and its lines as pixels")
+        // What the other Mac sends.
+        try check(ScreenWire.layout(Data([0x05, 0xA0, 0x03, 0x84, 0x0B, 0x40, 0x07, 0x08])) == .init(width: 1440, height: 900, pictureWidth: 2880, pictureHeight: 1800)
+                  && ScreenWire.layout(Data([0, 0, 0, 0, 0, 0, 0, 0])) == nil, "the display's points and the picture's pixels")
+        let video = ScreenWire.videoFrame(Data([1, 0, 0, 0x01, 0x2C, 0, 0, 0, 2, 0x65, 0x88]))
+        try check(video?.key == true && video?.stamp == 300 && video?.units == Data([0, 0, 0, 2, 0x65, 0x88]) && ScreenWire.videoFrame(Data([1, 0, 0])) == nil, "a picture's header")
+        let sound = ScreenWire.audioPacket(Data([2, 0, 0, 0x04, 0x00, 0, 7, 0xDE, 0xAD]))
+        try check(sound?.codec == 2 && sound?.samples == 1024 && sound?.sequence == 7 && sound?.bytes == Data([0xDE, 0xAD]), "a sound packet")
+        var shape = Data([0, 0, 0, 9, 0, 3, 0, 4, 0, 2, 0, 1, 2])
+        shape.append(Data(repeating: 0xFF, count: 8))
+        let cursor = ScreenWire.cursorShape(shape)
+        try check(cursor?.id == 9 && cursor?.hotX == 3 && cursor?.hotY == 4 && cursor?.width == 2 && cursor?.height == 1 && cursor?.scale == 2 && cursor?.rgba.count == 8
+                  && ScreenWire.cursorShape(shape.prefix(15)) == nil, "a pointer shape, and not one shorter than its pixels")
+        // Decoder records, as the other Mac's encoder writes them.
+        let sps = Data([0x67, 0x64, 0x00, 0x28, 0xAC]), pps = Data([0x68, 0xEE, 0x3C])
+        var avcC = Data([1, sps[1], sps[2], sps[3], 0xFF, 0xE1, 0, UInt8(sps.count)]) + sps
+        avcC += Data([1, 0, UInt8(pps.count)]) + pps
+        try check(ScreenWire.avcParameterSets(avcC) == [sps, pps] && ScreenWire.avcParameterSets(avcC.prefix(9)) == nil, "H.264's sequence and picture sets")
+        let vps = Data([0x40, 0x01, 0x0C]), hsps = Data([0x42, 0x01, 0x01, 0x01]), hpps = Data([0x44, 0x01, 0xC1])
+        var hvcC = Data([1] + [UInt8](repeating: 0, count: 21) + [3])
+        for (type, set) in [(UInt8(32), vps), (33, hsps), (34, hpps)] { hvcC += Data([0x80 | type, 0, 1, 0, UInt8(set.count)]) + set }
+        try check(ScreenWire.hevcParameterSets(hvcC) == [vps, hsps, hpps] && ScreenWire.hevcParameterSets(hvcC.prefix(30)) == nil, "HEVC's video, sequence and picture sets")
+        // Where a click lands: the picture letterboxed in a wider window, top-left origin.
+        let drawn = ScreenWire.fit((1440, 900), in: CGRect(x: 0, y: 0, width: 1000, height: 500))
+        try check(abs(drawn.width - 800) < 0.01 && abs(drawn.minX - 100) < 0.01 && drawn.height == 500, "the picture as large as fits, centered: \(drawn)")
+        let corner = ScreenWire.remotePoint(CGPoint(x: 100, y: 0), picture: drawn, display: (1440, 900), flipped: true)
+        let middle = ScreenWire.remotePoint(CGPoint(x: 500, y: 250), picture: drawn, display: (1440, 900), flipped: true)
+        let far = ScreenWire.remotePoint(CGPoint(x: 899.99, y: 499.99), picture: drawn, display: (1440, 900), flipped: true)
+        try check(corner.map { [$0.x, $0.y] } == [0, 0] && middle.map { [$0.x, $0.y] } == [720, 450] && far.map { [$0.x, $0.y] } == [1439, 899], "corners and middle")
+        try check(ScreenWire.remotePoint(CGPoint(x: 50, y: 250), picture: drawn, display: (1440, 900), flipped: true) == nil, "beside the picture, nothing")
     }
 
     static func screenWire() throws {
