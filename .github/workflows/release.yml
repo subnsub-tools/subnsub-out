@@ -19,13 +19,17 @@ jobs:
 
       - name: Checks
         run: |
-          set -o pipefail
-          swift run QingyanChecks 2>&1 | tee "$RUNNER_TEMP/checks.log" | grep -E "FAIL|error:|PASS Links|PASS Shelf|All checks passed" || true
+          set +e
+          swift run QingyanChecks > "$RUNNER_TEMP/checks.log" 2>&1
+          echo "exit $?"
+          grep -nE "FAIL|error|PASS Links|PASS Shelf|All checks passed" "$RUNNER_TEMP/checks.log" | cut -c1-600 | tail -40
+          echo "-- tail"; tail -15 "$RUNNER_TEMP/checks.log" | cut -c1-400
           grep -q "All checks passed" "$RUNNER_TEMP/checks.log"
 
       - name: Build
         if: always()
         run: |
+          set +e
           swift build --product Qingyan > "$RUNNER_TEMP/build.log" 2>&1; code=$?
-          grep -E "error|warning: .*|Build complete" "$RUNNER_TEMP/build.log" | grep -E "error|Shelf.swift|HelperLink.swift|Build complete" | tail -60
+          grep -nE "error|Shelf.swift|HelperLink.swift|Build complete" "$RUNNER_TEMP/build.log" | cut -c1-600 | tail -60
           exit $code
