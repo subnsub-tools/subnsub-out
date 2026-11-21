@@ -858,7 +858,8 @@ struct Checks {
         }
         try await HelperLink.unhost(id: id)
         try check(helper.hosted[key] == nil, "taken down at the helper")
-        HelperLink.socketOverride = folder.appendingPathComponent("none.sock").path
+        // A socket's path is short: one under the scratch folder is too long to be given to a connection.
+        HelperLink.socketOverride = "/tmp/qy-none-\(UInt32.random(in: 0..<UInt32.max)).sock"
         try await refused("no helper answering", HelperLink.sentence(.notRunning)) {
             try await HelperLink.host(id: id, name: "Screen Shot.png", size: bytes.count, file: file)
         }
