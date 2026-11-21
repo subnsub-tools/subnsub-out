@@ -313,7 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func makePanel(settings: SettingsStore, controller: DictationController) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.defaultHeight),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "out"
+        window.title = "Out"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.standardWindowButton(.zoomButton)?.isHidden = true

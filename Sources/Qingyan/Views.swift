@@ -872,13 +872,13 @@ struct MainView: View {
     private var header: some View {
         HStack(spacing: 5) {
             HStack(alignment: .top, spacing: 2) {
-                Text("out").font(.system(size: 13, weight: .bold))
+                Text("Out").font(.system(size: 13, weight: .bold))
                 Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6).padding(.top, 1)
             }
             .contentShape(Rectangle())
             .help(status.text)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("out · " + status.text)
+            .accessibilityLabel("Out · " + status.text)
             Spacer(minLength: 4)
             HeaderIconButton(
                 symbol: "pip.enter",
