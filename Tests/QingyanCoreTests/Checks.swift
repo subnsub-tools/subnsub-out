@@ -85,7 +85,7 @@ struct Checks {
     @MainActor static func main() async {
         var failed = 0
         let cases: [(String, () throws -> Void)] = [
-            ("Fn tap, repeat, chords and reset", fnGesture),
+            ("Fn tap, repeat, chords and reset; holding the shortcut to speak", fnGesture),
             ("Shortcuts: stored names, labels, what may be recorded", shortcuts),
             ("Partial/final reconciliation and reordered events", transcripts),
             ("Audio format and manual end-of-turn", session),
@@ -186,6 +186,33 @@ struct Checks {
         _ = fn.flagsChanged(isDown: true, hasOtherModifiers: false)
         fn.reset()
         try check(!fn.flagsChanged(isDown: false, hasOtherModifiers: false), "stale key release")
+
+        // Holding the shortcut while speaking.
+        var hold = HoldGesture()
+        let t = HoldGesture.holdTime, w = HoldGesture.chordWindow
+        hold.pressed(at: 10, chord: false)
+        try check(!hold.due(at: 10 + t / 2), "a tap's press is not a hold yet")
+        try check(!hold.released(), "a tap's release ends no recording (it toggles)")
+        hold.pressed(at: 20, chord: false)
+        try check(hold.due(at: 20 + t), "held on its own for the hold time starts a recording")
+        hold.began(at: 20 + t)
+        try check(hold.holding && !hold.due(at: 20 + t + 0.1), "and only once")
+        try check(hold.released() && !hold.holding, "its release stops that recording, and is not a tap")
+        hold.pressed(at: 30, chord: false)
+        try check(!hold.otherInput(at: 30.1) && !hold.due(at: 30 + t), "a key pressed before the hold time is a combination: no recording")
+        _ = hold.released()
+        hold.pressed(at: 40, chord: true)
+        try check(!hold.due(at: 40 + t), "pressed with something else held: no recording")
+        _ = hold.released()
+        hold.pressed(at: 50, chord: false); hold.began(at: 50 + t)
+        try check(hold.otherInput(at: 50 + t + w / 2) && !hold.holding, "a key soon after the start: it was a combination, the recording goes")
+        try check(!hold.released(), "and the release ends nothing")
+        hold.pressed(at: 60, chord: false); hold.began(at: 60 + t)
+        try check(!hold.otherInput(at: 60 + t + w + 0.5) && hold.holding, "a slip of the hand while speaking: the recording goes on")
+        try check(hold.released(), "and the release stops it")
+        hold.pressed(at: 70, chord: false); hold.began(at: 70 + t); hold.reset()
+        try check(!hold.holding && !hold.released(), "reset forgets the press")
+        try check(!hold.otherInput(at: 80), "nothing down: nothing to break")
     }
 
     /// put's road through the helper: the roster, a stream opened and one taken, text sent and

@@ -74,6 +74,15 @@ final class GlobalShortcut {
     var onKnock: ((Int) -> Void)?
     /// Control + Option + V: type the clipboard key by key.
     var onTypeClipboard: (() -> Void)?
+    /// Holding the shortcut while speaking: Fn held on its own past the tap time, or an F key or
+    /// combination pressed, while nothing records. True when a recording started; its release is
+    /// then reported to `onHoldReleased`.
+    var onHoldBegan: (() -> Bool)?
+    /// The press that started a recording was let go: `stop` when it was held past the tap time (an
+    /// F key or combination let go at once leaves its recording running, as a tap does).
+    var onHoldReleased: ((_ stop: Bool) -> Void)?
+    /// A key or click soon after a held Fn started a recording: the press was a key combination.
+    var onHoldBroken: (() -> Void)?
     /// How many keys and clicks of the user's have come in (not this app's own): Type the Clipboard
     /// stops when one comes in between, since it may have moved the focus.
     private(set) var userInputs = 0
@@ -87,6 +96,10 @@ final class GlobalShortcut {
     /// their own, so the flag on a key-down says nothing.
     private var fnDown = false
     private var knock = KnockDecoder()
+    private var hold = HoldGesture()
+    private var holdTimer: DispatchWorkItem?
+    /// The F key or combination whose press started a recording, and when.
+    private var comboPress: (code: Int64, at: TimeInterval)?
     /// True once the user has typed or clicked. Cleared right after this app pastes, so while it is
     /// still false the cursor has to be sitting exactly behind the pasted text.
     var touched = true
@@ -94,7 +107,7 @@ final class GlobalShortcut {
         didSet {
             guard choice != oldValue else { return }
             active = Shortcut(stored: choice) ?? .fn
-            gesture.reset()
+            gesture.reset(); forgetPress()
             updateFnOwnership()
         }
     }
@@ -122,7 +135,7 @@ final class GlobalShortcut {
         guard AXIsProcessTrusted() else { stop(); return }
         if let tap {
             if !CGEvent.tapIsEnabled(tap: tap) {
-                gesture.reset()
+                gesture.reset(); resyncAfterGap()
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
             return
@@ -156,7 +169,7 @@ final class GlobalShortcut {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
-        tap = nil; source = nil; gesture.reset()
+        tap = nil; source = nil; gesture.reset(); forgetPress()
         onRecorded = nil
         fnSystemAction.restore()
     }
@@ -165,7 +178,7 @@ final class GlobalShortcut {
         let pass = Unmanaged.passUnretained(event)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             // Key-ups may have been missed meanwhile.
-            gesture.reset(); recordingTap = nil; swallowed = []; held = []
+            gesture.reset(); resyncAfterGap(); recordingTap = nil; swallowed = []; held = []
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return pass
         }
@@ -175,7 +188,7 @@ final class GlobalShortcut {
             touched = true
             userInputs &+= 1
             // A click with the shortcut's modifier held is a chord, not a tap.
-            gesture.otherKeyPressed()
+            otherInput(at: NSEvent(cgEvent: event)?.timestamp ?? ProcessInfo.processInfo.systemUptime)
             recordingTap = nil
             // A click anywhere ends the recording of a new shortcut, so that typing elsewhere is not taken.
             onRecorded?(nil)
@@ -184,9 +197,17 @@ final class GlobalShortcut {
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
         let repeating = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        let fnWasDown = fnDown
+        // When the key went down or up, not when this callback runs (it may wait behind other work).
+        let time = NSEvent(cgEvent: event)?.timestamp ?? ProcessInfo.processInfo.systemUptime
         switch type {
         case .keyUp:
             held.remove(code)
+            if let press = comboPress, press.code == code {
+                comboPress = nil
+                // Held past the tap time, the release stops the recording the press started.
+                onHoldReleased?(time - press.at >= HoldGesture.holdTime)
+            }
             return swallowed.remove(code) != nil ? nil : pass
         case .keyDown:
             if swallowed.contains(code) {
@@ -206,8 +227,8 @@ final class GlobalShortcut {
         } else { knock.reset() }
         if let onRecorded { return record(type, event, code: code, report: onRecorded) }
         if type == .keyDown {
-            gesture.otherKeyPressed()
-            if code == 53, onCancel?() == true { return nil }
+            if code == 53, onCancel?() == true { otherInput(at: time); return nil }
+            otherInput(at: time)
             if code == 9, flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand), !flags.contains(.maskShift) {
                 if !repeating { onTypeClipboard?() }
                 swallowed.insert(code)
@@ -216,7 +237,11 @@ final class GlobalShortcut {
             // With Fn held, only an F key matches: Fn with another key is a different key.
             if case let .combination(key, modifiers) = active, code == Int64(key), Self.modifiers(flags) == modifiers,
                !fnDown || Shortcut.functionKeys[key] != nil {
-                if !repeating { onToggle?() }
+                if !repeating {
+                    // Nothing recording: this press starts one, and its release stops it if held.
+                    if onHoldBegan?() == true { comboPress = (code, time) }
+                    else { comboPress = nil; onToggle?() }
+                }
                 swallowed.insert(code)
                 return nil
             }
@@ -228,10 +253,20 @@ final class GlobalShortcut {
                 let other = !flags.intersection(modifiers).isEmpty
                 if code == 63 {
                     let down = flags.contains(.maskSecondaryFn)
-                    if gesture.flagsChanged(isDown: down, hasOtherModifiers: other || (down && handsBusy())) { onToggle?() }
+                    let chord = other || (down && handsBusy())
+                    let tapped = gesture.flagsChanged(isDown: down, hasOtherModifiers: chord)
+                    if down && !fnWasDown {
+                        // Held on its own for the hold time, it starts a recording (scheduleHold).
+                        hold.pressed(at: time, chord: chord)
+                        scheduleHold()
+                    } else if !down && fnWasDown {
+                        holdTimer?.cancel(); holdTimer = nil
+                        // Let go after a hold: the recording it started stops, and it is no tap.
+                        if hold.released() { onHoldReleased?(true) } else if tapped { onToggle?() }
+                    } else if tapped { onToggle?() }
                     // The system Globe action is disabled separately; consuming this event alone is insufficient.
                     return nil
-                } else if other { gesture.otherKeyPressed() }
+                } else if other { otherInput(at: time) }
             case .commandTap(let right):
                 let mine: UInt64 = right ? 0x10 : 0x08, theirs: UInt64 = right ? 0x08 : 0x10
                 if code == (right ? 54 : 55) {
@@ -240,11 +275,73 @@ final class GlobalShortcut {
                         || flags.rawValue & theirs != 0
                     if gesture.flagsChanged(isDown: down, hasOtherModifiers: other || (down && handsBusy())) { onToggle?() }
                     // A Command key on its own does nothing in macOS: the event goes on, so no app sees it held.
-                } else { gesture.otherKeyPressed() }
+                    // It is never held to speak: every Command shortcut starts by holding it.
+                } else { otherInput(at: time) }
             case .combination: break
             }
         }
         return pass
+    }
+
+    /// Another key, modifier or click: a chord, not a tap; soon after a held Fn started a recording,
+    /// the press was a key combination and the recording goes.
+    private func otherInput(at time: TimeInterval) {
+        gesture.otherKeyPressed()
+        if hold.otherInput(at: time) { onHoldBroken?() }
+    }
+
+    /// Fn went down on its own: if it is still down, alone, after the hold time, a recording starts.
+    private func scheduleHold() {
+        holdTimer?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.holdTimer = nil
+                let now = ProcessInfo.processInfo.systemUptime
+                // Let go already, its key-up still on its way: a tap, not a hold.
+                guard self.onRecorded == nil, Self.fnIsDown(), self.hold.due(at: now) else { return }
+                if self.onHoldBegan?() == true { self.hold.began(at: now) }
+            }
+        }
+        holdTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + HoldGesture.holdTime, execute: item)
+    }
+
+    /// The press being followed is forgotten (the shortcut changed, or monitoring stopped): a recording
+    /// it held stops rather than run on; one an F key or combination started and let go at once goes
+    /// on, as after a tap.
+    private func forgetPress() {
+        holdTimer?.cancel(); holdTimer = nil
+        if let press = comboPress {
+            comboPress = nil
+            onHoldReleased?(ProcessInfo.processInfo.systemUptime - press.at >= HoldGesture.holdTime)
+        }
+        if hold.released() { onHoldReleased?(true) }
+    }
+
+    /// Monitoring was off for a while (key-ups may have gone unseen): what is still down is read from
+    /// the system. A key let go meanwhile ends its hold now; one still down keeps it, to its release.
+    private func resyncAfterGap() {
+        holdTimer?.cancel(); holdTimer = nil
+        let fnNow = Self.fnIsDown()
+        fnDown = fnNow
+        if !fnNow { if hold.released() { onHoldReleased?(true) } }
+        else if !hold.holding { hold.reset() }
+        if let press = comboPress, !Self.keyIsDown(press.code) {
+            comboPress = nil
+            onHoldReleased?(ProcessInfo.processInfo.systemUptime - press.at >= HoldGesture.holdTime)
+        }
+    }
+
+    /// Whether Fn is down now. The hardware's state, since the session may never see the Fn events this
+    /// tap takes; or the session's, for one a remote-desktop tool posts.
+    private static func fnIsDown() -> Bool {
+        CGEventSource.flagsState(.hidSystemState).contains(.maskSecondaryFn)
+            || CGEventSource.flagsState(.combinedSessionState).contains(.maskSecondaryFn)
+    }
+
+    private static func keyIsDown(_ code: Int64) -> Bool {
+        CGEventSource.keyState(.hidSystemState, key: CGKeyCode(code)) || CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
     }
 
     /// A mouse button or another key already held when a modifier goes down makes it part of a drag or

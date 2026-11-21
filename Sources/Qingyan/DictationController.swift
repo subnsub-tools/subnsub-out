@@ -228,6 +228,10 @@ final class DictationController: ObservableObject {
         receiver.shelf = shelf.sync
         updater.isBusy = { [weak self] in self.map { $0.busy || $0.starting || $0.retryingID != nil } ?? false }
         shortcut.onToggle = { [weak self] in Task { @MainActor in self?.toggle() } }
+        shortcut.onHoldBegan = { [weak self] in self?.holdBegan() ?? false }
+        // Stopping and dropping a recording touch the disk: they run once the key event has gone back.
+        shortcut.onHoldReleased = { [weak self] stop in Task { @MainActor in self?.holdReleased(stop: stop) } }
+        shortcut.onHoldBroken = { [weak self] in Task { @MainActor in self?.holdBroken() } }
         shortcut.onCancel = { [weak self] in
             guard let self, self.busy || self.starting else { return false }
             Task { @MainActor in self.cancel() }
@@ -875,16 +879,51 @@ final class DictationController: ObservableObject {
         if starting { stopWhenStarted.toggle(); return }
         starting = true
         stopWhenStarted = false
+        cancelWhenStarted = false
         Task {
             await begin()
             starting = false
-            if stopWhenStarted, phase == .recording { finish() }
+            if cancelWhenStarted { cancelWhenStarted = false; if phase == .recording { cancel() } }
+            else if stopWhenStarted, phase == .recording { finish() }
         }
     }
 
     /// The microphone is starting; nothing else that records, retries or types begins meanwhile.
     private var starting = false
     private var stopWhenStarted = false
+    /// A held Fn turned out to be a key combination while the microphone was starting: its recording
+    /// goes as soon as it has started (cancelling sooner would leave begin() to start a fresh one).
+    private var cancelWhenStarted = false
+
+    // MARK: Holding the shortcut while speaking (push-to-talk, user 2026-11-21)
+
+    /// A recording that the shortcut, still held, started.
+    private var heldRecording = false
+
+    /// The shortcut held while nothing records (Fn past the tap time, or an F key or combination
+    /// pressed): a recording starts, which the shortcut's release stops.
+    func holdBegan() -> Bool {
+        guard phase != .recording, phase != .processing, !starting else { return false }
+        heldRecording = true
+        toggle()
+        return true
+    }
+
+    /// The shortcut that started the recording was let go: `stop` when it was held past the tap time.
+    func holdReleased(stop: Bool) {
+        guard heldRecording else { return }
+        heldRecording = false
+        guard stop else { return }
+        if starting { stopWhenStarted = true } else if phase == .recording { finish() }
+    }
+
+    /// A key or click soon after a held Fn started the recording: the press was a key combination
+    /// (Fn with an arrow or Delete), so the recording goes, as with Esc.
+    func holdBroken() {
+        guard heldRecording else { return }
+        heldRecording = false
+        if starting { cancelWhenStarted = true } else if phase == .recording { cancel() }
+    }
 
     /// Says why there is no input — the bound microphone is away, or there is none at all — on the
     /// status capsule for a few seconds and on the panel until the next dictation. Nothing records.
@@ -1189,6 +1228,7 @@ final class DictationController: ObservableObject {
 
     func finish() {
         guard phase == .recording else { return }
+        heldRecording = false
         if !hadSignal {
             connectionError = VoiceError(tr("No clear sound was detected. The original recording is kept; check the microphone or retry by hand."))
             job?.cancel(); job = nil; client?.cancel(); client = nil
@@ -1206,6 +1246,7 @@ final class DictationController: ObservableObject {
     func cancel() {
         // Typing has a cancel of its own: the recording state (and History) is not its to touch.
         if typingJob != nil { stopTyping(); return }
+        heldRecording = false
         endRemote()
         let discard = busy ? entry?.id : nil
         sessionID = UUID()

@@ -355,7 +355,7 @@ private struct InputGroup: View {
                 }
             }
             Divider()
-            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop; there is no need to hold the key. Esc cancels the recording. A recording can last up to 15 minutes. To change the shortcut, click it here or on the panel and press the new one: Fn, a Command key on its own, an F key, or a key with Control or Option. With Fn, out takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when out quits or another shortcut is chosen.")) {
+            Row(tr("Shortcut"), info: tr("Tap once to start recording and again to stop, or hold the key while you speak and let go to stop. A Command key can only be tapped, as every Command shortcut starts by holding it. Esc cancels the recording. A recording can last up to 15 minutes. To change the shortcut, click it here or on the panel and press the new one: Fn, a Command key on its own, an F key, or a key with Control or Option. With Fn, out takes over what a single or double press of Fn does in macOS; key combinations with Fn are unchanged, and macOS gets the key back when out quits or another shortcut is chosen.")) {
                 Button(controller.recordingShortcut ? tr("Press the new shortcut…") : settings.shortcutLabel) { controller.recordShortcut() }
                     .buttonStyle(QuietButton())
                     .help(tr("Shortcut: %@ · Click to change it", settings.shortcutLabel))

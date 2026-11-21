@@ -52,6 +52,54 @@ public struct FnGesture {
     public mutating func reset() { down = false; chord = false }
 }
 
+/// Holding the shortcut while speaking (push-to-talk, user 2026-11-21), next to the tap. A press held
+/// on its own for `holdTime` starts a recording that its release stops, and that release is then not a
+/// tap. Another key or a click within `chordWindow` of that start means the press was a key combination
+/// (Fn with an arrow or Delete), and the recording goes; one that comes later is a slip of the hand
+/// while speaking, and the recording goes on.
+public struct HoldGesture {
+    public static let holdTime: TimeInterval = 0.35
+    public static let chordWindow: TimeInterval = 1.0
+    private var downAt: TimeInterval?
+    private var chord = false
+    private var heldAt: TimeInterval?
+    public init() {}
+
+    /// A recording started by this press runs.
+    public var holding: Bool { heldAt != nil }
+
+    /// The key went down; `chord` when something else was already held with it.
+    public mutating func pressed(at time: TimeInterval, chord: Bool) {
+        downAt = time; self.chord = chord; heldAt = nil
+    }
+
+    /// Whether the press, at this time, has been held on its own for long enough to start a recording.
+    public func due(at time: TimeInterval) -> Bool {
+        guard let downAt, !chord, heldAt == nil else { return false }
+        return time - downAt >= Self.holdTime - 0.001
+    }
+
+    /// The recording started from this press.
+    public mutating func began(at time: TimeInterval) { if downAt != nil { heldAt = time } }
+
+    /// Another key, modifier or click while the key is down: true when the recording it started goes.
+    public mutating func otherInput(at time: TimeInterval) -> Bool {
+        guard downAt != nil else { return false }
+        chord = true
+        guard let heldAt, time - heldAt < Self.chordWindow else { return false }
+        self.heldAt = nil
+        return true
+    }
+
+    /// The key went up: true when it ends the recording this press started.
+    public mutating func released() -> Bool {
+        defer { downAt = nil; heldAt = nil; chord = false }
+        return heldAt != nil
+    }
+
+    public mutating func reset() { downAt = nil; heldAt = nil; chord = false }
+}
+
 public enum OpenAIWire {
     public static func session(model: String, dictionary: [String]) -> [String: Any] {
         var transcription: [String: Any] = ["model": model]
