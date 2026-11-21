@@ -16,6 +16,17 @@ final class ShelfModel: ObservableObject {
     @Published var notice = ""
     @Published var targeted = false
     @Published var copiedID: UUID?
+    /// The items this Mac was given a link for, and the link.
+    @Published private(set) var links: [UUID: String] = [:]
+    /// Links being made: how much of the file has gone to the primary helper.
+    @Published private(set) var linking: [UUID: Double] = [:]
+    /// Whether the helper on this Mac knows a primary helper to keep files on.
+    @Published private(set) var linkable = false
+    private var linkTasks: [UUID: Task<Void, Never>] = [:]
+    /// Links still to be taken down at the primary helper: their items left the Shelf.
+    private var unlinking: Set<UUID> = []
+    private var unlinkBusy = false
+    private var unlinkTried = Date.distantPast
     private(set) var store: ShelfStore?
     private(set) var sync: ShelfSync?
     private var thumbnails: [UUID: NSImage] = [:]
@@ -46,6 +57,7 @@ final class ShelfModel: ObservableObject {
             }
             sync.onTransfer = { [weak self] in self?.transferMoved() }
             self.store = store; self.sync = sync
+            loadLinks()
             reload()
         } catch { notice = tr("Could not open the Shelf folder. Check disk space and access permissions.") }
     }
@@ -56,6 +68,13 @@ final class ShelfModel: ObservableObject {
         let present = Set(next.map(\.id))
         thumbnails = thumbnails.filter { present.contains($0.key) }
         snippets = snippets.filter { present.contains($0.key) }
+        // An item that left the Shelf, here or on another Mac, takes its link with it.
+        let orphaned = links.keys.filter { !present.contains($0) }
+        if store != nil, !orphaned.isEmpty {
+            for id in orphaned { links[id] = nil; unlinking.insert(id); linkTasks[id]?.cancel() }
+            saveLinks()
+            takeDown(now: true)
+        }
     }
 
     private func say(_ text: String, for seconds: Double = 2.4) {
@@ -304,6 +323,137 @@ final class ShelfModel: ObservableObject {
         return NSItemProvider(contentsOf: store.url(item)) ?? NSItemProvider()
     }
 
+    // MARK: Links
+
+    private struct LinkFile: Codable {
+        var links: [String: String]
+        var unlinking: [String]
+    }
+    private var linkFile: URL? { store?.directory.appendingPathComponent("links.json") }
+
+    private func loadLinks() {
+        guard let linkFile, let data = try? Data(contentsOf: linkFile), let saved = try? JSONDecoder().decode(LinkFile.self, from: data) else { return }
+        links = Dictionary(saved.links.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } }, uniquingKeysWith: { first, _ in first })
+        unlinking = Set(saved.unlinking.compactMap { UUID(uuidString: $0) })
+    }
+
+    private func saveLinks() {
+        guard let linkFile else { return }
+        let file = LinkFile(links: Dictionary(links.map { ($0.key.uuidString, $0.value) }, uniquingKeysWith: { first, _ in first }),
+                            unlinking: unlinking.map(\.uuidString).sorted())
+        if let data = try? JSONEncoder().encode(file) { try? data.write(to: linkFile, options: .atomic) }
+    }
+
+    /// What the helper on this Mac says about links, each time it is asked for the other Macs.
+    func helperSaid(linkable next: Bool) {
+        if linkable != next { linkable = next }
+        if next { takeDown() }
+    }
+
+    func hasLink(_ item: ShelfItem) -> Bool { links[item.id] != nil }
+    func canLink(_ item: ShelfItem) -> Bool { linkable || links[item.id] != nil }
+
+    private func title(_ item: ShelfItem) -> String { item.kind == .text ? String(snippet(item).prefix(12)) : item.name }
+
+    private func place(_ link: String, for item: ShelfItem) {
+        PasteboardLease.general.keep(link)
+        markCopied(item.id)
+        say(tr("Link to “%@” copied. It opens on devices on your tailnet.", title(item)), for: 4)
+    }
+
+    nonisolated private func sent(_ id: UUID, _ fraction: Double) {
+        Task { @MainActor [weak self] in
+            guard let self, self.linking[id] != nil else { return }
+            self.linking[id] = fraction
+        }
+    }
+
+    /// Copies the item's link. The primary helper keeps the item and gives the address it opens at
+    /// on the tailnet; a link this Mac was given before is copied at once and checked afterwards.
+    func link(_ item: ShelfItem) {
+        guard let store, linkTasks[item.id] == nil else { return }
+        let id = item.id
+        let known = links[id]
+        if let known { place(known, for: item) }
+        let file = store.isPresent(id) ? store.url(item) : nil
+        if known == nil {
+            linking[id] = 0
+            if item.isLarge, file != nil {
+                say(tr("Sending “%@” (%@) to the primary helper. Its link is copied when it arrives.", item.name, Self.size(item.size)), for: 4)
+            }
+        }
+        if unlinking.remove(id) != nil { saveLinks() }
+        linkTasks[id] = Task { [weak self] in
+            let result: Result<String, Error>
+            do {
+                let moved: (@Sendable (Double) -> Void)? = known == nil ? { [weak self] fraction in self?.sent(id, fraction) } : nil
+                result = .success(try await HelperLink.host(id: id, name: item.name, size: item.size, file: file, progress: moved))
+            } catch { result = .failure(error) }
+            guard let self else { return }
+            self.linkTasks[id] = nil
+            self.linking[id] = nil
+            guard self.store?.has(id) == true else {
+                // Removed while its link was being made: the link is taken down again.
+                if case .success = result { self.unlinking.insert(id); self.saveLinks(); self.takeDown(now: true) }
+                return
+            }
+            switch result {
+            case .success(let link):
+                let changed = self.links[id] != link
+                if changed { self.links[id] = link; self.saveLinks() }
+                if known == nil { self.place(link, for: item) }
+                else if changed, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(link) }
+            case .failure(let error):
+                // A link copied already stays as it is; only a first try says why it failed.
+                guard known == nil, !(error is CancellationError) else { return }
+                self.say(error.localizedDescription, for: 6)
+            }
+        }
+    }
+
+    func cancelLink(_ item: ShelfItem) { linkTasks[item.id]?.cancel() }
+
+    /// Takes the item's link down: the primary helper lets its copy go, and the link stops opening.
+    func unlink(_ item: ShelfItem) {
+        linkTasks[item.id]?.cancel()
+        guard links[item.id] != nil else { return }
+        let id = item.id, name = title(item)
+        links[id] = nil
+        unlinking.insert(id)
+        saveLinks()
+        Task { [weak self] in
+            var down = true
+            do { try await HelperLink.unhost(id: id) } catch { down = false }
+            guard let self else { return }
+            if down {
+                if self.unlinking.remove(id) != nil { self.saveLinks() }
+                self.say(tr("Link to “%@” removed.", name), for: 3)
+            } else {
+                self.say(tr("The link to “%@” still opens: the primary helper could not be reached. It is taken down once it can be.", name), for: 6)
+            }
+        }
+    }
+
+    /// Asks the primary helper to let go of what is no longer on the Shelf, at most once a minute
+    /// while it cannot be reached.
+    private func takeDown(now: Bool = false) {
+        guard !unlinking.isEmpty, !unlinkBusy, now || Date().timeIntervalSince(unlinkTried) > 60 else { return }
+        unlinkBusy = true
+        unlinkTried = Date()
+        let ids = Array(unlinking)
+        Task { [weak self] in
+            var down: [UUID] = []
+            for id in ids {
+                do { try await HelperLink.unhost(id: id); down.append(id) } catch { break }
+            }
+            guard let self else { return }
+            self.unlinkBusy = false
+            let before = self.unlinking.count
+            for id in down { self.unlinking.remove(id) }
+            if self.unlinking.count != before { self.saveLinks() }
+        }
+    }
+
     func reveal(_ item: ShelfItem) {
         guard let store, store.isPresent(item.id) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([store.url(item)])
@@ -467,9 +617,12 @@ struct ShelfBar: View {
                     .transition(Motion.pop)
             }
         }
+        .overlay(alignment: .topLeading) { linkControl(item) }
         .onHover { inside in hovered = inside ? item.id : (hovered == item.id ? nil : hovered) }
         .help(hint(item, stage))
         .contextMenu {
+            if shelf.canLink(item) { Button(tr("Copy link")) { shelf.link(item) } }
+            if shelf.hasLink(item) { Button(tr("Remove link")) { shelf.unlink(item) } }
             switch stage {
             case .here:
                 Button(tr("Copy")) { shelf.copy(item) }
@@ -481,6 +634,34 @@ struct ShelfBar: View {
             Button(tr("Remove")) { shelf.remove(item) }
         }
         .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, hint(item, stage)))
+    }
+
+    /// At the tile's top left: the link button while the pointer is over the tile, how far the file
+    /// has got while its link is being made, and a small mark on an item that has a link.
+    @ViewBuilder private func linkControl(_ item: ShelfItem) -> some View {
+        if let progress = shelf.linking[item.id] {
+            Button { shelf.cancelLink(item) } label: {
+                ZStack {
+                    Circle().fill(Color.primary.opacity(0.24))
+                    Circle().trim(from: 0, to: max(0.06, progress)).stroke(Palette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).padding(3)
+                }
+                .frame(width: 17, height: 17).frame(width: 22, height: 22).contentShape(Rectangle())
+            }.buttonStyle(.plain).offset(x: -5, y: -5).help(tr("Sending to the primary helper. Click to stop.")).accessibilityLabel(tr("Stop sending %@", item.name))
+        } else if hovered == item.id, shelf.canLink(item) {
+            Button { shelf.link(item) } label: {
+                Image(systemName: "link").font(.system(size: 8, weight: .bold)).foregroundStyle(Palette.ink)
+                    .frame(width: 17, height: 17)
+                    .background(Color.primary.opacity(0.24), in: Circle())
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).offset(x: -5, y: -5).help(tr("Copy a link that opens on your tailnet")).accessibilityLabel(tr("Copy link to %@", item.name))
+                .transition(Motion.pop)
+        } else if shelf.hasLink(item) {
+            Image(systemName: "link").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
+                .frame(width: 13, height: 13).background(.regularMaterial, in: Circle()).offset(x: -3, y: -3)
+                .accessibilityHidden(true)
+        }
     }
 
     @ViewBuilder private func badge(_ stage: ShelfModel.Stage, size: Int) -> some View {

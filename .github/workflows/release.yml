@@ -1,225 +1,31 @@
-# Every push to main is checked and built, except one that changes only the README or the
-# license: words alone make no new build (and no update on every Mac). A v0.1.<build> tag a
-# publisher pushes is built, signed and released.
-#
-# The app is signed with the self-signed certificate "input signing (SUB&SUB)", whose private
-# key is the secret INPUT_SIGNING_P12 (base64 of the .p12) with INPUT_SIGNING_P12_PASSWORD.
-# Every release must carry that identity: macOS ties the app's permissions (Accessibility,
-# Microphone, Keychain) to it, and an installed copy refuses an update signed by any other.
-# Without the secret (a fork) a run checks and builds the code with an ad-hoc signature and
-# publishes nothing.
-#
-# Each build is a release of its own, and the only one that holds it: v0.1.<build> on the commit
-# it was built from, holding out-0.1.<build>.zip (the app, which install.sh and the installed
-# copies download) and out.json (version, file, size, sha256) naming it. There is no disk image
-# or other installer: out is installed by the command in the README. The repository's tags are
-# its publishers' alone, and this workflow makes none. Installed copies read the newest release's
-# out.json, and our site serves the same (https://dashboard.subnsub.com/api/input/out.json).
-#
-# The app was called put until 0.1.49 (and input before that). 0.1.50 also carried the app as
-# put-0.1.50.zip with a put.json, for copies of put, and the old pre-release "builds" held the
-# same for copies up to 0.1.48; once every Mac ran out (user 2026-11-20), that pair was dropped
-# and "builds" deleted.
-# Each zip and manifest also get a build provenance attestation (GitHub's, recorded in the public
-# Sigstore log), so that anyone can check which run of this workflow, from which commit, built
-# them. The build number is one more than the larger of the newest build released here and the
-# build the site's feed names now, so it only grows.
-
+# A one-off run on a check branch: run out's checks and build it.
 name: release
 
 on:
-  push:
-    branches: [main]
-    paths-ignore: [README.md, LICENSE]
-    tags: ['v0.1.*']
   workflow_dispatch:
-
-concurrency:
-  group: release
-  cancel-in-progress: false
 
 permissions: {}
 
 jobs:
-  release:
+  check:
     runs-on: macos-26
     timeout-minutes: 30
     permissions:
-      contents: write       # the release
-      id-token: write       # the attestation's signing certificate (Sigstore)
-      attestations: write   # storing the attestation
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Toolchain
-        run: |
-          sw_vers
-          xcodebuild -version
-          swift --version
-
       - name: Checks
         run: |
-          swift run QingyanChecks
-          sh -n install.sh
-
-      - name: Build number
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # The newest build released: the version releases other than this tag's own.
-          released=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName \
-            --jq "[.[].tagName | select(. != \"$GITHUB_REF_NAME\") | capture(\"^v0\\\\.1\\\\.(?<n>[0-9]+)$\").n | tonumber] | max // 0") \
-            || { echo "::error::the releases could not be read, so the next build number is unknown"; exit 1; }
-          # What the site's feed names (out.json). Retried: a runner's resolver sometimes misses a
-          # name for a moment.
-          served=0
-          for manifest in out.json; do
-            code=$(curl -sS --max-time 20 --retry 5 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/feed.json" -w '%{http_code}' \
-              "https://dashboard.subnsub.com/api/input/$manifest") || code=000
-            if [ "$code" = 404 ]; then continue; fi
-            [ "$code" = 200 ] || { echo "::error::the update feed's $manifest could not be read (HTTP $code), so the next build number is unknown"; exit 1; }
-            n=$(python3 -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["version"].rsplit(".", 1)[1]))' "$RUNNER_TEMP/feed.json")
-            served=$(( n > served ? n : served ))
-          done
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            # A publisher's tag names the build itself: it must be ahead of everything already
-            # out, and on main — the tag is checked, never made here.
-            [[ "$GITHUB_REF_NAME" =~ ^v0\.1\.([1-9][0-9]*)$ ]] || {
-              echo "::error::a release tag is v0.1.<build> with no leading zero, got $GITHUB_REF_NAME"; exit 1; }
-            build=${BASH_REMATCH[1]}
-            git fetch --no-tags origin main
-            git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || {
-              echo "::error::the tag is not on main"; exit 1; }
-            # A tag whose release is out already is not released again. A draft is a run that
-            # stopped while uploading (gh release create uploads to a draft, then publishes it): no
-            # Mac can see it, so it goes and this run releases the tag.
-            if draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
-              if [ "$draft" = true ]; then
-                gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
-                echo "Removed the draft an earlier run left for $GITHUB_REF_NAME"
-              else
-                echo "::error::$GITHUB_REF_NAME is released already"; exit 1
-              fi
-            fi
-            [ "$build" -gt "$released" ] && [ "$build" -gt "$served" ] || {
-              echo "::error::v0.1.$build is not ahead of what is out (release $released, feed $served)"; exit 1; }
-            echo "Build $build (tag $GITHUB_REF_NAME; release $released, feed $served)"
-          else
-            # And the version tags: a run that made v<n> but stopped before the feed named it must
-            # not try to make v<n> again. Not knowing them stops the run.
-            tagged=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1." \
-              --jq '[.[].ref | capture("^refs/tags/v0\\.1\\.(?<n>[0-9]+)$").n | tonumber] | max // 0') \
-              || { echo "::error::the version tags could not be read, so the next build number is unknown"; exit 1; }
-            build=$(( released > served ? released : served ))
-            build=$(( (build > tagged ? build : tagged) + 1 ))
-            echo "Build $build (newest in the feed's release $released, feed $served, version tags $tagged)"
-          fi
-          echo "INPUT_BUILD=$build" >> "$GITHUB_ENV"
-
-      - name: Signing identity
-        env:
-          P12: ${{ secrets.INPUT_SIGNING_P12 }}
-          P12_PASSWORD: ${{ secrets.INPUT_SIGNING_P12_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "$P12" ]; then
-            echo "::notice::INPUT_SIGNING_P12 is not set: building with an ad-hoc signature, nothing is published"
-            echo "SIGNING_IDENTITY=-" >> "$GITHUB_ENV"; exit 0
-          fi
-          KEYCHAIN="$RUNNER_TEMP/input-signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
-          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/signing.p12"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
-          # codesign finds an identity only in a keychain that is on the search list.
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/^ *"//; s/"$//')
-          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk '/[0-9A-F]{40}/{print $2; exit}')"
-          [ -n "$IDENTITY" ] || { echo "::error::the imported certificate holds no signing identity"; exit 1; }
-          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          set -o pipefail
+          swift run QingyanChecks 2>&1 | tee "$RUNNER_TEMP/checks.log" | grep -E "FAIL|error:|PASS Links|PASS Shelf|All checks passed" || true
+          grep -q "All checks passed" "$RUNNER_TEMP/checks.log"
 
       - name: Build
-        run: |
-          set -euo pipefail
-          bash build.sh
-          codesign --verify --strict --verbose=2 build/out.app
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/out.app/Contents/Info.plist)" = "$INPUT_BUILD" ]
-
-      - name: Forget the signing identity
-        # Nothing after the build signs, so no later step (the attestation action included) gets
-        # a keychain that holds the key.
         if: always()
         run: |
-          KEYCHAIN="$RUNNER_TEMP/input-signing.keychain-db"
-          if [ -f "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN"; fi
-
-      - name: Package
-        id: package
-        if: env.SIGNING_IDENTITY != '-' && github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # The requirement every installed copy holds an update to. A build that does not meet it
-          # would be refused by them, so it is not released.
-          REQUIREMENT='identifier "local.hopo.qingyan" and certificate root = H"5f3964801c4df9f728472f64717dbc410f4e00d8"'
-          codesign --verify --strict -R="$REQUIREMENT" build/out.app
-          # A run of an older commit (a rerun) must not publish it as the newest build.
-          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
-          if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::notice::main has moved on to $head; this run of $GITHUB_SHA publishes nothing"
-            echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          version="0.1.$INPUT_BUILD"
-          out="$RUNNER_TEMP/out"; mkdir -p "$out"
-          # The size and digest each on their own, so that a failure stops the run (inside the
-          # manifest's printf it would not).
-          manifest() {  # manifest <zip> <file name> <out file>
-            local size sum
-            size=$(stat -f%z "$1")
-            sum=$(shasum -a 256 "$1" | cut -d' ' -f1)
-            [[ "$size" =~ ^[1-9][0-9]*$ && "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no size or digest for $1"; return 1; }
-            printf '{"version":"%s","file":"%s","size":%s,"sha256":"%s"}\n' "$version" "$2" "$size" "$sum" > "$3"
-          }
-          zip="$out/out-$version.zip"
-          ditto -c -k --keepParent build/out.app "$zip"
-          manifest "$zip" "out-$version.zip" "$out/out.json"
-          { echo "publish=true"; echo "version=$version"; echo "zip=$zip"; echo "out=$out"; } >> "$GITHUB_OUTPUT"
-
-      - name: Attest
-        # A provenance attestation for the zips and manifests, signed by GitHub: anyone can check
-        # that they were built by this workflow from this commit with
-        # `gh attestation verify <file> --repo <this repository>`.
-        if: steps.package.outputs.publish == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: ${{ steps.package.outputs.out }}/*
-
-      - name: Release
-        if: steps.package.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.package.outputs.version }}
-          ZIP: ${{ steps.package.outputs.zip }}
-          OUT: ${{ steps.package.outputs.out }}
-        run: |
-          set -euo pipefail
-          # This build's own release, on the commit it was built from, marked the latest: its zip
-          # and the out.json naming it, which installed copies and install.sh read as the newest.
-          {
-            printf 'out %s, for Macs with Apple silicon and with Intel (macOS 14 or later), built by GitHub Actions from %s and signed with the input signing certificate (named before the app was renamed put, then out).\n\n' "$VERSION" "$GITHUB_SHA"
-            printf 'To install out, or bring it up to date, run this in Terminal (it checks the download and the signature, and macOS does not stop the first launch):\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\n' "$GITHUB_REPOSITORY"
-            printf 'Installed copies update themselves: out-%s.zip is the app they download, and out.json names it.\n\n' "$VERSION"
-            printf 'Where a file was built: gh attestation verify out-%s.zip --repo %s\n\n## Changes\n\n' "$VERSION" "$GITHUB_REPOSITORY"
-            git log -1 --format=%B "$GITHUB_SHA"
-          } > "$RUNNER_TEMP/notes.md"
-          # The tag came first — a publisher pushed it; this run only releases onto it.
-          [ "$GITHUB_REF" = "refs/tags/v$VERSION" ] || { echo "::error::expected the run of tag v$VERSION, got $GITHUB_REF"; exit 1; }
-          gh release create "v$VERSION" "$ZIP" "$OUT/out.json" --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "out $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          swift build --product Qingyan > "$RUNNER_TEMP/build.log" 2>&1; code=$?
+          grep -E "error|warning: .*|Build complete" "$RUNNER_TEMP/build.log" | grep -E "error|Shelf.swift|HelperLink.swift|Build complete" | tail -60
+          exit $code
