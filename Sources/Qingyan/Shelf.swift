@@ -383,31 +383,35 @@ final class ShelfModel: ObservableObject {
             }
         }
         if unlinking.remove(id) != nil { saveLinks() }
-        linkTasks[id] = Task { [weak self] in
-            let result: Result<String, Error>
-            do {
-                let moved: (@Sendable (Double) -> Void)? = known == nil ? { [weak self] fraction in self?.sent(id, fraction) } : nil
-                result = .success(try await HelperLink.host(id: id, name: item.name, size: item.size, file: file, progress: moved))
-            } catch { result = .failure(error) }
-            guard let self else { return }
-            self.linkTasks[id] = nil
-            self.linking[id] = nil
-            guard self.store?.has(id) == true else {
-                // Removed while its link was being made: the link is taken down again.
-                if case .success = result { self.unlinking.insert(id); self.saveLinks(); self.takeDown(now: true) }
-                return
-            }
-            switch result {
-            case .success(let link):
-                let changed = self.links[id] != link
-                if changed { self.links[id] = link; self.saveLinks() }
-                if known == nil { self.place(link, for: item) }
-                else if changed, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(link) }
-            case .failure(let error):
-                // A link copied already stays as it is; only a first try says why it failed.
-                guard known == nil, !(error is CancellationError) else { return }
-                self.say(error.localizedDescription, for: 6)
-            }
+        linkTasks[id] = Task { [weak self] in await self?.makeLink(item, known: known, file: file) }
+    }
+
+    private func progress(for id: UUID) -> @Sendable (Double) -> Void {
+        { [weak self] fraction in self?.sent(id, fraction) }
+    }
+
+    private func makeLink(_ item: ShelfItem, known: String?, file: URL?) async {
+        let id = item.id
+        var made: String?
+        var failure: Error?
+        let moved: (@Sendable (Double) -> Void)? = known == nil ? progress(for: id) : nil
+        do { made = try await HelperLink.host(id: id, name: item.name, size: item.size, file: file, progress: moved) }
+        catch { failure = error }
+        linkTasks[id] = nil
+        linking[id] = nil
+        guard store?.has(id) == true else {
+            // Removed while its link was being made: the link is taken down again.
+            if made != nil { unlinking.insert(id); saveLinks(); takeDown(now: true) }
+            return
+        }
+        if let made {
+            let changed = links[id] != made
+            if changed { links[id] = made; saveLinks() }
+            if known == nil { place(made, for: item) }
+            else if changed, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(made) }
+        } else if let failure, known == nil, !(failure is CancellationError) {
+            // A link copied already stays as it is; only a first try says why it failed.
+            say(failure.localizedDescription, for: 6)
         }
     }
 
