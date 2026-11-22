@@ -248,6 +248,7 @@ public enum HelperLink {
                 connection.cancel()
                 throw VoiceError(refusal(answer["error"] as? String ?? "", name: name))
             }
+            routes.set(connection, answer["route"] as? String ?? "")
             return connection
         } catch let error as VoiceError { throw error }
         catch {
@@ -256,6 +257,43 @@ public enum HelperLink {
             if expiry.isSet && seconds < longestDial { throw VoiceError(refusal("unreachable", name: name)) }
             throw VoiceError(tr("The helper on this Mac stopped answering. Check that it is running."))
         }
+    }
+
+    /// How the helper reached the other Mac for each stream it opened, for as long as the stream's
+    /// connection is around: "tailnet" (the two Macs' Tailscale network), "direct" or "derp" (its
+    /// own tunnel), or "" from a helper too old to say.
+    private final class Routes: @unchecked Sendable {
+        private let lock = NSLock()
+        private let by = NSMapTable<NWConnection, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)
+        func set(_ connection: NWConnection, _ route: String) { lock.lock(); by.setObject(route as NSString, forKey: connection); lock.unlock() }
+        func get(_ connection: NWConnection) -> String? { lock.lock(); defer { lock.unlock() }; return by.object(forKey: connection) as String? }
+    }
+    private static let routes = Routes()
+
+    /// The road of a stream `open` made, kept with that stream's connection (another stream to the
+    /// same Mac may have gone another way).
+    public static func route(of connection: NWConnection) -> String? { routes.get(connection) }
+
+    /// How the tailnet and the helper's tunnel reach that Mac, a line a second (put_path.go): the
+    /// connection once the helper has said yes; `pathLine` reads each line, until it is cancelled.
+    public static func path(agent: String) async throws -> NWConnection {
+        let connection = try await connect()
+        let answer: [String: Any]
+        do {
+            answer = try await bounded(connection, 5) {
+                try await ask(connection, ["op": "path", "agent": agent])
+                return try await readLine(connection)
+            }
+        } catch { connection.cancel(); throw Absence.notRunning }
+        guard answer["ok"] as? Bool == true else {
+            connection.cancel()
+            throw VoiceError(answer["error"] as? String ?? "")
+        }
+        return connection
+    }
+
+    public static func pathLine(_ connection: NWConnection) async throws -> [String: Any] {
+        try await readLine(connection, limit: 8192)
     }
 
     /// Leaves a connection waiting at the helper for a stream from one of the owner's other Macs.

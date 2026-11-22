@@ -90,6 +90,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--screen-window-preview"), CommandLine.arguments.count > index + 1 {
+            let settings = SettingsStore(preview: true)
+            let controller = DictationController(settings: settings)
+            self.settings = settings; self.controller = controller
+            Task { @MainActor in
+                do { try await ScreenViewer.preview(to: CommandLine.arguments[index + 1], controller: controller); exit(0) }
+                catch { fputs("Screen window preview failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--render-previews"), CommandLine.arguments.count > index + 1 {
             Task { @MainActor in
                 do { try await renderPreviews(to: CommandLine.arguments[index + 1]); NSApp.terminate(nil) }

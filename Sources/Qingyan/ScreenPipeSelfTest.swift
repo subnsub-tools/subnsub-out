@@ -7,7 +7,8 @@ import QingyanCore
 /// runs it, and ScreenLink, as the viewing window runs it, over a local socket. The helper's side is
 /// whatever answers at the socket given; the helper's own test serves its real session there
 /// (TestScreenHPServeSocket), signed in to this Mac's Screen Sharing. Signs in, watches for ten
-/// seconds, presses Stop, and writes what the viewer counted:
+/// seconds, takes a screenshot as the window's toolbar does, presses Stop, and writes what the
+/// viewer counted:
 /// `Qingyan --screen-pipe-selftest <helper socket> <account> <report.json>`, the password in
 /// OUT_SCREEN_PASSWORD.
 enum ScreenPipeSelfTest {
@@ -15,6 +16,8 @@ enum ScreenPipeSelfTest {
         var statuses: [String] = []
         var ended: String?
         var pipe: ScreenPipe?
+        var shot: (width: Int, height: Int)?
+        var shotDone = false
     }
 
     @MainActor static func run(socket: String, account: String, report: String) async throws -> Bool {
@@ -54,15 +57,21 @@ enum ScreenPipeSelfTest {
 
         try await Task.sleep(nanoseconds: 10_000_000_000)
         let watched = link.counts
+        link.capture { image in
+            seen.shot = image.map { ($0.width, $0.height) }
+            seen.shotDone = true
+        }
+        for _ in 0..<70 where !seen.shotDone { try await Task.sleep(nanoseconds: 100_000_000) }
         seen.pipe?.end("stopped")
         for _ in 0..<30 where seen.ended == nil { try await Task.sleep(nanoseconds: 100_000_000) }
         listener.cancel()
         link.close()
 
-        let result: [String: Any] = ["statuses": seen.statuses, "ended": seen.ended ?? "", "counts": watched]
+        let result: [String: Any] = ["statuses": seen.statuses, "ended": seen.ended ?? "", "counts": watched,
+                                     "screenshot": seen.shot.map { "\($0.width)x\($0.height)" } ?? ""]
         let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: URL(fileURLWithPath: report))
-        return (watched["enqueued"] ?? 0) > 10 && seen.ended == "stopped"
+        return (watched["enqueued"] ?? 0) > 10 && seen.ended == "stopped" && seen.shot != nil
     }
 }
 #endif
