@@ -59,6 +59,16 @@ final class ScreenInfo: ObservableObject {
     @Published var account = ""
     @Published var since: Date?
     @Published var live = false
+    /// What the title row shows: the window's settings, whether a session is under way, whether the
+    /// pointer and keys go to that Mac, Info open, and full screen.
+    @Published var scaled = true
+    @Published var clipboard = true
+    @Published var ended = true
+    @Published var controlling = false
+    @Published var showingInfo = false
+    @Published var fullScreen = false
+    /// Where the Keys button is in the title row, for its menu to open under it.
+    var keysFrame: CGRect = .zero
     static let history = 300
 
     init(device: String) { self.device = device }
@@ -189,6 +199,105 @@ final class ScreenInfo: ObservableObject {
     }
 }
 
+/// What the title row's buttons ask the window to do.
+enum ScreenAction {
+    case observe(Bool), scaling(Bool), dynamic(Bool), quality(Bool), clipboard(Bool), sound(Bool)
+    case keys, screenshot, fullScreen, connection
+}
+
+/// The screen window's title row, on its glass as the panel's is (user 2026-11-22: the remote
+/// desktop window in the same glass design as out's own): the Mac's name with a dot for whether its
+/// screen is shown, and what Screen Sharing's own toolbar has, each lit while it is on.
+struct ScreenTitleRow: View {
+    @ObservedObject var info: ScreenInfo
+    var act: (ScreenAction) -> Void = { _ in }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            HStack(alignment: .top, spacing: 2) {
+                Text(info.device).font(.system(size: 13, weight: .bold)).lineLimit(1).truncationMode(.tail)
+                Circle().fill(info.live ? Palette.accent : info.ended ? Color.orange : Palette.muted)
+                    .frame(width: 6, height: 6).padding(.top, 1)
+            }
+            .help(info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…"))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(info.device + " · " + (info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…")))
+            Spacer(minLength: 8)
+            HeaderIconButton(symbol: "eye", active: info.observing,
+                             helpText: tr("Observe: only watch that Mac; the pointer and keys stay here"), accessibility: tr("Observe")) {
+                act(.observe(!info.observing))
+            }
+            .disabled(info.viewOnly)
+            HeaderIconButton(symbol: "arrow.down.right.and.arrow.up.left", active: info.scaled,
+                             helpText: tr("Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge."),
+                             accessibility: tr("Scaling")) {
+                act(.scaling(!info.scaled))
+            }
+            HeaderIconButton(symbol: "aspectratio", active: info.own,
+                             helpText: tr("The other Mac shows its screen on a display of its own that follows this window’s size. Its own displays are dark while you view it."),
+                             accessibility: tr("Dynamic Resolution")) {
+                act(.dynamic(!info.own))
+            }
+            HeaderIconButton(symbol: "sparkles", active: info.fullQuality,
+                             helpText: tr("Full Quality lets Screen Sharing send up to 60 Mbps. Off: Adaptive Quality, up to 12 Mbps."),
+                             accessibility: tr("Full Quality")) {
+                act(.quality(!info.fullQuality))
+            }
+            HeaderIconButton(symbol: "doc.on.clipboard", active: info.clipboard,
+                             helpText: tr("Text copied on either Mac can be pasted on the other while this window is in front."),
+                             accessibility: tr("Shared Clipboard")) {
+                act(.clipboard(!info.clipboard))
+            }
+            .padding(.leading, 3)
+            HeaderIconButton(symbol: info.sound ? "speaker.wave.2" : "speaker.slash", active: info.sound,
+                             helpText: tr("Play that Mac’s sound on this Mac."), accessibility: tr("Sound")) {
+                act(.sound(!info.sound))
+            }
+            HeaderIconButton(symbol: "command", active: false, helpText: tr("Send keys that this Mac keeps for itself"), accessibility: tr("Keys")) {
+                act(.keys)
+            }
+            .disabled(!info.controlling)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: KeysFrameKey.self, value: geometry.frame(in: .global))
+            })
+            .onPreferenceChange(KeysFrameKey.self) { info.keysFrame = $0 }
+            HeaderIconButton(symbol: "camera", active: false, helpText: tr("Save a picture of the screen to this Mac’s Desktop"), accessibility: tr("Screenshot")) {
+                act(.screenshot)
+            }
+            .disabled(!info.live)
+            HeaderIconButton(symbol: "info.circle", active: info.showingInfo,
+                             helpText: tr("Everything known of the connection and the stream"), accessibility: tr("Connection Info")) {
+                info.showingInfo.toggle()
+            }
+            .popover(isPresented: $info.showingInfo, arrowEdge: .bottom) { ScreenInfoView(info: info) }
+            .padding(.leading, 3)
+            HeaderIconButton(symbol: info.fullScreen ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.backward.and.arrow.down.forward",
+                             active: info.fullScreen, helpText: tr("Enter or leave full screen"), accessibility: tr("Full Screen")) {
+                act(.fullScreen)
+            }
+            HeaderIconButton(symbol: info.ended ? "arrow.clockwise" : "xmark.circle", active: false,
+                             helpText: info.ended ? tr("Connect to %@ again", info.device) : tr("End the session"),
+                             accessibility: info.ended ? tr("Connect") : tr("Disconnect")) {
+                act(.connection)
+            }
+        }
+        // The window's close, minimize and zoom buttons sit at the start of the row, in its middle
+        // (TitleRowLights); in full screen they are gone.
+        .padding(.leading, info.fullScreen ? 12 : 76)
+        .padding(.trailing, 8)
+        .frame(maxWidth: .infinity, minHeight: Metrics.titlebar, maxHeight: Metrics.titlebar)
+        .background(WindowDragArea())
+        .foregroundStyle(Palette.ink).tint(Palette.accent)
+        .controlSize(.small)
+        .ignoresSafeArea()
+    }
+}
+
+private struct KeysFrameKey: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
 /// The line under the picture; a click opens Info.
 struct ScreenInfoBar: View {
     @ObservedObject var info: ScreenInfo
@@ -216,7 +325,8 @@ struct ScreenInfoBar: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
-        .background(.bar)
+        // On the window's glass, as the panel's rows are.
+        .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: 1) }
         .contentShape(Rectangle())
     }
 

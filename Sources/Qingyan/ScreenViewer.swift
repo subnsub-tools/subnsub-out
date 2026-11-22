@@ -17,14 +17,16 @@ import VideoToolbox
 /// the wheel sent back. The account is asked for once and kept in this Mac's keychain. One window a Mac.
 ///
 /// The window has what Screen Sharing's own has (user 2026-11-22: and the features of macOS's own
-/// Screen Sharing go without saying), in its toolbar: Control or Observe, Scaling, Dynamic
-/// Resolution (a display of the session's own that follows the window), Full or Adaptive Quality,
-/// the shared clipboard, the sound, keys this Mac keeps for itself, a screenshot, full screen,
-/// disconnecting; each kept for each Mac. Under the picture, always, what is known of the way there
-/// (ScreenInfo): the road, the path (direct, a peer relay or DERP) with a ping a second, the picture's
-/// size, codec, frame rate and bit rate; a click there, or Info, shows everything.
+/// Screen Sharing go without saying), in its title row: Observe, Scaling, Dynamic Resolution (a
+/// display of the session's own that follows the window), Full Quality, the shared clipboard, the
+/// sound, keys this Mac keeps for itself, a screenshot, Info, full screen, disconnecting; each kept
+/// for each Mac. Under the picture, always, what is known of the way there (ScreenInfo): the road,
+/// the path (direct, a peer relay or DERP) with a ping a second, the picture's size, codec, frame
+/// rate and bit rate; a click there, or Info, shows everything. The window is glass, as out's panel
+/// is (user 2026-11-22: the same glass design as out's own window): its title row, the space around
+/// the picture and the line under it.
 @MainActor
-final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
+final class ScreenViewer: NSObject, NSWindowDelegate {
     private static var open: [String: ScreenViewer] = [:]
 
     /// The Mac whose screen is in the window in front: out is the app in front, and the window is
@@ -74,8 +76,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private var pathConnection: NWConnection?
     private var tallyTimer: Timer?
     private var tallied: (frames: Int, bytes: Int, at: TimeInterval)?
-    private let popover = NSPopover()
-    private var items: [Item: NSToolbarItem] = [:]
 
     // MARK: What the window keeps for each Mac
 
@@ -107,39 +107,39 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         info = ScreenInfo(device: device.label)
         let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size = NSSize(width: min(1024, visible.width * 0.8), height: min(640, visible.height * 0.8))
-        window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         container = ScreenContainer(frame: NSRect(origin: .zero, size: size), info: info)
         super.init()
+        // The title for the Window menu and Mission Control; the window draws its own row.
         window.title = tr("%@ — Screen", device.label)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.isReleasedWhenClosed = false
         window.contentView = container
-        window.contentMinSize = NSSize(width: 480, height: 260)
+        window.contentMinSize = NSSize(width: 600, height: 300)
         window.center()
         window.delegate = self
         window.collectionBehavior.insert(.fullScreenPrimary)
-        window.toolbarStyle = .unified
-        let toolbar = NSToolbar(identifier: "screen.viewer")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = true
-        toolbar.autosavesConfiguration = true
-        window.toolbar = toolbar
+        TitleRowLights.center(window)
         container.scaled = scaled
+        container.onAct = { [weak self] action in self?.act(action) }
         container.overlay.onReconnect = { [weak self] in self?.connect() }
         container.overlay.onSignIn = { [weak self] account, password, remember in
             guard let self else { return }
             self.window.makeFirstResponder(self.view)
             self.signIn(ScreenSignIn(account: account, password: password), remember: remember)
         }
-        container.onInfo = { [weak self] in self?.showInfo(nil) }
+        container.onInfo = { [weak self] in self?.info.showingInfo.toggle() }
         view.send = { [weak self] frame in self?.link?.send(frame) }
         info.sound = sound
         info.observing = observing
         info.fullQuality = fullQuality
         info.own = ownDisplay
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: ScreenInfoView(info: info))
+        info.scaled = scaled
+        info.clipboard = sharedClipboard
         watchPath()
     }
 
@@ -158,6 +158,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         tallied = nil
         stopTally()
         view.reset()
+        view.showsPicture = false
         container.banner = nil
         info.reset()
         container.say(tr("Connecting to %@…", device.label), again: false)
@@ -199,7 +200,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
             self.end(why)
         }
         view.displayLayer = next.displayLayer
-        refreshItems()
+        publish()
         Task { @MainActor [weak self] in
             do {
                 let connection = try await RemoteSender.openScreen(device, identity: identity, name: name, listening: listening)
@@ -209,7 +210,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
             } catch {
                 guard let self, self.link === next else { return }
                 self.ended = true
-                self.refreshItems()
+                self.publish()
                 self.container.say(error.localizedDescription, again: true)
             }
         }
@@ -225,6 +226,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
             container.say(nil, again: false)
             inputAllowed = status["input"] as? Bool != false
             applyControl()
+            view.showsPicture = true
+            // The keys go to that Mac, however the session was started (a title row button may hold
+            // the focus after Connect pressed from the keyboard).
+            window.makeFirstResponder(view)
             container.banner = inputAllowed ? nil
                 : tr("View only: out on %@ has no Accessibility permission, so the pointer and keys do not reach it.", device.label)
             info.live = true
@@ -247,7 +252,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
                 startClipboardWatch()
             }
             startTally()
-            refreshItems()
+            publish()
         case "stats":
             var numbers: [String: Double] = [:]
             for key in ["fps", "kbps", "audio", "lost", "keyframes", "bad", "dropped", "asks"] {
@@ -267,7 +272,16 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
 
     /// The pointer and the keys go to that Mac only while the session is live, that Mac takes them,
     /// and the window is not observing.
-    private func applyControl() { view.canControl = live && inputAllowed && !observing }
+    private func applyControl() {
+        view.canControl = live && inputAllowed && !observing
+        publish()
+    }
+
+    /// What the title row shows of the session.
+    private func publish() {
+        info.ended = ended
+        info.controlling = view.canControl
+    }
 
     private func end(_ why: String) {
         guard !ended else { return }
@@ -278,7 +292,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         stopClipboardWatch()
         stopTally()
         view.releaseAll()
-        refreshItems()
+        view.showsPicture = false
+        publish()
         let name = device.label
         let words: String
         switch why {
@@ -313,10 +328,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         stopTally()
         view.releaseAll()
         applyControl()
+        view.showsPicture = false
         link?.close()
         link = nil
         signingIn = nil
-        refreshItems()
+        publish()
         container.say(tr("Disconnected from %@.", device.label), again: true)
     }
 
@@ -379,14 +395,15 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         info.layout = layout
         guard !sized else { return }
         sized = true
-        guard !window.styleMask.contains(.fullScreen) else { askSize(); return }
+        // A display of the session's own takes the window's size: the window stays as it is.
+        guard !window.styleMask.contains(.fullScreen), !ownDisplay else { askSize(); return }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
-        let chrome = window.frame.height - container.pictureSize.height
-        let room = CGRect(origin: .zero, size: CGSize(width: visible.width * 0.85, height: max(visible.height * 0.85 - chrome, 200)))
+        // The title row and the line under the picture.
+        let chrome = NSSize(width: window.frame.width - container.pictureSize.width, height: window.frame.height - container.pictureSize.height)
+        let room = CGRect(origin: .zero, size: CGSize(width: visible.width * 0.85 - chrome.width, height: max(visible.height * 0.85 - chrome.height, 200)))
         let fitted = ScreenWire.fit((layout.width, layout.height), in: room)
-        let size = NSSize(width: min(fitted.width, CGFloat(layout.width)).rounded(),
-                          height: min(fitted.height, CGFloat(layout.height)).rounded() + ScreenContainer.barHeight)
-        let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        let frame = NSSize(width: min(fitted.width, CGFloat(layout.width)).rounded() + chrome.width,
+                           height: min(fitted.height, CGFloat(layout.height)).rounded() + chrome.height)
         window.setFrame(NSRect(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2, width: frame.width, height: frame.height), display: true)
         askSize()
     }
@@ -467,134 +484,58 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         }
     }
 
-    // MARK: The toolbar: what Screen Sharing's own window has
+    // MARK: The title row: what Screen Sharing's own window has
 
-    private enum Item: String, CaseIterable {
-        case mode, scaling, dynamic, quality, clipboard, sound, keys, screenshot, info, fullScreen, connection
-        var id: NSToolbarItem.Identifier { NSToolbarItem.Identifier("screen." + rawValue) }
-        init?(_ id: NSToolbarItem.Identifier) {
-            guard id.rawValue.hasPrefix("screen.") else { return nil }
-            self.init(rawValue: String(id.rawValue.dropFirst("screen.".count)))
-        }
-    }
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Item.mode.id, Item.scaling.id, Item.dynamic.id, Item.quality.id, .flexibleSpace,
-         Item.clipboard.id, Item.sound.id, Item.keys.id, Item.screenshot.id, Item.info.id, Item.fullScreen.id, Item.connection.id]
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Item.allCases.map(\.id) + [.flexibleSpace, .space]
-    }
-
-    private static func symbol(_ name: String, _ label: String) -> NSImage {
-        NSImage(systemSymbolName: name, accessibilityDescription: label) ?? NSImage(named: NSImage.actionTemplateName) ?? NSImage()
-    }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard let item = Item(id) else { return nil }
-        let made: NSToolbarItem
-        switch item {
-        case .mode:
-            let group = NSToolbarItemGroup(itemIdentifier: id, images: [Self.symbol("cursorarrow", tr("Control")), Self.symbol("eye", tr("Observe"))],
-                                           selectionMode: .selectOne, labels: [tr("Control"), tr("Observe")],
-                                           target: self, action: #selector(modeChosen(_:)))
-            group.label = tr("Mode")
-            group.paletteLabel = tr("Control or Observe")
-            group.toolTip = tr("Control: the pointer and the keys work that Mac. Observe: only watch it.")
-            group.selectedIndex = observing ? 1 : 0
-            made = group
-        case .scaling:
-            made = toggle(id, "arrow.down.right.and.arrow.up.left", tr("Scaling"), on: scaled,
-                          tip: tr("Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge."))
-        case .dynamic:
-            made = toggle(id, "aspectratio", tr("Dynamic Resolution"), on: ownDisplay,
-                          tip: tr("The other Mac shows its screen on a display of its own that follows this window’s size. Its own displays are dark while you view it."))
-        case .quality:
-            made = toggle(id, "sparkles", tr("Full Quality"), on: fullQuality,
-                          tip: tr("Full Quality lets Screen Sharing send up to 60 Mbps. Off: Adaptive Quality, up to 12 Mbps."))
-        case .clipboard:
-            made = toggle(id, "doc.on.clipboard", tr("Shared Clipboard"), on: sharedClipboard,
-                          tip: tr("Text copied on either Mac can be pasted on the other while this window is in front."))
-        case .sound:
-            made = toggle(id, "speaker.wave.2", tr("Sound"), on: sound, tip: tr("Play that Mac’s sound on this Mac."))
+    private func act(_ action: ScreenAction) {
+        switch action {
+        case .observe(let on):
+            setObserving(on)
+        case .scaling(let on):
+            scaled = on
+            info.scaled = on
+            container.scaled = on
+            if on { keepProportions() }
+        case .dynamic(let on):
+            ownDisplay = on
+            info.own = on
+            // A session's display is chosen as it opens: it opens again.
+            if !ended || live { connect() }
+        case .quality(let on):
+            fullQuality = on
+            info.fullQuality = on
+            if live { link?.send(ScreenWire.control(["t": "kbps", "kbps": kbps])) }
+        case .clipboard(let on):
+            sharedClipboard = on
+            info.clipboard = on
+            if on, live {
+                clipboardSeen = 0
+                sendClipboard()
+                startClipboardWatch()
+            } else { stopClipboardWatch() }
+        case .sound(let on):
+            sound = on
+            info.sound = on
+            link?.muted = !on
         case .keys:
-            let menu = NSMenuToolbarItem(itemIdentifier: id)
-            menu.image = Self.symbol("command", tr("Keys"))
-            menu.label = tr("Keys")
-            menu.paletteLabel = tr("Keys")
-            menu.toolTip = tr("Send keys that this Mac keeps for itself")
-            menu.menu = keysMenu()
-            made = menu
+            guard live, view.canControl else { return }
+            // Under the Keys button (the title row is at the top left of the container, both flipped),
+            // however it was pressed.
+            let button = info.keysFrame
+            let at = button.isEmpty ? container.convert(window.mouseLocationOutsideOfEventStream, from: nil) : NSPoint(x: button.minX, y: button.maxY + 4)
+            keysMenu().popUp(positioning: nil, at: at, in: container)
+            return
         case .screenshot:
-            made = button(id, "camera", tr("Screenshot"), tip: tr("Save a picture of the screen to this Mac’s Desktop"), action: #selector(screenshot))
-        case .info:
-            made = button(id, "info.circle", tr("Info"), tip: tr("Everything known of the connection and the stream"), action: #selector(showInfo(_:)))
+            screenshot()
         case .fullScreen:
-            made = button(id, "arrow.up.backward.and.arrow.down.forward", tr("Full Screen"), tip: tr("Enter or leave full screen"), action: #selector(fullScreen))
+            window.toggleFullScreen(nil)
         case .connection:
-            made = button(id, "xmark.circle", tr("Disconnect"), tip: tr("End the session"), action: #selector(connectionPressed))
-            made.paletteLabel = tr("Disconnect or Connect")
+            if ended { connect() } else { disconnect() }
         }
-        made.autovalidates = false
-        if flag { items[item] = made }
-        refresh(item, made)
-        return made
+        // The keys go on to that Mac after a press in the title row.
+        if live { window.makeFirstResponder(view) }
     }
 
-    func toolbarDidRemoveItem(_ notification: Notification) {
-        guard let removed = notification.userInfo?["item"] as? NSToolbarItem, let item = Item(removed.itemIdentifier), items[item] === removed else { return }
-        items.removeValue(forKey: item)
-    }
-
-    /// A switch: a group of one that stays pressed while on.
-    private func toggle(_ id: NSToolbarItem.Identifier, _ symbol: String, _ label: String, on: Bool, tip: String) -> NSToolbarItem {
-        let group = NSToolbarItemGroup(itemIdentifier: id, images: [Self.symbol(symbol, label)], selectionMode: .selectAny,
-                                       labels: [label], target: self, action: #selector(toggled(_:)))
-        group.label = label
-        group.paletteLabel = label
-        group.toolTip = tip
-        group.setSelected(on, at: 0)
-        return group
-    }
-
-    private func button(_ id: NSToolbarItem.Identifier, _ symbol: String, _ label: String, tip: String, action: Selector) -> NSToolbarItem {
-        let item = NSToolbarItem(itemIdentifier: id)
-        item.image = Self.symbol(symbol, label)
-        item.label = label
-        item.paletteLabel = label
-        item.toolTip = tip
-        item.target = self
-        item.action = action
-        item.isBordered = true
-        return item
-    }
-
-    private func refreshItems() {
-        for (item, made) in items { refresh(item, made) }
-    }
-
-    private func refresh(_ item: Item, _ made: NSToolbarItem) {
-        switch item {
-        case .mode:
-            made.isEnabled = inputAllowed
-            (made as? NSToolbarItemGroup)?.subitems.forEach { $0.isEnabled = inputAllowed }
-        case .keys:
-            made.isEnabled = live && view.canControl
-        case .screenshot:
-            made.isEnabled = live
-        case .connection:
-            made.label = ended ? tr("Connect") : tr("Disconnect")
-            made.image = Self.symbol(ended ? "arrow.clockwise" : "xmark.circle", made.label)
-            made.toolTip = ended ? tr("Connect to %@ again", device.label) : tr("End the session")
-        default:
-            break
-        }
-    }
-
-    @objc private func modeChosen(_ sender: Any) {
-        guard let group = items[.mode] as? NSToolbarItemGroup else { return }
-        let value = group.selectedIndex == 1
+    private func setObserving(_ value: Bool) {
         guard value != observing else { return }
         observing = value
         info.observing = value
@@ -604,42 +545,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         if live {
             link?.send(ScreenWire.control(["t": "mode", "observe": value]))
             if !value, sharedClipboard { sendClipboard() }
-        }
-        refreshItems()
-    }
-
-    @objc private func toggled(_ sender: Any) {
-        let which = (sender as? NSToolbarItem).flatMap { Item($0.itemIdentifier) }
-            ?? items.first { _, made in (made as? NSToolbarItemGroup)?.subitems.contains { $0 === sender as AnyObject } == true }?.key
-        guard let which, let group = items[which] as? NSToolbarItemGroup else { return }
-        let on = group.isSelected(at: 0)
-        switch which {
-        case .scaling:
-            scaled = on
-            container.scaled = on
-            if on { keepProportions() }
-        case .dynamic:
-            ownDisplay = on
-            info.own = on
-            // A session's display is chosen as it opens: it opens again.
-            if !ended || live { connect() }
-        case .quality:
-            fullQuality = on
-            info.fullQuality = on
-            if live { link?.send(ScreenWire.control(["t": "kbps", "kbps": kbps])) }
-        case .clipboard:
-            sharedClipboard = on
-            if on, live {
-                clipboardSeen = 0
-                sendClipboard()
-                startClipboardWatch()
-            } else { stopClipboardWatch() }
-        case .sound:
-            sound = on
-            info.sound = on
-            link?.muted = !on
-        default:
-            break
         }
     }
 
@@ -668,7 +573,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         view.combo(codes.map(\.uint16Value))
     }
 
-    @objc private func screenshot() {
+    private func screenshot() {
         guard live, let link else { return }
         let name = device.label
         link.capture { [weak self] image in
@@ -700,22 +605,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return tr("The screenshot could not be saved to the Desktop.") }
         return tr("Saved to the Desktop as “%@”.", url.lastPathComponent)
-    }
-
-    @objc private func showInfo(_ sender: Any?) {
-        if popover.isShown { popover.performClose(nil); return }
-        if let item = items[.info], window.toolbar?.isVisible == true, !window.styleMask.contains(.fullScreen) {
-            popover.show(relativeTo: item)
-        } else {
-            let bar = container.barFrame
-            popover.show(relativeTo: NSRect(x: bar.maxX - 24, y: bar.minY, width: 16, height: bar.height), of: container, preferredEdge: .minY)
-        }
-    }
-
-    @objc private func fullScreen() { window.toggleFullScreen(nil) }
-
-    @objc private func connectionPressed() {
-        if ended { connect() } else { disconnect() }
     }
 
     // MARK: The clipboard: this Mac's text goes over while the window is in front
@@ -756,9 +645,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         guard scaled, !ownDisplay, let layout = view.remoteLayout, layout.width > 0, layout.height > 0,
               !sender.styleMask.contains(.fullScreen) else { return frameSize }
-        let content = sender.contentRect(forFrameRect: NSRect(origin: .zero, size: frameSize))
-        let height = (content.width * CGFloat(layout.height) / CGFloat(layout.width)).rounded() + ScreenContainer.barHeight
-        return sender.frameRect(forContentRect: NSRect(x: 0, y: 0, width: content.width, height: height)).size
+        // The title row and the line under the picture take the same height whatever the size.
+        let picture = container.pictureSize
+        let chrome = NSSize(width: sender.frame.width - picture.width, height: sender.frame.height - picture.height)
+        let width = frameSize.width - chrome.width
+        return NSSize(width: frameSize.width, height: (width * CGFloat(layout.height) / CGFloat(layout.width)).rounded() + chrome.height)
     }
 
     /// Scaling turned on: the window takes the display's proportions at its width.
@@ -773,8 +664,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { askSize() }
-    func windowDidExitFullScreen(_ notification: Notification) { askSize() }
-    func windowDidEnterFullScreen(_ notification: Notification) { askSize() }
+    func windowDidExitFullScreen(_ notification: Notification) { info.fullScreen = false; askSize() }
+    func windowDidEnterFullScreen(_ notification: Notification) { info.fullScreen = true; askSize() }
 
     func windowWillClose(_ notification: Notification) {
         ended = true
@@ -788,7 +679,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         pathTask = nil
         pathConnection?.cancel()
         pathConnection = nil
-        if popover.isShown { popover.performClose(nil) }
+        info.showingInfo = false
+        TitleRowLights.forget(window)
         Self.open.removeValue(forKey: device.key)
     }
 
@@ -819,6 +711,23 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
                 try await Task.sleep(nanoseconds: 700_000_000)
                 let name = "\(language.rawValue)-\(dark ? "dark" : "light")"
                 if let frame = viewer.window.contentView?.superview { try write(frame, "screen-window-\(name)") }
+                if language == .english, !dark {
+                    // A click on the title row's Scaling button, as the mouse makes it, reaches it there.
+                    let window = viewer.window
+                    let before = viewer.info.scaled
+                    let point = NSPoint(x: window.frame.width - 325, y: window.frame.height - 19)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                            NSApp.sendEvent(event)
+                        }
+                        try await Task.sleep(nanoseconds: 80_000_000)
+                    }
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                    print("Scaling clicked: \(before) -> \(viewer.info.scaled)")
+                    if viewer.info.scaled == before { throw VoiceError("A click in the title row did not reach its Scaling button.") }
+                    viewer.act(.scaling(before))
+                }
                 let info = NSHostingView(rootView: ScreenInfoView(info: viewer.info, scrolls: false).background(Color(nsColor: .windowBackgroundColor)))
                 info.appearance = appearance
                 let height = ceil(info.fittingSize.height)
@@ -843,6 +752,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
         let layout = ScreenWire.Layout(width: 1512, height: 982, pictureWidth: 3024, pictureHeight: 1964)
         view.displayLayer = nil
         view.remoteLayout = layout
+        view.showsPicture = true
         view.layer?.contents = NSImage(size: NSSize(width: 1512, height: 982), flipped: false) { rect in
             NSGradient(starting: NSColor(hue: 0.58, saturation: 0.5, brightness: 0.85, alpha: 1),
                        ending: NSColor(hue: 0.75, saturation: 0.6, brightness: 0.55, alpha: 1))?.draw(in: rect, angle: 60)
@@ -866,7 +776,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate, NSToolbarDelegate {
             let tailcat: [String: Any] = ["ok": true, "ms": 18.0 + Double(i % 5), "via": "peer-relay", "where": "100.88.12.4:7777", "node": "study"]
             info.add(["tailnet": tailnet, "tailcat": tailcat])
         }
-        refreshItems()
+        publish()
     }
     #endif
 }
@@ -891,6 +801,10 @@ final class ScreenLink: @unchecked Sendable {
     private var parser = ScreenWire.Parser(limit: ScreenWire.frameLimit + 8)
     private var closed = false
     private var opened = false
+    /// A layout frame has said the display's size: live's own is then not taken (from a helper
+    /// before 2026.11.22.5 it is the size the handshake gave, which for a display of the session's
+    /// own is that of whatever the Mac showed before; the pointer went by it and drifted).
+    private var laidOut = false
     private var scale: CGFloat = 2
 
     private var format: CMVideoFormatDescription?
@@ -1031,7 +945,7 @@ final class ScreenLink: @unchecked Sendable {
                 case "live":
                     count("live")
                     if status["audio"] as? Bool == true { sound.start() }
-                    if let w = status["w"] as? Int, let h = status["h"] as? Int, let cw = status["cw"] as? Int, let ch = status["ch"] as? Int,
+                    if !laidOut, let w = status["w"] as? Int, let h = status["h"] as? Int, let cw = status["cw"] as? Int, let ch = status["ch"] as? Int,
                        w > 0, h > 0, cw > 0, ch > 0 {
                         let layout = ScreenWire.Layout(width: w, height: h, pictureWidth: cw, pictureHeight: ch)
                         let onLayout = onLayout
@@ -1054,6 +968,7 @@ final class ScreenLink: @unchecked Sendable {
             case .layout:
                 if let layout = ScreenWire.layout(frame.body) {
                     count("layouts")
+                    laidOut = true
                     let onLayout = onLayout
                     main { onLayout?(layout) }
                 }
@@ -1376,14 +1291,15 @@ struct RemoteCursor {
     }
 }
 
-/// The window's content: the picture in a scroll view, scaled to fit or at its own size; what the
-/// window says over it; and under it, always, the line of what is known of the connection (a click
-/// there opens Info).
+/// The window's content, on glass as out's panel is: the title row, the picture in a scroll view
+/// (scaled to fit or at its own size), what the window says over it, and under it, always, the line
+/// of what is known of the connection (a click there opens Info).
 final class ScreenContainer: NSView {
     static let barHeight: CGFloat = 24
     let screen = ScreenView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
     let overlay = ScreenOverlay(frame: .zero)
     var onInfo: (() -> Void)?
+    var onAct: ((ScreenAction) -> Void)?
     var scaled = true {
         didSet {
             guard scaled != oldValue else { return }
@@ -1391,36 +1307,49 @@ final class ScreenContainer: NSView {
             needsLayout = true
         }
     }
+    private let glass = NSVisualEffectView()
     private let scroll = NSScrollView()
+    private let titleRow: NSHostingView<ScreenTitleRow>
     private let bar: NSHostingView<ScreenInfoBar>
 
     init(frame: NSRect, info: ScreenInfo) {
+        titleRow = NSHostingView(rootView: ScreenTitleRow(info: info))
         bar = NSHostingView(rootView: ScreenInfoBar(info: info))
         super.init(frame: frame)
+        titleRow.rootView = ScreenTitleRow(info: info) { [weak self] action in self?.onAct?(action) }
         bar.rootView = ScreenInfoBar(info: info) { [weak self] in self?.onInfo?() }
-        scroll.drawsBackground = true
-        scroll.backgroundColor = .black
+        // Laid out here, not by their content; the title row also ignores the title bar's safe area,
+        // as the panel's does.
+        titleRow.sizingOptions = []; titleRow.safeAreaRegions = []
+        bar.sizingOptions = []; bar.safeAreaRegions = []
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.frame = bounds
+        glass.autoresizingMask = [.width, .height]
+        scroll.drawsBackground = false
         scroll.borderType = .noBorder
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
         scroll.hasHorizontalScroller = false
         scroll.hasVerticalScroller = false
+        scroll.contentView.drawsBackground = false
         scroll.documentView = screen
         screen.onLayout = { [weak self] in self?.needsLayout = true }
-        for sub in [scroll, overlay, bar] as [NSView] { addSubview(sub) }
+        for sub in [glass, scroll, overlay, bar, titleRow] as [NSView] { addSubview(sub) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var isFlipped: Bool { true }
 
-    /// The room the picture has: the content above the line.
-    var pictureSize: NSSize { NSSize(width: bounds.width, height: max(bounds.height - Self.barHeight, 0)) }
-    var barFrame: NSRect { bar.frame }
+    /// The room the picture has: between the title row and the line.
+    var pictureSize: NSSize { NSSize(width: bounds.width, height: max(bounds.height - Metrics.titlebar - Self.barHeight, 0)) }
 
     override func layout() {
         super.layout()
-        let room = NSRect(origin: .zero, size: pictureSize)
+        titleRow.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Metrics.titlebar)
+        let room = NSRect(origin: NSPoint(x: 0, y: Metrics.titlebar), size: pictureSize)
         scroll.frame = room
         overlay.frame = room
         bar.frame = NSRect(x: 0, y: room.maxY, width: bounds.width, height: Self.barHeight)
@@ -1468,7 +1397,8 @@ final class ScreenOverlay: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         label.alignment = .center
-        label.textColor = .white
+        // On the window's glass, as the panel's words are.
+        label.textColor = .labelColor
         label.font = .systemFont(ofSize: 14)
         label.maximumNumberOfLines = 6
         label.isHidden = true
@@ -1490,8 +1420,7 @@ final class ScreenOverlay: NSView {
         passwordField.target = self
         passwordField.action = #selector(submitSignIn)
         rememberBox.state = .on
-        (rememberBox.cell as? NSButtonCell)?.attributedTitle = NSAttributedString(string: rememberBox.title,
-            attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12)])
+        rememberBox.font = .systemFont(ofSize: 12)
         signInButton.bezelStyle = .rounded
         signInButton.keyEquivalent = "\r"
         signInButton.target = self
@@ -1585,6 +1514,9 @@ final class ScreenView: NSView {
     /// At its own size: a point of that display is a point here.
     var actual = false { didSet { needsLayout = true; window?.invalidateCursorRects(for: self); if !actual { stopEdge() } } }
     var canControl = false
+    /// The picture is drawn: not before a session is live, nor once it has ended (the window's glass
+    /// shows behind what it says then).
+    var showsPicture = false { didSet { needsLayout = true } }
     var cursorInPicture = false { didSet { window?.invalidateCursorRects(for: self) } }
     var remoteCursor: RemoteCursor? { didSet { applyCursor() } }
     var displayLayer: AVSampleBufferDisplayLayer? {
@@ -1603,7 +1535,8 @@ final class ScreenView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
+        // Around the picture, the window's glass.
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1632,6 +1565,7 @@ final class ScreenView: NSView {
     override func layout() {
         super.layout()
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        displayLayer?.isHidden = !showsPicture || remoteLayout == nil
         displayLayer?.frame = picture
         displayLayer?.contentsScale = window?.backingScaleFactor ?? 2
         CATransaction.commit()

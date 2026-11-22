@@ -1153,6 +1153,13 @@ final class TitleRowLights {
         kept[ObjectIdentifier(window)] = TitleRowLights(window)
     }
 
+    /// A window that closes for good (another Mac's screen) lets them go.
+    static func forget(_ window: NSWindow) {
+        guard let lights = kept.removeValue(forKey: ObjectIdentifier(window)) else { return }
+        for observer in lights.observers { NotificationCenter.default.removeObserver(observer) }
+        lights.observers = []
+    }
+
     private init(_ window: NSWindow) {
         self.window = window
         let center = NotificationCenter.default

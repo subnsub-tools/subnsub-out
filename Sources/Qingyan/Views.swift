@@ -386,7 +386,8 @@ struct QuietButton: ButtonStyle {
     }
 }
 
-private struct HeaderIconButton: View {
+/// A button of a title row: the panel's, and the screen window's (ScreenTitleRow).
+struct HeaderIconButton: View {
     let symbol: String
     let active: Bool
     let helpText: String
@@ -414,6 +415,7 @@ private struct HeaderIconButton: View {
         .onHover { hovered = $0 }
         .help(helpText)
         .accessibilityLabel(accessibility)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 }
 
