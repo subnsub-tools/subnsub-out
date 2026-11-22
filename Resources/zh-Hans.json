@@ -776,6 +776,8 @@
  "lost": "丢包",
  "Received by this Mac": "本机收到",
  "Connection Info": "连接信息",
+ "Info": "信息",
+ "Show the buttons and the connection line": "显示按钮和连接信息栏",
  "No tunnel to that Mac": "没有到那台 Mac 的隧道",
  "Not on a tailnet with this Mac, or its address there is not known": "与这台 Mac 不在同一 tailnet，或尚不知道它在 tailnet 上的地址",
  "Observe: only watch that Mac; the pointer and keys stay here": "观察：只查看那台 Mac，指针和按键留在本机",

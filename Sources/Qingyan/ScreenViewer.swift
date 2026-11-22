@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import CryptoKit
 import CoreImage
 import CoreMedia
@@ -133,7 +134,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         window.center()
         window.delegate = self
         window.collectionBehavior.insert(.fullScreenPrimary)
-        TitleRowLights.center(window)
         container.scaled = scaled
         container.onAct = { [weak self] action in self?.act(action) }
         container.overlay.onReconnect = { [weak self] in self?.connect() }
@@ -296,6 +296,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private func publish() {
         info.ended = ended
         info.controlling = view.canControl
+        container.live = live && !ended
     }
 
     private func end(_ why: String) {
@@ -752,7 +753,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         pathConnection?.cancel()
         pathConnection = nil
         info.showingInfo = false
-        TitleRowLights.forget(window)
         Self.open.removeValue(forKey: device.key)
     }
 
@@ -782,23 +782,45 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
                 viewer.window.orderFrontRegardless()
                 try await Task.sleep(nanoseconds: 700_000_000)
                 let name = "\(language.rawValue)-\(dark ? "dark" : "light")"
+                // The picture alone, as a live session shows it; then with the title row and the line.
+                viewer.container.chrome(shown: false, animated: false)
+                try await Task.sleep(nanoseconds: 200_000_000)
+                if let frame = viewer.window.contentView?.superview { try write(frame, "screen-window-bare-\(name)") }
+                viewer.container.chrome(shown: true, animated: false)
+                try await Task.sleep(nanoseconds: 300_000_000)
                 if let frame = viewer.window.contentView?.superview { try write(frame, "screen-window-\(name)") }
                 if language == .english, !dark {
-                    // A click on the title row's Scaling button, as the mouse makes it, reaches it there.
                     let window = viewer.window
-                    let before = viewer.info.scaled
-                    let point = NSPoint(x: window.frame.width - 325, y: window.frame.height - 19)
-                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                        if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
-                            NSApp.sendEvent(event)
+                    func click(_ point: NSPoint) async throws {
+                        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                            if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                                NSApp.sendEvent(event)
+                            }
+                            try await Task.sleep(nanoseconds: 80_000_000)
                         }
-                        try await Task.sleep(nanoseconds: 80_000_000)
                     }
+                    // A click on the title row's Scaling button, as the mouse makes it, reaches it there
+                    // (its icon, the row drawn from the window's top).
+                    let before = viewer.info.scaled
+                    let button = viewer.info.scalingFrame
+                    try await click(NSPoint(x: button.midX, y: window.frame.height - button.minY - 11))
                     try await Task.sleep(nanoseconds: 300_000_000)
                     print("Scaling clicked: \(before) -> \(viewer.info.scaled)")
                     if viewer.info.scaled == before { throw VoiceError("A click in the title row did not reach its Scaling button.") }
                     viewer.act(.scaling(before))
+                    // With the title row gone, a click at the window's top left, under its title bar and
+                    // where its buttons were, goes to that Mac.
+                    viewer.container.chrome(shown: false, animated: false)
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                    var sent: [Data] = []
+                    let send = viewer.view.send
+                    viewer.view.send = { sent.append($0) }
+                    try await click(NSPoint(x: 40, y: window.frame.height - 20))
+                    viewer.view.send = send
+                    let pointer = ScreenWire.FromPage.pointer.rawValue
+                    print("Pictured click sent: \(sent.filter { $0.first == pointer }.count) pointer frames")
+                    if !sent.contains(where: { $0.first == pointer }) { throw VoiceError("A click at the top of the picture did not reach it.") }
                 }
                 let info = NSHostingView(rootView: ScreenInfoView(info: viewer.info, scrolls: false).background(Color(nsColor: .windowBackgroundColor)))
                 info.appearance = appearance
@@ -1374,11 +1396,22 @@ struct RemoteCursor {
     }
 }
 
-/// The window's content, on glass as out's panel is: the title row, the picture in a scroll view
-/// (scaled to fit or at its own size), what the window says over it, and under it, always, the line
-/// of what is known of the connection (a click there opens Info).
+/// The window's content. While the screen is shown, the picture fills the window (user 2026-11-23:
+/// the whole window is the remote desktop, with no frame and no title row): the title row and the
+/// line of what is known of the connection (a click there opens Info) float over its top and bottom
+/// only once the pointer is on the one button left over the picture, or that button is clicked, and
+/// go again soon after the pointer is back on the picture. While the window connects, asks for an
+/// account or says why the screen is not shown, they stay. Behind it all, glass as out's panel is,
+/// seen around the picture where its proportions leave room.
 final class ScreenContainer: NSView {
     static let barHeight: CGFloat = 24
+    /// The title row: the buttons with their names under them.
+    static let rowHeight: CGFloat = 56
+    /// Where the window's close, minimize and zoom buttons are, as macOS places them: the middle of
+    /// the row's icons and of the Mac's name is level with theirs.
+    static let lightsMiddle: CGFloat = 16
+    /// How long the title row and the line stay after the pointer is back on the picture.
+    private static let lingering: TimeInterval = 0.6
     let screen = ScreenView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
     let overlay = ScreenOverlay(frame: .zero)
     var onInfo: (() -> Void)?
@@ -1390,12 +1423,28 @@ final class ScreenContainer: NSView {
             needsLayout = true
         }
     }
+    /// The screen is shown: the title row and the line come and go. Otherwise they stay.
+    var live = false {
+        didSet {
+            guard live != oldValue else { return }
+            if live { follow(pointer) } else { chrome(shown: true, animated: false) }
+        }
+    }
+    private let info: ScreenInfo
     private let glass = NSVisualEffectView()
     private let scroll = NSScrollView()
+    private let top = NSVisualEffectView()
+    private let bottom = NSVisualEffectView()
     private let titleRow: NSHostingView<ScreenTitleRow>
     private let bar: NSHostingView<ScreenInfoBar>
+    private let handle = ScreenHandle()
+    private(set) var chromeShown = true
+    private var hideTimer: Timer?
+    private var tracking: NSTrackingArea?
+    private var watchingInfo: AnyCancellable?
 
     init(frame: NSRect, info: ScreenInfo) {
+        self.info = info
         titleRow = NSHostingView(rootView: ScreenTitleRow(info: info))
         bar = NSHostingView(rootView: ScreenInfoBar(info: info))
         super.init(frame: frame)
@@ -1410,8 +1459,18 @@ final class ScreenContainer: NSView {
         glass.state = .active
         glass.frame = bounds
         glass.autoresizingMask = [.width, .height]
+        // Over the picture, the picture under them blurred.
+        for (pane, content) in [(top, titleRow as NSView), (bottom, bar as NSView)] {
+            pane.material = .hudWindow
+            pane.blendingMode = .withinWindow
+            pane.state = .active
+            pane.addSubview(content)
+        }
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
+        // From the window's very top: not set below the title bar, as a scroll view sets itself by default.
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
         scroll.hasHorizontalScroller = false
@@ -1419,23 +1478,41 @@ final class ScreenContainer: NSView {
         scroll.contentView.drawsBackground = false
         scroll.documentView = screen
         screen.onLayout = { [weak self] in self?.needsLayout = true }
-        for sub in [glass, scroll, overlay, bar, titleRow] as [NSView] { addSubview(sub) }
+        handle.onShow = { [weak self] in self?.chrome(shown: true, animated: true) }
+        handle.isHidden = true
+        for sub in [glass, scroll, overlay, bottom, top, handle] as [NSView] { addSubview(sub) }
+        // Info open keeps them; once it closes they go as the pointer says.
+        watchingInfo = info.$showingInfo.dropFirst().sink { [weak self] showing in
+            guard !showing else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.follow(self?.pointer) } }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var isFlipped: Bool { true }
 
-    /// The room the picture has: between the title row and the line.
-    var pictureSize: NSSize { NSSize(width: bounds.width, height: max(bounds.height - Metrics.titlebar - Self.barHeight, 0)) }
+    /// The room the picture has: the whole window.
+    var pictureSize: NSSize { bounds.size }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyLights()
+    }
 
     override func layout() {
         super.layout()
-        titleRow.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Metrics.titlebar)
-        let room = NSRect(origin: NSPoint(x: 0, y: Metrics.titlebar), size: pictureSize)
+        top.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.rowHeight)
+        titleRow.frame = top.bounds
+        bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
+        bar.frame = bottom.bounds
+        handle.frame = NSRect(x: (bounds.midX - ScreenHandle.size / 2).rounded(), y: 6, width: ScreenHandle.size, height: ScreenHandle.size)
+        overlay.top = chromeShown ? Self.rowHeight : 0
+        // AppKit shows the window's buttons again as it lays its title bar out.
+        applyLights()
+        let room = bounds
         scroll.frame = room
         overlay.frame = room
-        bar.frame = NSRect(x: 0, y: room.maxY, width: bounds.width, height: Self.barHeight)
         var size = room.size
         if !scaled, let layout = screen.remoteLayout {
             size = NSSize(width: max(CGFloat(layout.width), size.width), height: max(CGFloat(layout.height), size.height))
@@ -1445,12 +1522,152 @@ final class ScreenContainer: NSView {
         if screen.frame.size != size { screen.frame = NSRect(origin: .zero, size: size) }
     }
 
+    // MARK: The title row and the line, over the picture
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        follow(convert(event.locationInWindow, from: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { follow(convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { follow(nil) }
+
+    /// Where the pointer is over the window, if it is.
+    private var pointer: NSPoint? {
+        guard let window else { return nil }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return bounds.contains(point) ? point : nil
+    }
+
+    /// The pointer on the button over the picture brings the title row and the line; on them, they
+    /// stay; anywhere else, they go a moment later.
+    private func follow(_ point: NSPoint?) {
+        guard live else { return }
+        let over: Bool
+        if let point {
+            over = chromeShown ? top.frame.contains(point) || bottom.frame.contains(point) : !handle.isHidden && handle.frame.contains(point)
+        } else { over = false }
+        if over {
+            hideTimer?.invalidate()
+            hideTimer = nil
+            if !chromeShown { chrome(shown: true, animated: true) }
+            return
+        }
+        guard chromeShown, hideTimer == nil else { return }
+        // Only in the default mode: not while a menu from the title row (Keys) is open.
+        let timer = Timer(timeInterval: Self.lingering, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hideIfAway() }
+        }
+        RunLoop.main.add(timer, forMode: .default)
+        hideTimer = timer
+    }
+
+    private func hideIfAway() {
+        hideTimer = nil
+        guard live, chromeShown, !info.showingInfo else { return }
+        if let point = pointer, top.frame.contains(point) || bottom.frame.contains(point) { return }
+        chrome(shown: false, animated: true)
+    }
+
+    func chrome(shown: Bool, animated: Bool) {
+        hideTimer?.invalidate()
+        hideTimer = nil
+        guard shown != chromeShown || top.isHidden == shown else { return }
+        chromeShown = shown
+        applyLights()
+        overlay.top = shown ? Self.rowHeight : 0
+        let panes = [top, bottom]
+        if shown {
+            handle.isHidden = true
+            for pane in panes { pane.isHidden = false }
+        }
+        let done = { [weak self] in
+            guard let self, self.chromeShown == shown else { return }
+            for pane in panes { pane.isHidden = !shown }
+            self.handle.isHidden = shown || !self.live
+        }
+        guard animated, !Motion.reduced, window != nil else {
+            for pane in panes { pane.alphaValue = shown ? 1 : 0 }
+            done()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            for pane in panes { pane.animator().alphaValue = shown ? 1 : 0 }
+        }, completionHandler: { MainActor.assumeIsolated { done() } })
+    }
+
+    /// The window's close, minimize and zoom buttons go with the title row, and so does its title
+    /// bar: under the picture's top it would take a click there for a move of the window.
+    private func applyLights() {
+        guard let window else { return }
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            if let button = window.standardWindowButton(kind), button.isHidden == chromeShown { button.isHidden = !chromeShown }
+        }
+        // The buttons' bar and what holds it; never anything the content is in. In full screen the
+        // title bar comes down with the menu bar, over the picture only then.
+        guard let titleBar = window.standardWindowButton(.closeButton)?.superview?.superview,
+              let content = window.contentView, !content.isDescendant(of: titleBar) else { return }
+        let hidden = !chromeShown && !window.styleMask.contains(.fullScreen)
+        if titleBar.isHidden != hidden { titleBar.isHidden = hidden }
+    }
+
     func say(_ words: String?, again offered: Bool) { overlay.say(words, again: offered) }
     func askSignIn(device: String, account: String, error: String?) { overlay.askSignIn(device: device, account: account, error: error) }
     var banner: String? {
         get { overlay.banner }
         set { overlay.banner = newValue }
     }
+}
+
+/// The one button over the picture while it fills the window, at the middle of its top: the pointer
+/// on it, or a click, brings the title row and the line.
+final class ScreenHandle: NSView {
+    static let size: CGFloat = 26
+    var onShow: (() -> Void)?
+    private let glass = NSVisualEffectView()
+    private let icon = NSImageView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        glass.material = .hudWindow
+        glass.blendingMode = .withinWindow
+        glass.state = .active
+        glass.wantsLayer = true
+        glass.layer?.cornerRadius = Self.size / 2
+        glass.layer?.masksToBounds = true
+        glass.layer?.borderWidth = 0.5
+        glass.layer?.borderColor = NSColor.separatorColor.cgColor
+        icon.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
+        icon.contentTintColor = .labelColor
+        addSubview(glass)
+        addSubview(icon)
+        toolTip = tr("Show the buttons and the connection line")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(tr("Show the buttons and the connection line"))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        glass.frame = bounds
+        icon.frame = bounds.insetBy(dx: 5, dy: 5)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) { onShow?() }
+    override func accessibilityPerformPress() -> Bool { onShow?(); return true }
 }
 
 /// What the window says over the picture: why it is not shown and Connect Again, the sign-in form,
@@ -1462,6 +1679,8 @@ final class ScreenOverlay: NSView {
     var banner: String? {
         didSet { bannerLabel.stringValue = banner ?? ""; bannerLabel.isHidden = banner == nil; needsLayout = true }
     }
+    /// The line at the top goes under the title row while it is shown.
+    var top: CGFloat = 0 { didSet { if top != oldValue { needsLayout = true } } }
 
     /// A label a click goes through.
     private final class Quiet: NSTextField {
@@ -1574,7 +1793,7 @@ final class ScreenOverlay: NSView {
         signInButton.sizeToFit()
         signInButton.frame.origin = NSPoint(x: bounds.midX + field / 2 - signInButton.frame.width, y: y + 26)
         bannerLabel.sizeToFit()
-        bannerLabel.frame = NSRect(x: 8, y: 8, width: min(bannerLabel.frame.width + 8, bounds.width - 16), height: bannerLabel.frame.height + 4)
+        bannerLabel.frame = NSRect(x: 8, y: top + 8, width: min(bannerLabel.frame.width + 8, bounds.width - 16), height: bannerLabel.frame.height + 4)
     }
 }
 
@@ -1642,6 +1861,8 @@ final class ScreenView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    /// The picture reaches the window's top: a click there, under the title bar, is that Mac's, not a move of the window.
+    override var mouseDownCanMoveWindow: Bool { false }
 
     /// A new session: nothing goes to that Mac until it is live (ScreenViewer.applyControl).
     func reset() {
