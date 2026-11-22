@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CryptoKit
+import CoreImage
 import CoreMedia
 import ImageIO
 import Network
@@ -65,6 +66,12 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     /// The size last asked of that Mac for the session's display, so the same one is not asked twice
     /// (each asking has that Mac make the display again, and the picture stops meanwhile).
     private var askedSize: (w: Int, h: Int, scale: Double)?
+    /// That Mac is making its display again (Dynamic Resolution switched, or the window resized with
+    /// it): the picture is blurred, as Screen Sharing blurs its own (user 2026-11-23), until a picture
+    /// of the new display has come and, for a new size, the layout that says it; at most `reshapeLimit`.
+    private var reshaping: (layout: Bool, picture: Bool)?
+    private var reshapeWork: DispatchWorkItem?
+    private static let reshapeLimit: TimeInterval = 8
     private var clipboardSeen = 0
     private var clipboardTimer: Timer?
     /// The codecs both sides take, from the other Mac's hello, for the open that follows the sign-in.
@@ -181,6 +188,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             guard let self, let next, self.link === next else { return }
             self.view.remoteLayout = layout
             self.fitWindow(to: layout)
+            self.reshapeCame(layout: true)
+        }
+        next.onPicture = { [weak self, weak next] in
+            guard let self, let next, self.link === next else { return }
+            self.reshapeCame(picture: true)
         }
         next.onCodec = { [weak self, weak next] codec in
             guard let self, let next, self.link === next else { return }
@@ -290,6 +302,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         guard !ended else { return }
         ended = true
         live = false
+        reshaped(animated: false)
         info.live = false
         applyControl()
         stopClipboardWatch()
@@ -326,6 +339,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         guard !ended else { return }
         ended = true
         live = false
+        reshaped(animated: false)
         info.live = false
         stopClipboardWatch()
         stopTally()
@@ -368,6 +382,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             open(kept, remember: true)
             return
         }
+        // The form on the window's glass, not over the picture kept from before.
+        reshaped(animated: false)
         container.askSignIn(device: device.label, account: hello["user"] as? String ?? "", error: nil)
     }
 
@@ -426,9 +442,43 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             if let asked = self.askedSize, asked == asking { return }
             self.askedSize = asking
             self.link?.send(ScreenWire.control(["t": "size", "w": asking.w, "h": asking.h, "scale": asking.scale]))
+            // A display of the session's own is made again at a new size (the helper takes 320 × 200
+            // to 7680 × 4320); the Mac's own display, or one already that size, is not.
+            if self.live, self.info.own, self.view.showsPicture, let shown = self.view.remoteLayout,
+               shown.width != asking.w || shown.height != asking.h,
+               (320...7680).contains(asking.w), (200...4320).contains(asking.h) {
+                self.reshape(awaitingLayout: true)
+            }
         }
         resizeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    /// Blurs the picture while that Mac makes its display again.
+    private func reshape(awaitingLayout: Bool) {
+        reshaping = (layout: !awaitingLayout, picture: false)
+        view.blur()
+        reshapeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reshaped(animated: true) }
+        reshapeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.reshapeLimit, execute: work)
+    }
+
+    private func reshapeCame(layout: Bool = false, picture: Bool = false) {
+        guard var waiting = reshaping else { return }
+        waiting.layout = waiting.layout || layout
+        waiting.picture = waiting.picture || picture
+        reshaping = waiting
+        if waiting.layout && waiting.picture { reshaped(animated: true) }
+    }
+
+    /// The new display is shown: the blur clears as Screen Sharing's does; at once when the session
+    /// ended, the window asks for an account, or Reduce Motion is on.
+    private func reshaped(animated: Bool) {
+        reshapeWork?.cancel()
+        reshapeWork = nil
+        reshaping = nil
+        view.unblur(animated: animated)
     }
 
     // MARK: The way there and the stream's numbers
@@ -507,8 +557,12 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         case .dynamic(let on):
             ownDisplay = on
             info.own = on
-            // A session's display is chosen as it opens: it opens again.
-            if !ended || live { connect() }
+            // A session's display is chosen as it opens: it opens again. What was shown stays,
+            // blurred, until the new display's first picture.
+            if !ended || live {
+                if live, view.hold() { reshape(awaitingLayout: false) }
+                connect()
+            }
         case .quality(let on):
             fullQuality = on
             info.fullQuality = on
@@ -687,6 +741,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         ended = true
         live = false
+        reshaped(animated: false)
         stopClipboardWatch()
         stopTally()
         view.releaseAll()
@@ -810,6 +865,9 @@ final class ScreenLink: @unchecked Sendable {
     var onClipboard: (@MainActor (String) -> Void)?
     var onCursor: (@MainActor (RemoteCursor) -> Void)?
     var onEnd: (@MainActor (String) -> Void)?
+    /// The first picture after a decoder record (the session's first, or a new display's once its
+    /// size changed) has gone to the display layer.
+    var onPicture: (@MainActor () -> Void)?
 
     let displayLayer = AVSampleBufferDisplayLayer()
     private let name: String
@@ -826,6 +884,8 @@ final class ScreenLink: @unchecked Sendable {
 
     private var format: CMVideoFormatDescription?
     private var awaitingKey = true
+    /// No picture has gone to the display layer since the last decoder record.
+    private var fresh = false
     private var cursors: [UInt32: RemoteCursor.Shape] = [:]
     private let sound = ScreenSound()
     /// Pictures and their bytes taken in, for the window's count.
@@ -1108,6 +1168,7 @@ final class ScreenLink: @unchecked Sendable {
         count(codec == .hevc ? "configHEVC" : "configAVC")
         format = made
         awaitingKey = true
+        fresh = true
         let onCodec = onCodec
         main { onCodec?(codec.name) }
     }
@@ -1141,6 +1202,11 @@ final class ScreenLink: @unchecked Sendable {
         }
         renderer.enqueue(sample)
         count("enqueued")
+        if fresh {
+            fresh = false
+            let onPicture = onPicture
+            main { onPicture?() }
+        }
     }
 
     private var keyAsked = Date.distantPast
@@ -1538,10 +1604,23 @@ final class ScreenView: NSView {
     var remoteCursor: RemoteCursor? { didSet { applyCursor() } }
     var displayLayer: AVSampleBufferDisplayLayer? {
         didSet {
-            oldValue?.removeFromSuperlayer()
-            if let displayLayer { layer?.addSublayer(displayLayer); needsLayout = true }
+            if oldValue !== held?.layer { oldValue?.removeFromSuperlayer() }
+            guard let displayLayer else { return }
+            if let veil { layer?.insertSublayer(displayLayer, below: veil) } else { layer?.addSublayer(displayLayer) }
+            needsLayout = true
         }
     }
+
+    /// Over the picture while that Mac makes its display again: what is behind it blurred, as Screen
+    /// Sharing's own window blurs (a backdrop with a 25-point Gaussian blur, its edges kept hard, cleared
+    /// by a spring of half a second without bounce; read from macOS 27's Screen Sharing, 2026-11-23).
+    private var veil: CALayer?
+    /// Each blur and clearing, so that a clearing overtaken by a new blur leaves the veil in place.
+    private var veilTurn = 0
+    private static let blurRadius = 25.0
+    private static let blurPath = "backgroundFilters.blur.inputRadius"
+    /// The picture of the session before, kept under the blur while the next opens, at that display's size.
+    private var held: (layer: AVSampleBufferDisplayLayer, layout: ScreenWire.Layout)?
 
     private var buttons: UInt8 = 0
     private var keysDown: Set<UInt16> = []
@@ -1552,6 +1631,8 @@ final class ScreenView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        // The veil's blur is a Core Image filter.
+        layerUsesCoreImageFilters = true
         // Around the picture, the window's glass.
         layer?.backgroundColor = NSColor.clear.cgColor
     }
@@ -1570,8 +1651,9 @@ final class ScreenView: NSView {
     }
 
     /// Where the picture is drawn: as large as fits, in that display's proportions; or at its own size, in the middle.
-    private var picture: CGRect {
-        guard let layout = remoteLayout else { return bounds }
+    private var picture: CGRect { remoteLayout.map(place) ?? bounds }
+
+    private func place(_ layout: ScreenWire.Layout) -> CGRect {
         if actual {
             let w = CGFloat(layout.width), h = CGFloat(layout.height)
             return CGRect(x: ((bounds.width - w) / 2).rounded(), y: ((bounds.height - h) / 2).rounded(), width: w, height: h)
@@ -1582,9 +1664,84 @@ final class ScreenView: NSView {
     override func layout() {
         super.layout()
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        displayLayer?.isHidden = !showsPicture || remoteLayout == nil
-        displayLayer?.frame = picture
+        // The session's picture waits for its first under the one kept from before.
+        let shown = showsPicture && remoteLayout != nil && held == nil
+        // On whole pixels: off them, the veil's blur takes in the glass around the picture and its
+        // edges go soft.
+        let drawn = backingAlignedRect(picture, options: .alignAllEdgesNearest)
+        displayLayer?.isHidden = !shown
+        displayLayer?.frame = drawn
         displayLayer?.contentsScale = window?.backingScaleFactor ?? 2
+        let kept = held.map { backingAlignedRect(place($0.layout), options: .alignAllEdgesNearest) }
+        if let held, let kept {
+            held.layer.frame = kept
+            held.layer.contentsScale = window?.backingScaleFactor ?? 2
+        }
+        veil?.frame = kept ?? drawn
+        veil?.isHidden = !shown && held == nil
+        CATransaction.commit()
+    }
+
+    // MARK: The blur while that Mac makes its display again
+
+    /// Keeps the picture shown now under the blur while the session opens again; false when none is shown.
+    func hold() -> Bool {
+        guard showsPicture, let displayLayer, let remoteLayout, !displayLayer.isHidden else { return false }
+        held?.layer.removeFromSuperlayer()
+        held = (displayLayer, remoteLayout)
+        return true
+    }
+
+    func blur() {
+        veilTurn += 1
+        let veil = self.veil ?? {
+            let made = CALayer()
+            made.masksToBounds = true
+            // The picture's edge carried outward before the blur, so that the edges stay hard.
+            let clamp = CIFilter(name: "CIAffineClamp")
+            clamp?.setValue(NSAffineTransform(), forKey: kCIInputTransformKey)
+            let blur = CIFilter(name: "CIGaussianBlur")
+            blur?.name = "blur"
+            made.backgroundFilters = [clamp, blur].compactMap { $0 }
+            layer?.addSublayer(made)
+            self.veil = made
+            return made
+        }()
+        veil.removeAnimation(forKey: "clear")
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        veil.setValue(Self.blurRadius, forKeyPath: Self.blurPath)
+        CATransaction.commit()
+        needsLayout = true
+    }
+
+    /// Clears the blur and lets go of the picture kept under it.
+    func unblur(animated: Bool) {
+        held?.layer.removeFromSuperlayer()
+        held = nil
+        needsLayout = true
+        guard let veil else { return }
+        veilTurn += 1
+        let turn = veilTurn
+        guard animated, !Motion.reduced, !veil.isHidden else {
+            veil.removeFromSuperlayer()
+            self.veil = nil
+            return
+        }
+        let spring = CASpringAnimation(perceptualDuration: 0.5, bounce: 0)
+        spring.keyPath = Self.blurPath
+        spring.fromValue = Self.blurRadius
+        spring.toValue = 0
+        spring.duration = spring.settlingDuration
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.veilTurn == turn else { return }
+                self.veil?.removeFromSuperlayer()
+                self.veil = nil
+            }
+        }
+        veil.setValue(0.0, forKeyPath: Self.blurPath)
+        veil.add(spring, forKey: "clear")
         CATransaction.commit()
     }
 
