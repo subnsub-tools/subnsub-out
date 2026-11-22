@@ -145,6 +145,8 @@ final class ScreenInfo: ObservableObject {
         case "direct": return tr("Direct") + " " + p.place
         case "peer-relay": return tr("Peer relay") + " " + p.place
         case "derp": return "DERP (\(p.place))"
+        // This Mac is not on the tailnet itself: its router is, and carries it there.
+        case "router": return tr("Through the router")
         default: return p.via
         }
     }
@@ -335,6 +337,8 @@ struct ScreenInfoBar: View {
         case "direct": return .green
         case "peer-relay": return .yellow
         case "derp": return .orange
+        // Reached, by the router's own path there, which this Mac cannot see.
+        case "router": return .teal
         case "none": return .red
         default: return .gray
         }

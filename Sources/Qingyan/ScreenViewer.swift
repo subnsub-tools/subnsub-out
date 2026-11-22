@@ -62,6 +62,9 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private(set) var live = false
     private var sized = false
     private var resizeWork: DispatchWorkItem?
+    /// The size last asked of that Mac for the session's display, so the same one is not asked twice
+    /// (each asking has that Mac make the display again, and the picture stops meanwhile).
+    private var askedSize: (w: Int, h: Int, scale: Double)?
     private var clipboardSeen = 0
     private var clipboardTimer: Timer?
     /// The codecs both sides take, from the other Mac's hello, for the open that follows the sign-in.
@@ -378,12 +381,15 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         signingIn = (account, remember)
         var fields: [String: Any] = ["t": "open", "codecs": codecs, "audio": true, "kbps": kbps,
                                      "user": account.account, "password": account.password]
+        askedSize = nil
         if ownDisplay {
             let size = container.pictureSize
+            let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
             fields["own"] = true
-            fields["w"] = max(Int(size.width), 640)
-            fields["h"] = max(Int(size.height), 400)
-            fields["scale"] = Double(window.backingScaleFactor)
+            fields["w"] = asked.w
+            fields["h"] = asked.h
+            fields["scale"] = asked.scale
+            askedSize = asked
         }
         container.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
         link?.send(ScreenWire.control(fields))
@@ -416,7 +422,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             guard let self, !self.ended else { return }
             let size = self.container.pictureSize
             guard size.width >= 160, size.height >= 120 else { return }
-            self.link?.send(ScreenWire.control(["t": "size", "w": Int(size.width), "h": Int(size.height), "scale": Double(self.window.backingScaleFactor)]))
+            let asking = (w: Int(size.width), h: Int(size.height), scale: Double(self.window.backingScaleFactor))
+            if let asked = self.askedSize, asked == asking { return }
+            self.askedSize = asking
+            self.link?.send(ScreenWire.control(["t": "size", "w": asking.w, "h": asking.h, "scale": asking.scale]))
         }
         resizeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
@@ -664,6 +673,14 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { askSize() }
+    /// A size the window took without being dragged to it (the zoom button, the system's window
+    /// tiling, a move to a display of another scale): the session's display follows that too. While
+    /// it is dragged, only where the drag ends is asked for (above).
+    func windowDidResize(_ notification: Notification) {
+        guard !window.inLiveResize else { return }
+        askSize()
+    }
+    func windowDidChangeBackingProperties(_ notification: Notification) { askSize() }
     func windowDidExitFullScreen(_ notification: Notification) { info.fullScreen = false; askSize() }
     func windowDidEnterFullScreen(_ notification: Notification) { info.fullScreen = true; askSize() }
 
