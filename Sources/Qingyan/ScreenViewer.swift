@@ -278,7 +278,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             if status["picture"] as? Bool == true { view.cursorInPicture = true }
         case "clip":
             if status["ok"] as? Bool == false {
-                flash(tr("This text did not reach %@’s clipboard: Screen Sharing takes Latin-1 text only.", device.label))
+                flash(tr("This text did not reach %@’s clipboard: it is too long, or the helper on that Mac is older than 2026.11.23.1 and takes Latin-1 text only.", device.label))
             }
         default:
             break
