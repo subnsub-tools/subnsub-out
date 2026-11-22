@@ -2,25 +2,30 @@ import Foundation
 import CoreGraphics
 import Network
 
-/// This Mac's screen shown on the owner's Monitor page, and worked from there.
+/// A Mac's screen, shown on the owner's Monitor page and in another Mac's out, and worked from there.
 ///
-/// The page reaches the Monitor helper on this Mac through its tunnel, signed by a key the
-/// helper has pinned, and the helper hands the two streams of that screen session to out over
-/// its socket (HelperLink.parkScreen), as it hands a stream from another Mac's out. The helper
-/// reads none of it. What travels is frames each way, [kind: 1 byte][length: 3 bytes][body]:
+/// The picture, the sound and the input are that Mac's own Screen Sharing in its High Performance
+/// mode: the Monitor helper there signs in to it with the account the viewer gives and speaks
+/// these frames (helper/go/screenhp.go, put.sock {"op":"screen-hp"}); out on that Mac lets the
+/// viewer in and carries the session unread (ScreenHost). Until 0.1.59 out recorded the screen
+/// itself and spoke them; a Mac still on such an out says hello without "signin", and is opened as
+/// before. What travels is frames each way, [kind: 1 byte][length: 3 bytes][body]:
 ///
-///     to the page    1 status (JSON)             2 video configuration: codec, then avcC / hvcC
+///     to the page    1 status (JSON): hello {v, name, user, codecs, signin}, connecting,
+///                      live {w h (points), cw ch (pixels), own, audio, input}, end {why}
+///                    2 video configuration: codec, then avcC / hvcC
 ///                    3 video frame: flags (1 = key), timestamp (90 kHz), then
 ///                      [length: 4 bytes][NAL unit] for each unit
-///                    4 audio packet: codec (2 = AAC-LC), timestamp (samples), sequence, bytes
+///                    4 audio packet: codec (2 = AAC-LC, 3 = AAC-ELD), timestamp (samples), sequence, bytes
 ///                    5 cursor shape: id, hot spot x y, size w h (pixels), pixels per point, RGBA
 ///                    6 cursor shown: id          7 clipboard (UTF-8)
 ///                    8 layout: the display in points w h, the picture in pixels w h
-///     from the page  1 control (JSON)            2 pointer: buttons, x y (points)
+///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, w, h, scale}, …
+///                    2 pointer: buttons, x y (points)
 ///                    3 key: down, virtual key code
 ///                    4 scroll: dx dy (pixels, as a browser's wheel says them), x y
 ///
-/// The page's viewer is screen-hp.js; the helper's side is screen.go and put.go.
+/// The page's viewer is screen-hp.js; the helper's side is screen.go, put.go and screenhp.go.
 public enum ScreenWire {
     public enum ToPage: UInt8 { case status = 1, videoConfig, videoFrame, audio, cursorStore, cursorSelect, clipboard, layout }
     public enum FromPage: UInt8 { case control = 1, pointer, key, scroll }
@@ -30,6 +35,9 @@ public enum ScreenWire {
     }
     /// The audio codec byte for AAC-LC, raw access units.
     public static let audioAACLC: UInt8 = 2
+    /// AAC-ELD as Screen Sharing sends it: 48 kHz, two channels, 480 samples a packet, raw access
+    /// units (decoder configuration f8e65000).
+    public static let audioAACELD: UInt8 = 3
 
     /// The most one frame carries either way: a control message is small, a picture is not, and
     /// neither reaches what three bytes of length can say.
@@ -379,6 +387,29 @@ extension Int {
 }
 
 extension HelperLink {
+    /// The helper said no to a High Performance session, and its word for why: "unknown-op" from a
+    /// helper older than the question, "off" where it is turned off.
+    public struct ScreenStreamRefusal: Error, Sendable { public let code: String }
+
+    /// A session with this Mac's own Screen Sharing, which the helper signs in to with the account
+    /// the viewer names in its first word, and speaks ScreenWire on: the connection, once the helper
+    /// has said yes.
+    public static func screenStream() async throws -> NWConnection {
+        let connection = try await connect()
+        let answer: [String: Any]
+        do {
+            answer = try await bounded(connection, 5) {
+                try await ask(connection, ["op": "screen-hp"])
+                return try await readLine(connection)
+            }
+        } catch { connection.cancel(); throw Absence.notRunning }
+        guard answer["ok"] as? Bool == true else {
+            connection.cancel()
+            throw ScreenStreamRefusal(code: answer["error"] as? String ?? "")
+        }
+        return connection
+    }
+
     /// Leaves a connection waiting at the helper for a screen session from the Monitor page.
     public static func parkScreen() async throws -> NWConnection {
         let connection = try await connect()

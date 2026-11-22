@@ -389,7 +389,6 @@ final class SettingsStore: ObservableObject {
     @Published var microphoneAllowed = false
     @Published var accessibilityAllowed = false
     /// Whether macOS lets out record the screen, which showing it on the Monitor page takes.
-    @Published var screenRecordingAllowed = false
     /// Cached login-item state so opening or rendering Settings never blocks on XPC.
     @Published private(set) var loginItemEnabled = false
     @Published var loginMessage = ""
@@ -556,8 +555,6 @@ final class SettingsStore: ObservableObject {
         if microphoneAllowed != mic { microphoneAllowed = mic }
         let ax = AXIsProcessTrusted()
         if accessibilityAllowed != ax { accessibilityAllowed = ax }
-        let screen = ScreenHost.recordingAllowed
-        if screenRecordingAllowed != screen { screenRecordingAllowed = screen }
     }
 
     nonisolated private static func applyLoginItem(_ value: Bool) throws {
@@ -697,14 +694,6 @@ final class SettingsStore: ObservableObject {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         openPrivacy("Privacy_Accessibility")
-    }
-
-    /// Asks macOS for the permission to record the screen: its own prompt the first time, and its
-    /// settings after that, where the switch is.
-    func requestScreenRecording() {
-        guard !preview else { return }
-        if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
-        refreshPermissions()
     }
 
     func openPrivacy(_ anchor: String) {

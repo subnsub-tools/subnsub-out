@@ -82,26 +82,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
+        if let index = CommandLine.arguments.firstIndex(of: "--screen-pipe-selftest"), CommandLine.arguments.count > index + 3 {
+            let arguments = CommandLine.arguments
+            Task { @MainActor in
+                do { exit(try await ScreenPipeSelfTest.run(socket: arguments[index + 1], account: arguments[index + 2], report: arguments[index + 3]) ? 0 : 1) }
+                catch { fputs("Screen pipe self-test failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--render-previews"), CommandLine.arguments.count > index + 1 {
             Task { @MainActor in
                 do { try await renderPreviews(to: CommandLine.arguments[index + 1]); NSApp.terminate(nil) }
                 catch { fputs("Preview failed: \(error)\n", stderr); exit(1) }
-            }
-            return
-        }
-        if let index = CommandLine.arguments.firstIndex(of: "--screen-viewer-selftest"), CommandLine.arguments.count > index + 1 {
-            let codec = CommandLine.arguments.count > index + 2 ? CommandLine.arguments[index + 2] : "avc"
-            Task { @MainActor in
-                do { exit(try await ScreenViewerSelfTest.run(to: CommandLine.arguments[index + 1], codec: codec) ? 0 : 1) }
-                catch { fputs("Screen viewer self-test failed: \(error)\n", stderr); exit(1) }
-            }
-            return
-        }
-        if let index = CommandLine.arguments.firstIndex(of: "--screen-selftest"), CommandLine.arguments.count > index + 1 {
-            let codec = CommandLine.arguments.count > index + 2 ? CommandLine.arguments[index + 2] : "avc"
-            Task { @MainActor in
-                do { try await ScreenSelfTest.run(to: CommandLine.arguments[index + 1], codec: codec); exit(0) }
-                catch { fputs("Screen self-test failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

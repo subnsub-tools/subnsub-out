@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CryptoKit
 import CoreMedia
 import Network
 import QingyanCore
@@ -7,9 +8,11 @@ import VideoToolbox
 
 /// Another Mac's screen in a window of out's own (user 2026-11-21: a screen button after each Mac
 /// in Multiple Macs opens it; the Macs there can be worked from each other's out without a switch).
-/// That Mac's out captures and encodes its screen (ScreenHost) as it does for the Monitor page; this
-/// window is the page's viewer in out: the picture, the sound, the pointer's shape, the clipboard
-/// both ways, and the pointer, the keys and the wheel sent back. One window a Mac.
+/// What it shows is that Mac's own Screen Sharing in its High Performance mode, which the Monitor
+/// helper there signs in to with the account given here (ScreenHost, helper/go/screenhp.go): the
+/// picture, the sound, the pointer's shape, the clipboard both ways, and the pointer, the keys and
+/// the wheel sent back. The account is asked for once and kept in this Mac's keychain. Dynamic
+/// Resolution gives the session a display of its own that follows the window. One window a Mac.
 @MainActor
 final class ScreenViewer: NSObject, NSWindowDelegate {
     private static var open: [String: ScreenViewer] = [:]
@@ -46,6 +49,19 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private var resizeWork: DispatchWorkItem?
     private var clipboardSeen = 0
     private var clipboardTimer: Timer?
+    /// The codecs both sides take, from the other Mac's hello, for the open that follows the sign-in.
+    private var codecs: [String] = ["avc"]
+    /// The account the session is opening with, kept once the session is live when asked to; and one
+    /// typed after a session ended, for the next.
+    private var signingIn: (account: ScreenSignIn, remember: Bool)?
+    private var typed: (account: ScreenSignIn, remember: Bool)?
+    private let dynamicSwitch = NSButton(checkboxWithTitle: tr("Dynamic Resolution"), target: nil, action: nil)
+    /// A display of the session's own, which takes the window's size: that Mac's own displays are
+    /// dark while it lasts. Kept for each Mac.
+    private var ownDisplay: Bool {
+        get { UserDefaults.standard.bool(forKey: "screenOwnDisplay." + device.key) }
+        set { UserDefaults.standard.set(newValue, forKey: "screenOwnDisplay." + device.key) }
+    }
 
     private init(device: TrustedDevice, controller: DictationController) {
         self.device = device
@@ -65,6 +81,29 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         window.collectionBehavior.insert(.fullScreenPrimary)
         view.onReconnect = { [weak self] in self?.connect() }
         view.send = { [weak self] frame in self?.link?.send(frame) }
+        view.onSignIn = { [weak self] account, password, remember in
+            self?.signIn(ScreenSignIn(account: account, password: password), remember: remember)
+        }
+        dynamicSwitch.target = self
+        dynamicSwitch.action = #selector(dynamicChanged)
+        dynamicSwitch.state = ownDisplay ? .on : .off
+        dynamicSwitch.controlSize = .small
+        dynamicSwitch.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        dynamicSwitch.toolTip = tr("The other Mac shows its screen on a display of its own that follows this window’s size. Its own displays are dark while you view it.")
+        let accessory = NSTitlebarAccessoryViewController()
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: dynamicSwitch.intrinsicContentSize.width + 16, height: 28))
+        dynamicSwitch.frame.origin = NSPoint(x: 4, y: (28 - dynamicSwitch.intrinsicContentSize.height) / 2)
+        dynamicSwitch.sizeToFit()
+        holder.addSubview(dynamicSwitch)
+        accessory.view = holder
+        accessory.layoutAttribute = .trailing
+        window.addTitlebarAccessoryViewController(accessory)
+    }
+
+    @objc private func dynamicChanged() {
+        ownDisplay = dynamicSwitch.state == .on
+        // A session's display is chosen as it opens: it opens again.
+        if !ended || live { connect() }
     }
 
     // MARK: The session
@@ -86,6 +125,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         next.onStatus = { [weak self, weak next] status in
             guard let self, let next, self.link === next else { return }
             self.status(status)
+        }
+        next.onHello = { [weak self, weak next] hello, codecs in
+            guard let self, let next, self.link === next else { return }
+            self.hello(hello, codecs: codecs)
         }
         next.onLayout = { [weak self, weak next] layout in
             guard let self, let next, self.link === next else { return }
@@ -125,17 +168,30 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private func status(_ status: [String: Any]) {
         guard let state = status["s"] as? String else { return }
         switch state {
+        case "connecting":
+            view.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
         case "live":
             live = true
             view.say(nil, again: false)
             view.canControl = status["input"] as? Bool != false
             view.banner = view.canControl ? nil
                 : tr("View only: out on %@ has no Accessibility permission, so the pointer and keys do not reach it.", device.label)
+            if let signingIn {
+                // Kept only once it has been taken.
+                if signingIn.remember {
+                    if let failure = signingIn.account.save(for: device.key) { flash(failure) }
+                } else { ScreenSignIn.forget(device.key) }
+                self.signingIn = nil
+            }
             clipboardSeen = 0
             sendClipboard()
             startClipboardWatch()
         case "cursor":
             if status["picture"] as? Bool == true { view.cursorInPicture = true }
+        case "clip":
+            if status["ok"] as? Bool == false {
+                flash(tr("This text did not reach %@’s clipboard: Screen Sharing takes Latin-1 text only.", device.label))
+            }
         default:
             break
         }
@@ -150,13 +206,74 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         let name = device.label
         let words: String
         switch why {
+        case "auth":
+            // The account was not taken: it is asked for again, and not kept.
+            ScreenSignIn.forget(device.key)
+            let tried = signingIn?.account.account ?? ""
+            signingIn = nil
+            view.askSignIn(device: name, account: tried, error: tr("%@ did not accept that account name and password.", name))
+            return
         case "busy": words = tr("%@’s screen is being shown elsewhere. Try again once that has ended.", name)
         case "perm-screen": words = tr("out on %@ may not record its screen. On that Mac, turn out on in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen out there.", name)
         case "stopped", "off": words = tr("%@ stopped showing its screen.", name)
-        case "no-display", "capture-stopped", "failed": words = tr("%@’s screen could not be captured.", name)
+        case "no-vnc": words = tr("Screen Sharing is off on %@. Turn it on there in System Settings → General → Sharing.", name)
+        case "no-hp", "no-media": words = tr("%@’s Screen Sharing did not start its High Performance mode.", name)
+        case "helper-old": words = tr("The Monitor helper on %@ is too old to show its screen. It updates itself; or update it from the Monitor page.", name)
+        case "helper": words = tr("The Monitor helper on %@ is not running.", name)
+        case "no-display", "capture-stopped", "failed": words = tr("%@’s screen could not be shown.", name)
         default: words = tr("The connection to %@ was lost.", name)
         }
+        signingIn = nil
         view.say(words, again: true)
+    }
+
+    private var flashWork: DispatchWorkItem?
+    /// A line over the picture for a few seconds.
+    private func flash(_ words: String) {
+        flashWork?.cancel()
+        view.banner = words
+        let work = DispatchWorkItem { [weak self] in self?.view.banner = nil }
+        flashWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+    }
+
+    // MARK: Signing in to that Mac's Screen Sharing
+
+    /// The other Mac's first word. A Mac whose out shows its screen through Screen Sharing asks for
+    /// an account: the one kept for it, else the one typed into the window.
+    private func hello(_ hello: [String: Any], codecs: [String]) {
+        self.codecs = codecs
+        if let typed {
+            self.typed = nil
+            open(typed.account, remember: typed.remember)
+            return
+        }
+        if let kept = ScreenSignIn.load(device.key) {
+            open(kept, remember: true)
+            return
+        }
+        view.askSignIn(device: device.label, account: hello["user"] as? String ?? "", error: nil)
+    }
+
+    private func signIn(_ account: ScreenSignIn, remember: Bool) {
+        // Typed after the last session ended (a password that was not taken): a new one, with it.
+        guard !ended, link != nil else { typed = (account, remember); connect(); return }
+        open(account, remember: remember)
+    }
+
+    private func open(_ account: ScreenSignIn, remember: Bool) {
+        signingIn = (account, remember)
+        var fields: [String: Any] = ["t": "open", "codecs": codecs, "audio": true, "kbps": ScreenWire.kbpsDefault,
+                                     "user": account.account, "password": account.password]
+        if ownDisplay {
+            let size = view.bounds.size
+            fields["own"] = true
+            fields["w"] = max(Int(size.width), 640)
+            fields["h"] = max(Int(size.height), 400)
+            fields["scale"] = Double(window.backingScaleFactor)
+        }
+        view.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
+        link?.send(ScreenWire.control(fields))
     }
 
     /// The window in the proportions of that Mac's display, as large as fits most of this screen
@@ -239,6 +356,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
 /// the sound into a player. Frames are read on a queue of its own.
 final class ScreenLink: @unchecked Sendable {
     var onStatus: (@MainActor ([String: Any]) -> Void)?
+    /// A hello that asks for an account, and the codecs both sides take.
+    var onHello: (@MainActor ([String: Any], [String]) -> Void)?
     var onLayout: (@MainActor (ScreenWire.Layout) -> Void)?
     var onClipboard: (@MainActor (String) -> Void)?
     var onCursor: (@MainActor (RemoteCursor) -> Void)?
@@ -334,6 +453,13 @@ final class ScreenLink: @unchecked Sendable {
                     #endif
                     if hevc { codecs.append("hevc") }
                     if theirs.contains("avc") || theirs.isEmpty { codecs.append("avc") }
+                    if status["signin"] as? Bool == true {
+                        // That Mac's Screen Sharing: the window asks for its account, then opens.
+                        let onHello = onHello, chosen = codecs
+                        main { onHello?(status, chosen) }
+                        continue
+                    }
+                    // An out before 0.1.60 records its screen itself and asks for nothing.
                     connection?.send(content: ScreenWire.control(["t": "open", "codecs": codecs, "audio": true, "kbps": ScreenWire.kbpsDefault]),
                                      completion: .contentProcessed { _ in })
                 case "live":
@@ -358,7 +484,7 @@ final class ScreenLink: @unchecked Sendable {
             case .videoFrame:
                 picture(frame.body)
             case .audio:
-                if let packet = ScreenWire.audioPacket(frame.body), packet.codec == ScreenWire.audioAACLC { count("soundPackets"); sound.play(packet.bytes) }
+                if let packet = ScreenWire.audioPacket(frame.body) { count("soundPackets"); sound.play(packet.bytes, codec: packet.codec) }
             case .layout:
                 if let layout = ScreenWire.layout(frame.body) {
                     count("layouts")
@@ -497,13 +623,14 @@ final class ScreenLink: @unchecked Sendable {
     }
 }
 
-/// The other Mac's sound: AAC-LC, 48 kHz, stereo, decoded and played as it comes, never more than
-/// a fifth of a second behind.
+/// The other Mac's sound: AAC-ELD from its Screen Sharing (AAC-LC from an out before 0.1.60), 48 kHz,
+/// stereo, decoded and played as it comes, never more than a fifth of a second behind.
 final class ScreenSound: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var converter: AVAudioConverter?
-    private let aac = AVAudioFormat(settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48000, AVNumberOfChannelsKey: 2])
+    private var input: AVAudioFormat?
+    private var codec: UInt8 = 0
     private let pcm = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)
     private let lock = NSLock()
     private var pending = 0
@@ -513,13 +640,10 @@ final class ScreenSound: @unchecked Sendable {
 
     func start() {
         lock.lock(); defer { lock.unlock() }
-        guard !running, let aac, let pcm, let made = AVAudioConverter(from: aac, to: pcm) else { return }
-        // AAC-LC, 48 kHz, two channels: the decoder's configuration, as the encoder on the other Mac makes it.
-        made.magicCookie = Data([0x11, 0x90])
-        converter = made
+        guard !running, let pcm else { return }
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: pcm)
-        do { try engine.start(); player.play(); running = true } catch { converter = nil }
+        do { try engine.start(); player.play(); running = true } catch {}
     }
 
     func stop() {
@@ -532,11 +656,39 @@ final class ScreenSound: @unchecked Sendable {
         engine.stop()
     }
 
-    func play(_ bytes: Data) {
+    /// The decoder for a codec, made the first time it is heard. Called with the lock held.
+    private func decoder(_ codec: UInt8) -> (AVAudioConverter, AVAudioFormat)? {
+        if codec == self.codec, let converter, let input { return (converter, input) }
+        guard let pcm else { return nil }
+        let format: AVAudioFormat?
+        let cookie: Data
+        switch codec {
+        case ScreenWire.audioAACLC:
+            format = AVAudioFormat(settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48000, AVNumberOfChannelsKey: 2])
+            // AAC-LC, 48 kHz, two channels, as out's encoder on the other Mac made it.
+            cookie = Data([0x11, 0x90])
+        case ScreenWire.audioAACELD:
+            var description = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatMPEG4AAC_ELD, mFormatFlags: 0, mBytesPerPacket: 0,
+                                                          mFramesPerPacket: 480, mBytesPerFrame: 0, mChannelsPerFrame: 2, mBitsPerChannel: 0, mReserved: 0)
+            format = AVAudioFormat(streamDescription: &description)
+            // AAC-ELD, 48 kHz, two channels, 480 samples a packet, as Screen Sharing sends it.
+            cookie = Data([0xF8, 0xE6, 0x50, 0x00])
+        default:
+            return nil
+        }
+        guard let format, let made = AVAudioConverter(from: format, to: pcm) else { return nil }
+        made.magicCookie = cookie
+        converter = made
+        input = format
+        self.codec = codec
+        return (made, format)
+    }
+
+    func play(_ bytes: Data, codec: UInt8) {
         lock.lock()
-        guard running, let converter, let aac, let pcm, pending < 10, bytes.count > 0, bytes.count <= 8192 else { lock.unlock(); return }
+        guard running, let pcm, pending < 10, bytes.count > 0, bytes.count <= 8192, let (converter, input) = decoder(codec) else { lock.unlock(); return }
         lock.unlock()
-        let packet = AVAudioCompressedBuffer(format: aac, packetCapacity: 1, maximumPacketSize: bytes.count)
+        let packet = AVAudioCompressedBuffer(format: input, packetCapacity: 1, maximumPacketSize: bytes.count)
         bytes.withUnsafeBytes { raw in if let base = raw.baseAddress { packet.data.copyMemory(from: base, byteCount: bytes.count) } }
         packet.byteLength = UInt32(bytes.count)
         packet.packetCount = 1
@@ -557,6 +709,34 @@ final class ScreenSound: @unchecked Sendable {
             self.lock.lock(); self.pending -= 1; self.lock.unlock()
         }
     }
+}
+
+/// The account a Mac's Screen Sharing is signed in to with, kept in this Mac's keychain (Vault) for
+/// each Mac by its key once a session has opened with it.
+struct ScreenSignIn: Codable {
+    let account: String
+    let password: String
+
+    /// The keychain's name for a Mac's entry: its key hashed, as the key itself (helper:<agent>, or
+    /// base64) has characters Vault does not take.
+    private static func entry(_ key: String) -> String {
+        "screen-signin." + SHA256.hash(data: Data(key.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func load(_ key: String) -> ScreenSignIn? {
+        guard let data = try? Vault.read(entry(key)) else { return nil }
+        return try? JSONDecoder().decode(ScreenSignIn.self, from: data)
+    }
+
+    /// Keeps it; what went wrong otherwise, to be said.
+    func save(for key: String) -> String? {
+        do {
+            try Vault.save(try JSONEncoder().encode(self), account: Self.entry(key))
+            return nil
+        } catch { return error.localizedDescription }
+    }
+
+    static func forget(_ key: String) { try? Vault.delete(entry(key)) }
 }
 
 /// The other Mac's pointer shape, as a cursor for the window at its scale.
@@ -598,6 +778,8 @@ struct RemoteCursor {
 final class ScreenView: NSView {
     var send: ((Data) -> Void)?
     var onReconnect: (() -> Void)?
+    /// The account typed into the sign-in form, and whether to keep it.
+    var onSignIn: ((String, String, Bool) -> Void)?
     var remoteLayout: ScreenWire.Layout? { didSet { needsLayout = true; window?.invalidateCursorRects(for: self) } }
     var canControl = true
     var cursorInPicture = false { didSet { window?.invalidateCursorRects(for: self) } }
@@ -613,6 +795,11 @@ final class ScreenView: NSView {
     private let label = NSTextField(wrappingLabelWithString: "")
     private let bannerLabel = NSTextField(labelWithString: "")
     private let again = NSButton(title: tr("Connect Again"), target: nil, action: nil)
+    private let accountField = NSTextField(string: "")
+    private let passwordField = NSSecureTextField(string: "")
+    private let rememberBox = NSButton(checkboxWithTitle: tr("Remember in this Mac’s keychain"), target: nil, action: nil)
+    private let signInButton = NSButton(title: tr("Sign In"), target: nil, action: nil)
+    private var signInViews: [NSView] { [accountField, passwordField, rememberBox, signInButton] }
     private var buttons: UInt8 = 0
     private var keysDown: Set<UInt16> = []
     private var pending: (x: Int, y: Int)?
@@ -635,7 +822,48 @@ final class ScreenView: NSView {
         again.target = self
         again.action = #selector(reconnect)
         again.isHidden = true
-        for sub in [label, bannerLabel, again] { addSubview(sub) }
+        accountField.placeholderString = tr("Account name")
+        passwordField.placeholderString = tr("Password")
+        for field in [accountField, passwordField] as [NSTextField] {
+            field.bezelStyle = .roundedBezel
+            field.font = .systemFont(ofSize: 13)
+        }
+        passwordField.target = self
+        passwordField.action = #selector(submitSignIn)
+        rememberBox.state = .on
+        (rememberBox.cell as? NSButtonCell)?.attributedTitle = NSAttributedString(string: rememberBox.title,
+            attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12)])
+        signInButton.bezelStyle = .rounded
+        signInButton.keyEquivalent = "\r"
+        signInButton.target = self
+        signInButton.action = #selector(submitSignIn)
+        for sub in [label, bannerLabel, again] + signInViews { addSubview(sub) }
+        for sub in signInViews { sub.isHidden = true }
+    }
+
+    /// Asks for the account that Mac's Screen Sharing takes: its name filled in with what that Mac
+    /// suggests, and why it is asked again.
+    func askSignIn(device: String, account: String, error: String?) {
+        var words = tr("Sign in to %@’s Screen Sharing with an account on that Mac.", device)
+        if let error { words = error + "\n" + words }
+        label.stringValue = words
+        label.isHidden = false
+        again.isHidden = true
+        if accountField.stringValue.isEmpty || error == nil { accountField.stringValue = account }
+        passwordField.stringValue = ""
+        for sub in signInViews { sub.isHidden = false }
+        needsLayout = true
+        window?.makeFirstResponder(accountField.stringValue.isEmpty ? accountField : passwordField)
+    }
+
+    @objc private func submitSignIn() {
+        let account = accountField.stringValue.trimmingCharacters(in: .whitespaces)
+        let password = passwordField.stringValue
+        guard !account.isEmpty, !password.isEmpty else { return }
+        for sub in signInViews { sub.isHidden = true }
+        passwordField.stringValue = ""
+        window?.makeFirstResponder(self)
+        onSignIn?(account, password, rememberBox.state == .on)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -653,6 +881,7 @@ final class ScreenView: NSView {
 
     /// Words over the picture (nil: none), and whether Connect Again is offered under them.
     func say(_ words: String?, again offered: Bool) {
+        for sub in signInViews { sub.isHidden = true }
         label.stringValue = words ?? ""
         label.isHidden = words == nil
         again.isHidden = !offered
@@ -676,6 +905,16 @@ final class ScreenView: NSView {
         label.frame = NSRect(x: bounds.midX - width / 2, y: bounds.midY - fitted.height / 2 - 18, width: width, height: fitted.height)
         again.sizeToFit()
         again.frame.origin = NSPoint(x: bounds.midX - again.frame.width / 2, y: label.frame.maxY + 12)
+        let field = min(bounds.width - 40, 280)
+        var y = label.frame.maxY + 14
+        for sub in [accountField, passwordField] as [NSView] {
+            sub.frame = NSRect(x: bounds.midX - field / 2, y: y, width: field, height: 24)
+            y += 32
+        }
+        rememberBox.sizeToFit()
+        rememberBox.frame.origin = NSPoint(x: bounds.midX - field / 2, y: y)
+        signInButton.sizeToFit()
+        signInButton.frame.origin = NSPoint(x: bounds.midX + field / 2 - signInButton.frame.width, y: y + 26)
         bannerLabel.sizeToFit()
         bannerLabel.frame = NSRect(x: 8, y: 8, width: min(bannerLabel.frame.width + 8, bounds.width - 16), height: bannerLabel.frame.height + 4)
     }
