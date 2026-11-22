@@ -21,7 +21,10 @@ enum Palette {
 /// but never more than its content needs: folding a block shortens the panel.
 enum Metrics {
     static let width: CGFloat = 280
-    static let titlebar: CGFloat = 30
+    /// The title row, from the window's top to where the content starts: its buttons, and the
+    /// window's own close and minimize buttons (TitleRowLights), sit in its middle (user 2026-11-22:
+    /// the buttons at the top were too close to the window's top).
+    static let titlebar: CGFloat = 38
     /// The side drawer (History or Settings) that slides out beside the column.
     static let drawer: CGFloat = 316
     static let minHeight: CGFloat = 260
@@ -711,7 +714,7 @@ struct SideDrawer: View {
 
             ZStack(alignment: .topLeading) {
                 HistorySection(settings: settings, controller: controller, full: true, fills: windowed)
-                    .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 10)
+                    .padding(.horizontal, 10).padding(.bottom, 10)
                     .opacity(showingSettings ? 0 : 1)
                     .offset(x: showingSettings ? -10 : 0)
                     .allowsHitTesting(!showingSettings)
@@ -721,12 +724,12 @@ struct SideDrawer: View {
                     if windowed {
                         ScrollView {
                             SettingsPage(settings: settings, controller: controller)
-                                .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 12)
+                                .padding(.horizontal, 10).padding(.bottom, 12)
                         }
                         .scrollIndicators(.never)
                     } else {
                         SettingsPage(settings: settings, controller: controller)
-                            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 12)
+                            .padding(.horizontal, 10).padding(.bottom, 12)
                     }
                 }
                 .opacity(showingSettings ? 1 : 0)
@@ -841,7 +844,7 @@ struct MainView: View {
 
     @ViewBuilder private var scroller: some View {
         if #available(macOS 26.0, *) {
-            ScrollView { measuredContent(top: 4) }
+            ScrollView { measuredContent() }
                 .scrollIndicators(.never)
                 .safeAreaBar(edge: .top, spacing: 0) { header }
                 .scrollEdgeEffectStyle(.soft, for: .top)
@@ -930,7 +933,8 @@ struct MainView: View {
             Reveal(open: resultOpen) { resultCard.padding(.top, 8) }
             remoteCard.padding(.top, 8)
         }
-        .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 10)
+        // Right under the title row, which keeps the space above the first block.
+        .padding(.horizontal, 10).padding(.bottom, 10)
         .contentTransition(.identity)
         .onChange(of: outcome, initial: true) { _, now in if resultOpen { shownResult = now } }
         .onChange(of: resultOpen) { _, open in if open { shownResult = outcome } }

@@ -358,6 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         column.sizingOptions = []; drawer.sizingOptions = []
         if #unavailable(macOS 26.0) { column.safeAreaRegions = [] }
         window.contentView = PanelContainer(column: column, drawer: drawer)
+        TitleRowLights.center(window)
         return window
     }
 
@@ -1134,4 +1135,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         print("Rendered \(URL(fileURLWithPath: path).lastPathComponent)")
     }
     #endif
+}
+
+/// The panel's close and minimize buttons in the middle of its title row, as the row's own buttons
+/// are (user 2026-11-22: the buttons at the top sat too close to the window's top). A plain title
+/// bar has them higher, and AppKit puts them back there whenever it lays the title bar out: each
+/// time they move, they are moved again, before anything is drawn. (A toolbar would make the title
+/// bar that tall, but it takes the clicks meant for the row's buttons.)
+@MainActor
+final class TitleRowLights {
+    private static var kept: [ObjectIdentifier: TitleRowLights] = [:]
+    private static let kinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+    private weak var window: NSWindow?
+    private var observers: [NSObjectProtocol] = []
+
+    static func center(_ window: NSWindow) {
+        kept[ObjectIdentifier(window)] = TitleRowLights(window)
+    }
+
+    private init(_ window: NSWindow) {
+        self.window = window
+        let center = NotificationCenter.default
+        var watched: [(Notification.Name, AnyObject)] = [(NSWindow.didResizeNotification, window), (NSWindow.didBecomeKeyNotification, window),
+                                                         (NSWindow.didResignKeyNotification, window)]
+        for kind in Self.kinds {
+            guard let button = window.standardWindowButton(kind) else { continue }
+            button.postsFrameChangedNotifications = true
+            watched.append((NSView.frameDidChangeNotification, button))
+        }
+        for (name, object) in watched {
+            observers.append(center.addObserver(forName: name, object: object, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.place() }
+            })
+        }
+        place()
+    }
+
+    func place() {
+        guard let window else { return }
+        for kind in Self.kinds {
+            guard let button = window.standardWindowButton(kind), let bar = button.superview else { continue }
+            // How far below the window's top the bar starts, and so where in the bar the row's middle is.
+            let below = window.frame.height - bar.convert(bar.bounds, to: nil).maxY
+            let middle = Metrics.titlebar / 2 - below
+            let y = (bar.isFlipped ? middle - button.frame.height / 2 : bar.bounds.height - middle - button.frame.height / 2).rounded()
+            if abs(button.frame.minY - y) > 0.25 { button.setFrameOrigin(NSPoint(x: button.frame.minX, y: y)) }
+        }
+    }
 }
