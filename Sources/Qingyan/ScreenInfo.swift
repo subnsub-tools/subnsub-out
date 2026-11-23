@@ -415,6 +415,34 @@ private struct ScreenRailButton: View {
     }
 }
 
+/// Large words at the picture's top left, on glass as the buttons are, while the screen is shown and
+/// a double-click on the picture would have the window work that Mac (user 2026-11-23: at the top
+/// left, large, in the system font).
+struct ScreenHint: View {
+    @ObservedObject var info: ScreenInfo
+
+    var body: some View {
+        VStack {
+            if info.live, !info.ended, !info.controlling, !info.viewOnly, !info.observing {
+                Text(tr("Double-click to control"))
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background { RailGlass().clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous)) }
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.strong, lineWidth: 0.8))
+                    .fixedSize()
+                    .padding(14)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .animation(Motion.reduced ? nil : .easeOut(duration: 0.18), value: info.controlling)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The panel's glass, blurring what is under it in the window (the picture), and never what a click
 /// lands on: the click goes to the button it is drawn under.
 private struct RailGlass: NSViewRepresentable {

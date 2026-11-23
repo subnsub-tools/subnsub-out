@@ -314,7 +314,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private func publish() {
         info.ended = ended
         info.controlling = view.canControl
-        container.live = live && !ended
+        container.working = live && !ended && view.canControl
     }
 
     private func end(_ why: String) {
@@ -1472,8 +1472,10 @@ enum SystemCursors {
 /// buttons under them, and with them the title strip (the window's close, minimize and zoom buttons
 /// and the Mac's name) over the picture's top and the line of what is known of the connection (a
 /// click there opens Info) over its bottom; all go again soon after the pointer is back on the
-/// picture. While the window connects, asks for an account or says why the screen is not shown, they
-/// stay. Behind it all, glass as out's panel is, seen around the picture where its proportions leave room.
+/// picture. That is while the window works that Mac. Until the picture is double-clicked, while a
+/// drag still moves the window, they all stay, and large words at the picture's top left say a
+/// double-click works that Mac (user 2026-11-23). While the window connects, asks for an account or
+/// says why the screen is not shown, they stay too. Behind it all, glass as out's panel is, seen around the picture where its proportions leave room.
 final class ScreenContainer: NSView {
     static let barHeight: CGFloat = 24
     /// The title strip: the window's own buttons and the Mac's name.
@@ -1497,11 +1499,11 @@ final class ScreenContainer: NSView {
             needsLayout = true
         }
     }
-    /// The screen is shown: the buttons under More, the title strip and the line come and go. Otherwise they stay.
-    var live = false {
+    /// The screen is shown and the window works that Mac: the buttons under More, the title strip and the line come and go. Otherwise they stay.
+    var working = false {
         didSet {
-            guard live != oldValue else { return }
-            if live { follow(pointer) } else { chrome(shown: true, animated: false) }
+            guard working != oldValue else { return }
+            if working { follow(pointer) } else { chrome(shown: true, animated: !Motion.reduced && window != nil) }
         }
     }
     private let info: ScreenInfo
@@ -1515,7 +1517,7 @@ final class ScreenContainer: NSView {
             glass.isHidden = fullScreen
             black.isHidden = !fullScreen
             let dark = fullScreen ? NSAppearance(named: .darkAqua) : nil
-            for view in [top, bottom, overlay, rail] as [NSView] { view.appearance = dark }
+            for view in [top, bottom, overlay, rail, hint] as [NSView] { view.appearance = dark }
         }
     }
     private let scroll = NSScrollView()
@@ -1524,6 +1526,7 @@ final class ScreenContainer: NSView {
     private let titleRow: NSHostingView<ScreenTitleRow>
     private let bar: NSHostingView<ScreenInfoBar>
     private let rail: ScreenRailHost
+    private let hint: ScreenHintHost
     private(set) var chromeShown = true
     private var hideTimer: Timer?
     private var tracking: NSTrackingArea?
@@ -1534,6 +1537,7 @@ final class ScreenContainer: NSView {
         titleRow = NSHostingView(rootView: ScreenTitleRow(info: info))
         bar = NSHostingView(rootView: ScreenInfoBar(info: info))
         rail = ScreenRailHost(rootView: ScreenRail(info: info))
+        hint = ScreenHintHost(rootView: ScreenHint(info: info))
         super.init(frame: frame)
         bar.rootView = ScreenInfoBar(info: info) { [weak self] in self?.onInfo?() }
         rail.rootView = ScreenRail(info: info, act: { [weak self] action in self?.onAct?(action) },
@@ -1543,6 +1547,7 @@ final class ScreenContainer: NSView {
         titleRow.sizingOptions = []; titleRow.safeAreaRegions = []
         bar.sizingOptions = []; bar.safeAreaRegions = []
         rail.sizingOptions = []; rail.safeAreaRegions = []
+        hint.sizingOptions = []; hint.safeAreaRegions = []
         glass.material = .hudWindow
         glass.blendingMode = .behindWindow
         glass.state = .active
@@ -1572,7 +1577,7 @@ final class ScreenContainer: NSView {
         scroll.contentView.drawsBackground = false
         scroll.documentView = screen
         screen.onLayout = { [weak self] in self?.needsLayout = true }
-        for sub in [glass, black, scroll, overlay, bottom, top, rail] as [NSView] { addSubview(sub) }
+        for sub in [glass, black, scroll, overlay, hint, bottom, top, rail] as [NSView] { addSubview(sub) }
         // Info open keeps them; once it closes they go as the pointer says.
         watchingInfo = info.$showingInfo.dropFirst().sink { [weak self] showing in
             guard !showing else { return }
@@ -1599,6 +1604,7 @@ final class ScreenContainer: NSView {
         bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
         bar.frame = bottom.bounds
         rail.frame = railRoom
+        hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - Self.barHeight, 0))
         rail.buttons = railRegion
         overlay.top = chromeShown ? Self.rowHeight : 0
         // AppKit shows the window's buttons again as it lays its title bar out.
@@ -1655,7 +1661,7 @@ final class ScreenContainer: NSView {
     /// The pointer on More brings the rest of the buttons, the title strip and the line; on them,
     /// they stay; anywhere else, they go a moment later.
     private func follow(_ point: NSPoint?) {
-        guard live else { return }
+        guard working else { return }
         let over: Bool
         if let point {
             over = chromeShown ? onChrome(point) : railFrame(of: ScreenRail.moreIndex).contains(point)
@@ -1677,7 +1683,7 @@ final class ScreenContainer: NSView {
 
     private func hideIfAway() {
         hideTimer = nil
-        guard live, chromeShown, !info.showingInfo else { return }
+        guard working, chromeShown, !info.showingInfo else { return }
         if let point = pointer, onChrome(point) { return }
         chrome(shown: false, animated: true)
     }
@@ -1730,6 +1736,11 @@ final class ScreenContainer: NSView {
         get { overlay.banner }
         set { overlay.banner = newValue }
     }
+}
+
+/// The words at the picture's top left; a click there goes on to the picture.
+final class ScreenHintHost: NSHostingView<ScreenHint> {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The rail's buttons in the window. Its room is the whole of the window's right side, for a button's
