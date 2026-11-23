@@ -431,7 +431,11 @@ public enum MissReason: String, Sendable {
 public struct DeliveryOutcome: ExpressibleByStringLiteral, Sendable {
     public let message: String
     public let miss: MissReason?
-    public init(message: String, miss: MissReason? = nil) { self.message = message; self.miss = miss }
+    /// The text is on this Mac's clipboard; by default, whenever it missed a text field.
+    public let onClipboard: Bool
+    public init(message: String, miss: MissReason? = nil, onClipboard: Bool? = nil) {
+        self.message = message; self.miss = miss; self.onClipboard = onClipboard ?? (miss != nil)
+    }
     public init(stringLiteral value: String) { self.init(message: value) }
 }
 
@@ -1058,7 +1062,7 @@ public final class RemoteReceiver {
         do {
             let outcome = try await deliver?(request) ?? ""
             // Said either way, so that the sending Mac never has to guess from the words.
-            var reply: [String: Any] = ["ok": true, "message": outcome.message, "clipboard": outcome.miss != nil]
+            var reply: [String: Any] = ["ok": true, "message": outcome.message, "clipboard": outcome.onClipboard]
             if let miss = outcome.miss { reply["miss"] = miss.rawValue }
             return (reply, .close)
         } catch let problem as DeliveryProblem {

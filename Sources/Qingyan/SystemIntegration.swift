@@ -574,6 +574,9 @@ struct WriteResult {
     var miss: MissReason?
     /// The other Mac the text went to, by name; nil when it was written on this Mac.
     var peer: String?
+    /// It went in, as the app in front took it from the clipboard, but no text field was seen: it
+    /// is not something to take back with Backspace or to watch for corrections later.
+    var unseen = false
 }
 
 /// Why the text could not be written in front, with the words for it.
@@ -676,13 +679,33 @@ struct TextTarget {
         }
     }
 
-    /// Resolve the destination only when the final text is ready.
-    static func insertAtFocus(_ text: String) throws -> WriteResult {
+    /// Resolve the destination only when the final text is ready. With no text field in sight, the
+    /// app in front taking the text from the clipboard after ⌘V is what says it went in.
+    static func insertAtFocus(_ text: String) async throws -> WriteResult {
         let current = try capture()
         let name = current.app.localizedName ?? tr("the target app")
-        try paste(text, keep: !current.editable)
-        if current.editable { return WriteResult(summary: tr("Inserted into %@", name)) }
-        return WriteResult(summary: tr("Sent to %@ · No text field found; the text stays on the clipboard (⌘V)", name), onClipboard: true, miss: .noField)
+        if current.editable {
+            try paste(text)
+            return WriteResult(summary: tr("Inserted into %@", name))
+        }
+        switch try await pasteWatched(text) {
+        case .taken: return WriteResult(summary: tr("Inserted into %@", name), unseen: true)
+        case .left: return WriteResult(summary: tr("Sent to %@ · No text field found; the text stays on the clipboard (⌘V)", name), onClipboard: true, miss: .noField)
+        // A copy made meanwhile is on the clipboard: the text is in History alone.
+        case .superseded: return WriteResult(summary: tr("Sent to %@ · No text field found", name), miss: .noField)
+        }
+    }
+
+    /// Pastes `text` and tells whether an app took it from the clipboard; not taken, it stays there.
+    private static func pasteWatched(_ text: String) async throws -> WatchedPaste {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else {
+            throw TargetProblem(miss: .pasteFailed, message: tr("Could not send the paste keystroke. Click the text to copy it."))
+        }
+        down.flags = .maskCommand; up.flags = .maskCommand
+        return await PasteboardLease.general.supplyWatched(text) {
+            down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+        }
     }
 
     /// `keep`: the text stays on the clipboard afterwards.

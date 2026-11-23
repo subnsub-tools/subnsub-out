@@ -115,6 +115,8 @@ struct Checks {
         }
         do { try clipboard(); print("PASS Native pasteboard: rich content, rapid pastes, newer user copy, text kept for ⌘V") }
         catch { failed += 1; print("FAIL Clipboard: \(error.localizedDescription)") }
+        do { try await watchedClipboard(); print("PASS Watched paste: an app that takes the text confirms it and the clipboard comes back; not taken, the text stays; a newer copy is left alone") }
+        catch { failed += 1; print("FAIL Watched paste: \(error.localizedDescription)") }
         do { try await archive(); print("PASS Local history: offline audio, cancelled reader, restart, retention, delete and disk failure, retry pace") }
         catch { failed += 1; print("FAIL History: \(error.localizedDescription)") }
         do { try await channel(); print("PASS Encrypted channel over real TCP: both ends prove their keys, frames round-trip, a forged or replayed frame ends the connection") }
@@ -1586,6 +1588,47 @@ struct Checks {
         lease.supply("Pasted and kept", keep: true) { seen = board.string(forType: .string) ?? "" }
         lease.restore()
         try check(seen == "Pasted and kept" && board.string(forType: .string) == "Pasted and kept", "a keeping paste leaves its text")
+    }
+
+    /// A paste into an app that shows no text field is confirmed by the app taking the text.
+    @MainActor static func watchedClipboard() async throws {
+        let board = NSPasteboard(name: .init("local.hopo.qingyan.test.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+        board.clearContents(); board.setString("Original clipboard", forType: .string)
+        let lease = PasteboardLease(board: board)
+        var seen = ""
+        var marked = false
+        let taken = await lease.supplyWatched("Taken by an app", hold: 0.05, wait: 0.5) {
+            marked = board.types?.contains(transient) == true
+            seen = board.string(forType: .string) ?? ""
+        }
+        try check(taken == .taken && seen == "Taken by an app", "the text is there for the app, and its taking it is seen")
+        try check(marked, "the text is marked transient for clipboard history tools")
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try check(board.string(forType: .string) == "Original clipboard", "taken: what the clipboard held comes back")
+        let missed = await lease.supplyWatched("Not taken", hold: 0.05, wait: 0.1) {}
+        try check(missed == .left, "nothing took the text: not confirmed")
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try check(board.string(forType: .string) == "Not taken" && board.types?.contains(transient) != true,
+                  "not taken: the text stays on the clipboard for ⌘V, unmarked")
+        let overtaken = await lease.supplyWatched("Pasted", hold: 0.05, wait: 0.1) {
+            board.clearContents(); board.setString("Copied meanwhile", forType: .string)
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try check(overtaken == .superseded && board.string(forType: .string) == "Copied meanwhile", "a newer copy is left alone")
+        // Text kept while the paste waits does not take its place before the app has it.
+        var during = ""
+        let first = await lease.supplyWatched("Pasted first", hold: 0.05, wait: 0.5) {
+            lease.keep("Kept meanwhile")
+            during = board.string(forType: .string) ?? ""
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try check(first == .taken && during == "Pasted first" && board.string(forType: .string) == "Kept meanwhile",
+                  "kept meanwhile: the paste keeps the clipboard, then the kept text is there")
+        let untaken = await lease.supplyWatched("Not taken either", hold: 0.05, wait: 0.1) { lease.keep("Kept instead") }
+        try check(untaken == .superseded && board.string(forType: .string) == "Kept instead",
+                  "kept meanwhile and nothing took the paste: the kept text is there, the paste's is in History")
     }
 
     @MainActor static func archive() async throws {

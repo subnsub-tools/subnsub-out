@@ -377,7 +377,7 @@ final class DictationController: ObservableObject {
             deliver: { [weak self] request in
                 guard let self else { throw VoiceError(tr("out is quitting on the other Mac.")) }
                 if request.field == nil { await TextTarget.awaitFocus() }
-                return try self.receive(request)
+                return try await self.receive(request)
             })
     }
 
@@ -406,7 +406,7 @@ final class DictationController: ObservableObject {
         dismissOverlay?()
     }
 
-    private func receive(_ request: RemoteReceiver.Request) throws -> DeliveryOutcome {
+    private func receive(_ request: RemoteReceiver.Request) async throws -> DeliveryOutcome {
         if !request.text.isEmpty && request.field == nil {
             do { try settings.addHistory(HistoryEntry(text: request.text, mode: request.mode, seconds: request.seconds)) }
             catch { settings.historyMessage = tr("Text from another Mac was received but could not be saved to History on this Mac. Check the disk space.") }
@@ -418,16 +418,19 @@ final class DictationController: ObservableObject {
                 outcome = try TextTarget.rewriteField(from: field, to: request.text)
                 pasted = nil
             } else {
-                outcome = try request.replace.map { try TextTarget.replace($0, with: request.text, untouched: cursorUntouched(after: $0)) }
-                    ?? TextTarget.insertAtFocus(request.text)
-                if outcome.miss == nil { notePasted(request.text) } else { pasted = nil }
+                if let previous = request.replace {
+                    outcome = try TextTarget.replace(previous, with: request.text, untouched: cursorUntouched(after: previous))
+                } else {
+                    outcome = try await TextTarget.insertAtFocus(request.text)
+                }
+                if outcome.miss == nil, !outcome.unseen { notePasted(request.text) } else { pasted = nil }
             }
             // A recording of this Mac's own, or one starting, keeps its capsule (and its session).
-            guard !busy, !starting else { return DeliveryOutcome(message: outcome.summary, miss: outcome.miss) }
+            guard !busy, !starting else { return DeliveryOutcome(message: outcome.summary, miss: outcome.miss, onClipboard: outcome.onClipboard) }
             sessionID = id
             result = request.field == nil ? request.text : ""; latency = nil
             phase = .done
-            if let miss = outcome.miss { capsuleResult = .notWritten(Self.missTitle(miss, peer: nil), Self.missLine(miss, clipboard: .here)) }
+            if let miss = outcome.miss { capsuleResult = .notWritten(Self.missTitle(miss, peer: nil), Self.missLine(miss, clipboard: outcome.onClipboard ? .here : nil)) }
             else { capsuleResult = outcome.onClipboard ? .onClipboard : .inserted }
             message = tr("From another Mac · %@ · Saved to History", outcome.summary)
             presentOverlay?()
@@ -437,7 +440,7 @@ final class DictationController: ObservableObject {
                 guard let self, self.sessionID == id, self.phase == .done else { return }
                 self.dismissOverlay?()
             }
-            return DeliveryOutcome(message: outcome.summary, miss: outcome.miss)
+            return DeliveryOutcome(message: outcome.summary, miss: outcome.miss, onClipboard: outcome.onClipboard)
         } catch {
             let kept = keepOnClipboard(request.text)
             if !busy, !starting {
@@ -747,8 +750,8 @@ final class DictationController: ObservableObject {
             lastDelivered = text.isEmpty ? nil : Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
         case .insert:
             await TextTarget.awaitFocus()
-            outcome = try TextTarget.insertAtFocus(text)
-            if outcome.miss == nil {
+            outcome = try await TextTarget.insertAtFocus(text)
+            if outcome.miss == nil, !outcome.unseen {
                 notePasted(text)
                 lastDelivered = Delivered(text: text, peer: nil, mark: FocusMark.current(), at: Date())
                 if settings.preferences.learnCorrections { startWatch(written: text) }
@@ -1137,6 +1140,8 @@ final class DictationController: ObservableObject {
                     var outcome = ""
                     var onClipboard = false
                     var missed = false
+                    // Missed a field on this Mac and not on the clipboard either: in History alone.
+                    var historyOnly = false
                     // Meant for another Mac and not typed there: said on the capsule at once, with why.
                     var notTyped: (title: String, detail: String)?
                     do {
@@ -1146,8 +1151,9 @@ final class DictationController: ObservableObject {
                         parts.append(tr("Saved to History"))
                         outcome = parts.joined(separator: " · ")
                         onClipboard = written.onClipboard
+                        historyOnly = written.miss != nil && written.peer == nil && !written.onClipboard
                         if let miss = written.miss, let peer = written.peer {
-                            notTyped = (Self.missTitle(miss, peer: peer), Self.missLine(miss, clipboard: .there))
+                            notTyped = (Self.missTitle(miss, peer: peer), Self.missLine(miss, clipboard: written.onClipboard ? .there : nil))
                         }
                     }
                     catch {
@@ -1165,7 +1171,8 @@ final class DictationController: ObservableObject {
                         }
                     }
                     guard self.sessionID == id else { return }
-                    self.capsuleResult = notTyped.map { .notWritten($0.title, $0.detail) } ?? (onClipboard ? .onClipboard : .inserted)
+                    self.capsuleResult = notTyped.map { .notWritten($0.title, $0.detail) }
+                        ?? (onClipboard ? .onClipboard : historyOnly ? .savedToHistory : .inserted)
                     self.message = outcome
                     self.latency = self.stopTime.map { Date().timeIntervalSince($0) }
                     self.phase = .done

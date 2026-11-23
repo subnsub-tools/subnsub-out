@@ -322,6 +322,7 @@
  "Sending to %@…": "正在发送至 %@…",
  "Receiving from %@…": "正在从 %@ 接收…",
  "Sent to %@ · No text field found; the text stays on the clipboard (⌘V)": "已发送至 %@ · 未识别到输入框，文本已保留在剪贴板（⌘V）",
+ "Sent to %@ · No text field found": "已发送至 %@ · 未识别到输入框",
  "Set up": "设置",
  "Settings": "偏好设置",
  "Settings (⌘,)": "偏好设置（⌘,）",
