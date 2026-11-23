@@ -207,6 +207,36 @@ struct Checks {
         let cursor = ScreenWire.cursorShape(shape)
         try check(cursor?.id == 9 && cursor?.hotX == 3 && cursor?.hotY == 4 && cursor?.width == 2 && cursor?.height == 1 && cursor?.scale == 2 && cursor?.rgba.count == 8
                   && ScreenWire.cursorShape(shape.prefix(15)) == nil, "a pointer shape, and not one shorter than its pixels")
+        // A pointer's look, for showing this Mac's own pointer in place of the same one sent as a picture.
+        func drawn(_ side: Int, mark: Bool = false, _ inside: (Double, Double) -> Bool) -> [UInt8] {
+            var pixels = [UInt8](repeating: 0, count: side * side * 4)
+            for y in 0..<side {
+                for x in 0..<side {
+                    let u = (Double(x) + 0.5) / Double(side), v = (Double(y) + 0.5) / Double(side)
+                    guard inside(u, v) else { continue }
+                    // The mark is a small light patch within the shape: its outline stays as it is.
+                    let marked = mark && u > 0.12 && u < 0.24 && v > 0.12 && v < 0.24
+                    let i = (y * side + x) * 4
+                    let shade: UInt8 = marked ? 240 : (inside(u * 1.25, v * 1.25) ? 20 : 240)
+                    pixels[i] = shade; pixels[i + 1] = shade; pixels[i + 2] = shade; pixels[i + 3] = 255
+                }
+            }
+            return pixels
+        }
+        func look(_ side: Int, hot: Double = 0, mark: Bool = false, _ inside: @escaping (Double, Double) -> Bool) -> ScreenWire.CursorSignature? {
+            ScreenWire.CursorSignature(rgba: drawn(side, mark: mark, inside), width: side, height: side, hotX: hot * Double(side), hotY: hot * Double(side))
+        }
+        let wedge: (Double, Double) -> Bool = { $0 + $1 < 1 }, bar: (Double, Double) -> Bool = { abs($1 - 0.5) < 0.15 && $0 > 0.05 && $0 < 0.95 }
+        guard let small = look(24, wedge), let large = look(41, wedge), let other = look(24, bar), let moved = look(41, hot: 0.6, wedge),
+              let marked = look(24, mark: true, wedge) else { throw VoiceError("a pointer's look could not be read") }
+        try check(small.nearness(to: large).map { $0 < 0.08 } == true && small.nearness(to: other) == nil && small.nearness(to: moved) == nil,
+                  "the same shape at another size is the same pointer; another shape, or its hot spot elsewhere, is not")
+        try check(ScreenWire.cursor(like: large, among: [("wedge", [small]), ("bar", [other])]) == "wedge", "the pointer a shape is")
+        try check(ScreenWire.cursor(like: other, among: [("wedge", [small, large])]) == nil, "none when it is none of them")
+        try check(ScreenWire.cursor(like: large, among: [("wedge", [small]), ("marked", [marked])]) == nil,
+                  "none when two are as near: \(String(describing: large.nearness(to: small))) and \(String(describing: large.nearness(to: marked)))")
+        try check(ScreenWire.CursorSignature(rgba: [UInt8](repeating: 0, count: 16 * 16 * 4), width: 16, height: 16, hotX: 0, hotY: 0) == nil,
+                  "a shape with nothing in it has no look")
         // Decoder records, as the other Mac's encoder writes them.
         let sps = Data([0x67, 0x64, 0x00, 0x28, 0xAC]), pps = Data([0x68, 0xEE, 0x3C])
         var avcC = Data([1, sps[1], sps[2], sps[3], 0xFF, 0xE1, 0, UInt8(sps.count)]) + sps

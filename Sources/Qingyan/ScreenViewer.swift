@@ -1367,9 +1367,12 @@ struct RemoteCursor {
     struct Shape {
         let hotX: Int, hotY: Int, width: Int, height: Int, scale: Int
         let image: NSImage?
+        /// How the shape looks, for finding this Mac's own pointer of the same look (SystemCursors).
+        let signature: ScreenWire.CursorSignature?
         init(_ shape: ScreenWire.CursorShape) {
             hotX = shape.hotX; hotY = shape.hotY; width = shape.width; height = shape.height; scale = shape.scale
             var pixels = [UInt8](shape.rgba)
+            signature = ScreenWire.CursorSignature(rgba: pixels, width: shape.width, height: shape.height, hotX: Double(shape.hotX), hotY: Double(shape.hotY))
             let rep = pixels.withUnsafeMutableBufferPointer { buffer -> NSBitmapImageRep? in
                 var planes: UnsafeMutablePointer<UInt8>? = buffer.baseAddress
                 return NSBitmapImageRep(bitmapDataPlanes: &planes, pixelsWide: shape.width, pixelsHigh: shape.height, bitsPerSample: 8,
@@ -1393,6 +1396,45 @@ struct RemoteCursor {
         let image = NSImage(size: size)
         image.addRepresentations(source.representations)
         return NSCursor(image: image, hotSpot: NSPoint(x: CGFloat(shape.hotX) / CGFloat(shape.scale) * k, y: CGFloat(shape.hotY) / CGFloat(shape.scale) * k))
+    }
+}
+
+/// This Mac's own pointers, each known by how it looks at a few sizes. The other Mac sends its pointer
+/// as a picture at a pixel a point, whatever its display (its Screen Sharing reads it that way), so
+/// drawn here it is soft on a display of two pixels a point (user 2026-11-23: the pointer in the
+/// screen window is not sharp enough). A shape that is one of these is shown as this Mac's pointer of
+/// that kind, which the system draws at this display's scale; any other is shown as it was sent.
+@MainActor
+enum SystemCursors {
+    private static let known: [(NSCursor, [ScreenWire.CursorSignature])] = {
+        var cursors: [NSCursor] = [.arrow, .iBeam, .crosshair, .closedHand, .openHand, .pointingHand, .iBeamCursorForVerticalLayout]
+        if #available(macOS 15.0, *) {
+            cursors += [.columnResize(directions: .left), .columnResize(directions: .right), .columnResize(directions: .all),
+                        .rowResize(directions: .up), .rowResize(directions: .down), .rowResize(directions: .all)]
+            // A window's edges and corners: opposite ones share a pointer.
+            cursors += [NSCursor.FrameResizePosition.top, .left, .topLeft, .topRight].map { NSCursor.frameResize(position: $0, directions: .all) }
+        } else {
+            cursors += [.resizeLeft, .resizeRight, .resizeLeftRight, .resizeUp, .resizeDown, .resizeUpDown]
+        }
+        // Another Mac's pointer may be set larger or smaller than this one's.
+        return cursors.map { cursor in (cursor, [1, 1.5, 2, 3].compactMap { signature(cursor, at: $0) }) }.filter { !$0.1.isEmpty }
+    }()
+
+    static func like(_ shape: ScreenWire.CursorSignature) -> NSCursor? { ScreenWire.cursor(like: shape, among: known) }
+
+    private static func signature(_ cursor: NSCursor, at scale: CGFloat) -> ScreenWire.CursorSignature? {
+        let image = cursor.image
+        let width = Int((image.size.width * scale).rounded()), height = Int((image.size.height * scale).rounded())
+        guard width > 0, height > 0, width <= 512, height <= 512,
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
+                                            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap), let data = bitmap.bitmapData else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        image.draw(in: NSRect(x: 0, y: 0, width: width, height: height), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        return ScreenWire.CursorSignature(rgba: Array(UnsafeBufferPointer(start: data, count: width * height * 4)), width: width, height: height,
+                                          hotX: Double(cursor.hotSpot.x * scale), hotY: Double(cursor.hotSpot.y * scale))
     }
 }
 
@@ -1820,7 +1862,14 @@ final class ScreenView: NSView {
     /// shows behind what it says then).
     var showsPicture = false { didSet { needsLayout = true } }
     var cursorInPicture = false { didSet { window?.invalidateCursorRects(for: self) } }
-    var remoteCursor: RemoteCursor? { didSet { applyCursor() } }
+    var remoteCursor: RemoteCursor? {
+        didSet {
+            systemCursor = remoteCursor?.shape.signature.flatMap { SystemCursors.like($0) }
+            applyCursor()
+        }
+    }
+    /// This Mac's own pointer of the look the other Mac's has, when it is one of them.
+    private var systemCursor: NSCursor?
     var displayLayer: AVSampleBufferDisplayLayer? {
         didSet {
             if oldValue !== held?.layer { oldValue?.removeFromSuperlayer() }
@@ -1979,6 +2028,7 @@ final class ScreenView: NSView {
 
     private var cursor: NSCursor {
         guard !cursorInPicture, let remoteCursor, let layout = remoteLayout else { return .arrow }
+        if let systemCursor { return systemCursor }
         let k = picture.width / CGFloat(layout.width)
         return remoteCursor.cursor(pointsPerPoint: k) ?? .arrow
     }

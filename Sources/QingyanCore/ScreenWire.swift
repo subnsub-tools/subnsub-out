@@ -318,6 +318,103 @@ public extension ScreenWire {
                            rgba: Data(body[start..<(start + width * height * 4)]))
     }
 
+    /// What a pointer shape looks like, whatever its size: the Mac shown sends its pointer as a
+    /// picture at a pixel a point, which is soft on a display of two; a shape that is one of this
+    /// Mac's own pointers can be shown as that pointer instead, which the system draws sharp. The
+    /// shape's box is cut into a grid: how opaque each cell is, and how light where it is solid.
+    struct CursorSignature: Sendable {
+        public static let side = 12
+        public private(set) var opaque = [Float](repeating: 0, count: side * side)
+        public private(set) var light = [Float](repeating: 0, count: side * side)
+        public private(set) var solid = [Float](repeating: 0, count: side * side)
+        /// The shape's width over its height, and the hot spot within its box (0 to 1 across it).
+        public private(set) var aspect: Float = 1
+        public private(set) var hotX: Float = 0, hotY: Float = 0
+
+        /// From RGBA rows, top row first, and the hot spot in pixels from the top left.
+        public init?(rgba: [UInt8], width: Int, height: Int, hotX hx: Double, hotY hy: Double) {
+            guard width > 0, height > 0, rgba.count >= width * height * 4 else { return nil }
+            var x0 = width, y0 = height, x1 = -1, y1 = -1
+            for y in 0..<height {
+                for x in 0..<width where rgba[(y * width + x) * 4 + 3] >= 96 {
+                    x0 = min(x0, x); x1 = max(x1, x); y0 = min(y0, y); y1 = max(y1, y)
+                }
+            }
+            guard x1 >= x0, y1 >= y0 else { return nil }
+            let boxWidth = x1 - x0 + 1, boxHeight = y1 - y0 + 1
+            guard boxWidth >= 3 || boxHeight >= 3 else { return nil }
+            aspect = Float(boxWidth) / Float(boxHeight)
+            hotX = Float((hx - Double(x0)) / Double(boxWidth)); hotY = Float((hy - Double(y0)) / Double(boxHeight))
+            let n = Self.side
+            var weight = [Float](repeating: 0, count: n * n)
+            // Each pixel of the box goes to the cells it lies over, by its share in each.
+            for y in 0..<boxHeight {
+                let top = Float(y) * Float(n) / Float(boxHeight), bottom = Float(y + 1) * Float(n) / Float(boxHeight)
+                for x in 0..<boxWidth {
+                    let i = ((y + y0) * width + x + x0) * 4
+                    let alpha = Float(rgba[i + 3]) / 255
+                    let lightness = (0.299 * Float(rgba[i]) + 0.587 * Float(rgba[i + 1]) + 0.114 * Float(rgba[i + 2])) / 255
+                    let left = Float(x) * Float(n) / Float(boxWidth), right = Float(x + 1) * Float(n) / Float(boxWidth)
+                    var row = Int(top)
+                    while row < n, Float(row) < bottom {
+                        let tall = min(bottom, Float(row + 1)) - max(top, Float(row))
+                        var column = Int(left)
+                        while column < n, Float(column) < right {
+                            let share = (min(right, Float(column + 1)) - max(left, Float(column))) * tall
+                            if share > 0 {
+                                let cell = row * n + column
+                                weight[cell] += share; opaque[cell] += alpha * share
+                                // Only where the shape is solid: its edges are the same whether or not
+                                // the colors were multiplied by their alpha.
+                                if alpha >= 0.9 { solid[cell] += share; light[cell] += lightness * share }
+                            }
+                            column += 1
+                        }
+                        row += 1
+                    }
+                }
+            }
+            for cell in 0..<(n * n) {
+                if solid[cell] > 0 { light[cell] /= solid[cell] }
+                if weight[cell] > 0 { opaque[cell] /= weight[cell]; solid[cell] /= weight[cell] }
+            }
+        }
+
+        /// How far this shape is from another, when it could be the same pointer at another size
+        /// (the same proportions, the hot spot at the same place, the same outline and lightness
+        /// within what drawing a pointer at another size changes); nil when it is not.
+        public func nearness(to other: CursorSignature) -> Float? {
+            guard abs(log(aspect / other.aspect)) <= 0.14, abs(hotX - other.hotX) <= 0.14, abs(hotY - other.hotY) <= 0.14 else { return nil }
+            var outline: Float = 0, lightness: Float = 0, both: Float = 0
+            for cell in 0..<opaque.count {
+                outline += abs(opaque[cell] - other.opaque[cell])
+                let shared = min(solid[cell], other.solid[cell])
+                lightness += abs(light[cell] - other.light[cell]) * shared; both += shared
+            }
+            outline /= Float(opaque.count)
+            lightness = both > 0 ? lightness / both : 1
+            guard outline <= 0.09, lightness <= 0.17 else { return nil }
+            return outline + lightness / 2
+        }
+    }
+
+    /// The one of `known` a shape is, each known by how it looks at a few sizes: the nearest, unless
+    /// another is nearly as near (two pointers that differ by a small mark are not told apart).
+    static func cursor<Known>(like shape: CursorSignature, among known: [(Known, [CursorSignature])]) -> Known? {
+        var best: (index: Int, nearness: Float)?, second: Float?
+        for (index, entry) in known.enumerated() {
+            guard let nearness = entry.1.compactMap({ shape.nearness(to: $0) }).min() else { continue }
+            if best == nil || nearness < best!.nearness {
+                second = best?.nearness; best = (index, nearness)
+            } else if second == nil || nearness < second! {
+                second = nearness
+            }
+        }
+        guard let best else { return nil }
+        if let second, second - best.nearness < 0.03 { return nil }
+        return known[best.index].0
+    }
+
     static func cursorID(_ body: Data) -> UInt32? {
         guard body.count >= 4 else { return nil }
         let b = body.startIndex
