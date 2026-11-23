@@ -59,6 +59,8 @@ final class ScreenInfo: ObservableObject {
     @Published var kinds = false
     /// What became of a standard session's picture pieces (ScreenLink.onPieces).
     @Published var pieces = ""
+    /// What the helper on that Mac said of a standard session (status "note").
+    @Published var notes: [String] = []
     @Published var sound = true
     @Published var observing = false
     @Published var viewOnly = false
@@ -88,6 +90,7 @@ final class ScreenInfo: ObservableObject {
         layout = nil
         codec = ""
         pieces = ""
+        notes = []
         account = ""
         since = nil
         live = false
@@ -546,6 +549,7 @@ struct ScreenInfoView: View {
                         : info.own ? tr("High Performance: a display of its own that follows the window") : tr("High Performance: that Mac’s main display"))
                     row(tr("Codec"), info.codec.isEmpty ? "—" : ScreenInfo.codecName(info.codec))
                     if !info.pieces.isEmpty { row(tr("Picture pieces"), info.pieces) }
+                    ForEach(Array(info.notes.enumerated()), id: \.offset) { _, note in row("", note) }
                     number(tr("Frame rate"), info.helper["fps"], "%.1f fps")
                     if let k = info.helper["kbps"] { row(tr("Bit rate"), ScreenInfo.rate(k)) }
                     number(tr("Sound packets"), info.helper["audio"], "%.0f /s")

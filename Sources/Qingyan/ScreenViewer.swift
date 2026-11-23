@@ -321,6 +321,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
                 if let value = status[key] as? NSNumber { numbers[key] = value.doubleValue }
             }
             info.helper = numbers
+        case "note":
+            // What the helper on that Mac says of a standard session, the newest last.
+            if let text = status["text"] as? String {
+                info.notes = Array((info.notes + [String(text.prefix(300))]).suffix(16))
+            }
         case "cursor":
             if status["picture"] as? Bool == true { view.cursorInPicture = true }
         case "clip":
