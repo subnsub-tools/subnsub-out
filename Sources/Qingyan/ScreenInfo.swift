@@ -243,7 +243,10 @@ struct ScreenTitleRow: View {
 /// The window's buttons, round and floating over the picture down its right side (user 2026-11-23:
 /// no buttons at the top; two floating buttons at the right, Full Screen and More, as the preview
 /// window of the user's playhub has them; the pointer on More brings the rest; each is named only
-/// while the pointer is on it; all of them at the window's right, in full screen too). Lit while on.
+/// while the pointer is on it; all of them at the window's right, in full screen too). Two looks of one kind, following
+/// the system's appearance (user 2026-11-23, the third of four on http://m2:8846/): in the light
+/// appearance a button is white with a black sign and, while on, black with a white sign; in the
+/// dark appearance and in full screen, the other way round.
 /// Close is above them and always there, as they are, and every button looks the same whatever its
 /// state: one that cannot be used now is not shown, never grayed (user 2026-11-23).
 /// There is no Screenshot, Disconnect, Observe or Shared Clipboard button (user 2026-11-23: none of
@@ -276,7 +279,6 @@ struct ScreenRail: View {
     static let always = 3
     static let moreIndex = 2
     static let scalingIndex = 3
-    static let lit = Color(red: 0.72, green: 0.84, blue: 0.60)
 
     /// How many buttons a column holds in a room that tall.
     static func rows(in height: CGFloat) -> Int { max(2, Int((height + gap) / (side + gap))) }
@@ -372,23 +374,24 @@ private struct ScreenRailButton: View {
     @State private var hovered = false
     @Environment(\.colorScheme) private var scheme
 
-    /// On, in the light green on dark glass and the accent on light glass.
-    private var lit: Color { scheme == .dark ? ScreenRail.lit : Palette.accent }
+    /// Black with a white sign, or white with a black sign: off as the appearance is, on the other way round.
+    private var black: Bool { (scheme == .dark) != active }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(active ? lit : Palette.ink)
+                .foregroundStyle(black ? Color.white : Color(white: 0.07))
                 .frame(width: ScreenRail.side, height: ScreenRail.side)
                 .background {
                     ZStack {
                         RailGlass()
-                        if hovered { Color.primary.opacity(0.1) }
+                        black ? Color(white: 0.08).opacity(0.8) : Color.white.opacity(0.88)
+                        if hovered { (black ? Color.white : Color.black).opacity(0.12) }
                     }
                     .clipShape(Circle())
                 }
-                .overlay(Circle().strokeBorder(active ? lit.opacity(0.7) : Palette.strong, lineWidth: 0.8))
+                .overlay(Circle().strokeBorder(black ? Color.white.opacity(0.22) : Color.black.opacity(0.15), lineWidth: 0.8))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
