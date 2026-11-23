@@ -51,11 +51,15 @@ final class ScreenInfo: ObservableObject {
     @Published var local = (fps: 0.0, kbps: 0.0)
     @Published var layout: ScreenWire.Layout?
     @Published var codec = ""
+    /// The session is High Performance, on a display of its own; or of the standard kind, which has
+    /// no sound. `kinds`: that Mac makes a display for a session, and the window has the button
+    /// that chooses one.
     @Published var own = false
+    @Published var standard = false
+    @Published var kinds = false
     @Published var sound = true
     @Published var observing = false
     @Published var viewOnly = false
-    @Published var fullQuality = false
     @Published var account = ""
     @Published var since: Date?
     @Published var live = false
@@ -173,7 +177,7 @@ final class ScreenInfo: ObservableObject {
         kbps >= 1000 ? String(format: "%.1f Mbps", kbps / 1000) : String(format: "%.0f kbps", kbps)
     }
 
-    static func codecName(_ codec: String) -> String { codec == "hevc" ? "HEVC" : codec == "avc" ? "H.264" : codec }
+    static func codecName(_ codec: String) -> String { codec == "hevc" ? "HEVC" : codec == "avc" ? "H.264" : codec == "pixels" ? "zlib" : codec }
 
     /// The window's bottom line: the road, the path and its ping; the display, the codec, pictures
     /// and bits a second, and whether the pointer and keys go there.
@@ -204,7 +208,7 @@ final class ScreenInfo: ObservableObject {
 
 /// What the rail's buttons ask the window to do.
 enum ScreenAction {
-    case observe(Bool), scaling(Bool), dynamic(Bool), quality(Bool), clipboard(Bool), sound(Bool)
+    case observe(Bool), scaling(Bool), performance(Bool), clipboard(Bool), sound(Bool)
     case keys, screenshot, fullScreen, connection, close
 }
 
@@ -262,20 +266,22 @@ struct ScreenRail: View {
 
     static let side: CGFloat = 34
     static let gap: CGFloat = 6
-    /// Close, Full Screen and More, then what More brings. Full Quality only without Dynamic Resolution: a
-    /// display of the session's own is always sent at full quality (user 2026-11-23: with Dynamic
-    /// Resolution on, the Full Quality button goes). Keys only while the window works that Mac.
-    enum Kind { case close, fullScreen, more, scaling, dynamic, quality, sound, keys, info }
-    static func kinds(own: Bool, controlling: Bool) -> [Kind] {
-        var kinds: [Kind] = [.close, .fullScreen, .more, .scaling, .dynamic]
-        if !own { kinds.append(.quality) }
-        kinds.append(.sound)
+    /// Close, Full Screen and More, then what More brings. High Performance only where that Mac has
+    /// both kinds of session, Sound only in a session that has sound (the standard kind has none),
+    /// Keys only while the window works that Mac. There is no Dynamic Resolution or Full Quality
+    /// button (user 2026-11-23: as the system has it, High Performance always with Dynamic
+    /// Resolution, and no choice of quality).
+    enum Kind { case close, fullScreen, more, scaling, performance, sound, keys, info }
+    static func kinds(choice: Bool, sound: Bool, controlling: Bool) -> [Kind] {
+        var kinds: [Kind] = [.close, .fullScreen, .more, .scaling]
+        if choice { kinds.append(.performance) }
+        if sound { kinds.append(.sound) }
         if controlling { kinds.append(.keys) }
         kinds.append(.info)
         return kinds
     }
     /// The most there are, for the room a click may stop in, and how many are always there.
-    static let most = 9
+    static let most = 8
     static let always = 3
     static let moreIndex = 2
     static let scalingIndex = 3
@@ -300,7 +306,7 @@ struct ScreenRail: View {
     var body: some View {
         GeometryReader { geometry in
             let rows = Self.rows(in: geometry.size.height)
-            let kinds = Self.kinds(own: info.own, controlling: info.controlling)
+            let kinds = Self.kinds(choice: info.kinds, sound: !info.standard, controlling: info.controlling)
             let shown = info.railOpen ? kinds.count : Self.always
             let columns = (shown + rows - 1) / rows
             HStack(alignment: .top, spacing: Self.gap) {
@@ -332,15 +338,10 @@ struct ScreenRail: View {
                              hint: tr("Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.")) {
                 act(.scaling(!info.scaled))
             }
-        case .dynamic:
-            ScreenRailButton(symbol: "aspectratio", title: tr("Dynamic Resolution"), active: info.own,
-                             hint: tr("The other Mac shows its screen on a display of its own that follows this window’s size. Its own displays are dark while you view it.")) {
-                act(.dynamic(!info.own))
-            }
-        case .quality:
-            ScreenRailButton(symbol: "sparkles", title: tr("Full Quality"), active: info.fullQuality,
-                             hint: tr("Full Quality lets Screen Sharing send up to 60 Mbps. Off: Adaptive Quality, up to 12 Mbps.")) {
-                act(.quality(!info.fullQuality))
+        case .performance:
+            ScreenRailButton(symbol: "bolt", title: tr("High Performance"), active: info.own,
+                             hint: tr("The other Mac sends video of a display of its own that follows this window’s size, with its sound. Its own displays are dark while you view it. Off: its display as it is, sent only where it changes, without sound.")) {
+                act(.performance(!info.own))
             }
         case .sound:
             ScreenRailButton(symbol: info.sound ? "speaker.wave.2" : "speaker.slash", title: tr("Sound"), active: info.sound,
@@ -538,9 +539,9 @@ struct ScreenInfoView: View {
                     if let l = info.layout {
                         row(tr("Display"), "\(l.width)×\(l.height) " + tr("points") + " · \(l.pictureWidth)×\(l.pictureHeight) " + tr("pixels"))
                     }
-                    row(tr("Dynamic Resolution"), info.own ? tr("On: a display of its own that follows the window") : tr("Off: that Mac’s main display"))
+                    row(tr("Screen Sharing mode"), info.standard ? tr("Standard: that Mac’s display as it is")
+                        : info.own ? tr("High Performance: a display of its own that follows the window") : tr("High Performance: that Mac’s main display"))
                     row(tr("Codec"), info.codec.isEmpty ? "—" : ScreenInfo.codecName(info.codec))
-                    row(tr("Quality"), info.fullQuality ? tr("Full Quality") : tr("Adaptive Quality"))
                     number(tr("Frame rate"), info.helper["fps"], "%.1f fps")
                     if let k = info.helper["kbps"] { row(tr("Bit rate"), ScreenInfo.rate(k)) }
                     number(tr("Sound packets"), info.helper["audio"], "%.0f /s")
@@ -557,7 +558,7 @@ struct ScreenInfoView: View {
                     row(tr("Mac"), info.device)
                     if !info.account.isEmpty { row(tr("Account"), info.account) }
                     row(tr("Mode"), info.viewOnly ? tr("View only") : info.observing ? tr("Observing") : tr("Controlling"))
-                    row(tr("Sound"), info.sound ? tr("On") : tr("Off"))
+                    if !info.standard { row(tr("Sound"), info.sound ? tr("On") : tr("Off")) }
                     if let since = info.since { row(tr("Connected at"), since.formatted(date: .omitted, time: .standard)) }
                 }
             }

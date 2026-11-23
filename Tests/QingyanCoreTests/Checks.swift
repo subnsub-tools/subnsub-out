@@ -1,3 +1,4 @@
+import Compression
 import Foundation
 import AppKit
 import Network
@@ -202,6 +203,26 @@ struct Checks {
                   && ScreenWire.layout(Data([0, 0, 0, 0, 0, 0, 0, 0])) == nil, "the display's points and the picture's pixels")
         let video = ScreenWire.videoFrame(Data([1, 0, 0, 0x01, 0x2C, 0, 0, 0, 2, 0x65, 0x88]))
         try check(video?.key == true && video?.stamp == 300 && video?.units == Data([0, 0, 0, 2, 0x65, 0x88]) && ScreenWire.videoFrame(Data([1, 0, 0])) == nil, "a picture's header")
+        // A standard session's picture: sixteen pixels of two colors, deflated, and where they go.
+        let rows: [UInt8] = (0..<16).flatMap { $0 < 8 ? [1, 2, 3, 255] as [UInt8] : [4, 5, 6, 255] }
+        let packedRoom = 256
+        var packed = [UInt8](repeating: 0, count: packedRoom)
+        let packedCount = compression_encode_buffer(&packed, packedRoom, rows, rows.count, nil, COMPRESSION_ZLIB)
+        let piece = ScreenWire.picturePiece(Data([0, 3, 0, 4, 0, 8, 0, 2, 0]) + Data(packed.prefix(packedCount)))
+        let deflated = piece?.deflated ?? Data()
+        var unpacked = [UInt8](repeating: 0, count: rows.count + 8)
+        let inflated = ScreenWire.inflate(deflated, into: &unpacked, capacity: rows.count + 1)
+        let first = Array(unpacked.prefix(rows.count))
+        try check(packedCount > 0 && piece?.x == 3 && piece?.y == 4 && piece?.width == 8 && piece?.height == 2 && piece?.whole == false
+                  && inflated == rows.count && first == rows, "a piece of a standard session's picture")
+        // Read as a piece of fewer pixels, it fills the room given, a byte more than that piece's size; as one of more, it comes short.
+        let asFewer = ScreenWire.inflate(deflated, into: &unpacked, capacity: rows.count - 3)
+        let asMore = ScreenWire.inflate(deflated, into: &unpacked, capacity: rows.count + 5)
+        let ofNothing = ScreenWire.inflate(Data(), into: &unpacked, capacity: 8)
+        try check(asFewer == rows.count - 3 && asMore == rows.count && ofNothing == 0,
+                  "a piece that holds more or fewer pixels than its size is told from one that holds them all")
+        try check(ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 0, 0, 0, 1]))?.whole == true && ScreenWire.picturePiece(Data([0, 0, 0])) == nil,
+                  "the word that an update is whole")
         let sound = ScreenWire.audioPacket(Data([2, 0, 0, 0x04, 0x00, 0, 7, 0xDE, 0xAD]))
         try check(sound?.codec == 2 && sound?.samples == 1024 && sound?.sequence == 7 && sound?.bytes == Data([0xDE, 0xAD]), "a sound packet")
         var shape = Data([0, 0, 0, 9, 0, 3, 0, 4, 0, 2, 0, 1, 2])
