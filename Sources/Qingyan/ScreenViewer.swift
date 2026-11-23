@@ -233,6 +233,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         }
         next.onPicture = { [weak self, weak next] in
             guard let self, let next, self.link === next else { return }
+            self.view.pictureCame = true
             self.reshapeCame(picture: true)
         }
         next.onPieces = { [weak self, weak next] words in
@@ -1631,11 +1632,28 @@ final class ScreenContainer: NSView {
     var fullScreen = false {
         didSet {
             guard fullScreen != oldValue else { return }
-            glass.isHidden = fullScreen
+            glass.isHidden = fullScreen || covered
             black.isHidden = !fullScreen
+            needsLayout = true
             let dark = fullScreen ? NSAppearance(named: .darkAqua) : nil
             for view in [top, bottom, overlay, rail, hint] as [NSView] { view.appearance = dark }
         }
+    }
+    /// The picture covers the whole window, or in full screen black does: nothing behind the window
+    /// is seen, and the window is opaque with its glass put away. A window that is not opaque has
+    /// the window server draw its shadow and what is under it again each time the picture changes:
+    /// with a picture of 1920 by 1080 of which 37 by 8 pixels changed 55 times a second, 6 to 11 W
+    /// of GPU, and 0.2 to 0.5 W with the window opaque, the title strip, the line and the buttons
+    /// on their blur as before (measured 2026-11-24; the same for a High Performance session's
+    /// video). The glass is the window's again as soon as no picture covers it.
+    private var covered = false
+    private func cover(_ now: Bool) {
+        guard let window, now != covered || window.isOpaque != now else { return }
+        covered = now
+        glass.isHidden = fullScreen || now
+        window.backgroundColor = now ? .black : .clear
+        window.isOpaque = now
+        window.invalidateShadow()
     }
     private let scroll = NSScrollView()
     private let top = NSView()
@@ -1762,6 +1780,7 @@ final class ScreenContainer: NSView {
             size = NSSize(width: max(CGFloat(layout.width), size.width), height: max(CGFloat(layout.height), size.height))
         }
         if screen.frame.size != size { screen.frame = NSRect(origin: .zero, size: size) }
+        cover(fullScreen || screen.covers(screen.convert(bounds, from: self)))
     }
 
     // MARK: The buttons at the right, and the title strip and the line, over the picture
@@ -2050,6 +2069,9 @@ final class ScreenView: NSView {
     /// The picture is drawn: not before a session is live, nor once it has ended (the window's glass
     /// shows behind what it says then).
     var showsPicture = false { didSet { needsLayout = true; if showsPicture != oldValue { onLayout?() } } }
+    /// The session's first picture is on the display layer: before it nothing is drawn where the
+    /// picture will be, and what is behind shows there.
+    var pictureCame = false { didSet { if pictureCame != oldValue { onLayout?() } } }
     var cursorInPicture = false { didSet { window?.invalidateCursorRects(for: self) } }
     var remoteCursor: RemoteCursor? {
         didSet {
@@ -2104,7 +2126,7 @@ final class ScreenView: NSView {
 
     /// A new session: nothing goes to that Mac until it is live (ScreenViewer.applyControl).
     func reset() {
-        remoteLayout = nil; remoteCursor = nil; cursorInPicture = false; canControl = false
+        remoteLayout = nil; remoteCursor = nil; cursorInPicture = false; canControl = false; pictureCame = false
         buttons = 0; keysDown = []
         stopEdge()
     }
@@ -2118,6 +2140,20 @@ final class ScreenView: NSView {
             return CGRect(x: ((bounds.width - w) / 2).rounded(), y: ((bounds.height - h) / 2).rounded(), width: w, height: h)
         }
         return ScreenWire.fit((layout.width, layout.height), in: bounds)
+    }
+
+    /// Whether a picture (the session's, or the one kept from before) is drawn over all of `room`,
+    /// to within a point: nothing behind it is seen there.
+    func covers(_ room: CGRect) -> Bool {
+        let drawn: CGRect
+        if let held {
+            drawn = place(held.layout)
+        } else if showsPicture, pictureCame, remoteLayout != nil, displayLayer != nil {
+            drawn = picture
+        } else {
+            return false
+        }
+        return backingAlignedRect(drawn, options: .alignAllEdgesNearest).insetBy(dx: -1, dy: -1).contains(room)
     }
 
     override func layout() {
@@ -2148,6 +2184,7 @@ final class ScreenView: NSView {
         guard showsPicture, let displayLayer, let remoteLayout, !displayLayer.isHidden else { return false }
         held?.layer.removeFromSuperlayer()
         held = (displayLayer, remoteLayout)
+        onLayout?()
         return true
     }
 
@@ -2178,6 +2215,7 @@ final class ScreenView: NSView {
         held?.layer.removeFromSuperlayer()
         held = nil
         needsLayout = true
+        onLayout?()
         guard let veil else { return }
         veilTurn += 1
         let turn = veilTurn
