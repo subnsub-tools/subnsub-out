@@ -183,8 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func installStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // The name alone, and any click opens the menu (its Show Main Panel opens the panel). A
-        // capital O and an exclamation mark, semibold, not the plain word (user 2026-11-23).
+        // The name alone, and any click opens the menu and shows the panel with it (menuWillOpen), so
+        // the menu has no Show Main Panel (user 2026-11-23). A capital O and an exclamation mark,
+        // semibold, not the plain word (user 2026-11-23).
         if let button = statusItem?.button {
             button.attributedTitle = NSAttributedString(string: "Out!", attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .semibold)
@@ -213,7 +214,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording)) }
         if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard)) }
         if controller.screenState == .viewing { item(menu, tr("Stop Showing the Screen"), #selector(stopScreen)) }
-        item(menu, tr("Show Main Panel"), #selector(openMain))
         item(menu, tr("Keep on Top"), #selector(togglePinned))?.state = pinned ? .on : .off
         item(menu, tr("Settings…"), #selector(openSettings))
         if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult)) }
@@ -221,11 +221,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item(menu, tr("Quit out"), #selector(quit))
     }
 
+    /// A click on Out! shows the panel along with the menu (user 2026-11-23). Kept on top, the bar is
+    /// the panel and comes in front. Otherwise the panel comes in front on this desktop without the
+    /// keyboard, so Start Recording from the menu still writes into the app in front; open on another
+    /// desktop, it is shown as before, by switching to that desktop.
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === statusItem?.menu, settings != nil else { return }
+        if NSApp.isHidden { NSApp.unhideWithoutActivation() }
+        if pinned {
+            if compactPanel?.isVisible == true { compactPanel?.orderFrontRegardless() } else { showCompact() }
+        } else if let window, window.isVisible, !window.isOnActiveSpace {
+            showWindow()
+        } else {
+            if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+            showWindow(activating: false, inFront: true)
+        }
+    }
+
     @discardableResult private func item(_ menu: NSMenu, _ title: String, _ action: Selector?) -> NSMenuItem? {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self; menu.addItem(item); return item
     }
-    @objc private func openMain() { showWindow() }
     @objc private func stopScreen() { controller.screen.stopViewing() }
     // Unchecked, it only stops keeping on top, as the bar's own pin does; the panel stays as it is.
     @objc private func togglePinned() { if pinned { leaveCompact() } else { setCompact(true) } }
