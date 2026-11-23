@@ -161,6 +161,20 @@ final class ScreenCanvas {
         return sample
     }
 
+    /// Of a few thousand pixels across the picture, how many in a thousand are not black.
+    func lit() -> Int {
+        guard let pixels, width > 0, height > 0 else { return 0 }
+        let total = width * height, step = max(1, total / 4096)
+        var seen = 0, lit = 0, at = 0
+        while at < total {
+            let pixel = pixels + at * 4
+            seen += 1
+            if pixel[0] > 16 || pixel[1] > 16 || pixel[2] > 16 { lit += 1 }
+            at += step
+        }
+        return lit * 1000 / max(seen, 1)
+    }
+
     /// The picture as an image (a screenshot).
     func image() -> CGImage? {
         guard let pixels, width > 0, height > 0,

@@ -235,6 +235,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             guard let self, let next, self.link === next else { return }
             self.reshapeCame(picture: true)
         }
+        next.onPieces = { [weak self, weak next] words in
+            guard let self, let next, self.link === next else { return }
+            self.info.pieces = words
+        }
         next.onCodec = { [weak self, weak next] codec in
             guard let self, let next, self.link === next else { return }
             self.info.codec = codec
@@ -968,6 +972,11 @@ final class ScreenLink: @unchecked Sendable {
     /// A standard session's picture, and the size the last layout said it is.
     private var canvas: ScreenCanvas?
     private var pictureSize: (width: Int, height: Int)?
+    /// What became of the picture's pieces, for Info: drawn, outside the picture, before any layout,
+    /// unreadable; and the last one's place.
+    var onPieces: (@MainActor (String) -> Void)?
+    private var pieces = (drawn: 0, outside: 0, early: 0, unreadable: 0)
+    private var lastPiece = ""
     private var awaitingKey = true
     /// No picture has gone to the display layer since the last decoder record.
     private var fresh = false
@@ -1308,7 +1317,8 @@ final class ScreenLink: @unchecked Sendable {
         guard let piece = ScreenWire.picturePiece(body) else { count("badPiece"); return }
         bytesIn += body.count
         if piece.whole { show(); return }
-        guard let size = pictureSize else { count("pieceBeforeLayout"); return }
+        lastPiece = "\(piece.x),\(piece.y) \(piece.width)x\(piece.height) \(piece.deflated.count) B"
+        guard let size = pictureSize else { count("pieceBeforeLayout"); pieces.early += 1; tellPieces(); return }
         let canvas = self.canvas ?? ScreenCanvas()
         self.canvas = canvas
         if canvas.width != size.width || canvas.height != size.height {
@@ -1319,9 +1329,19 @@ final class ScreenLink: @unchecked Sendable {
             main { onCodec?("pixels") }
         }
         // Not one that lies outside the picture the layout said: asking again would bring it again.
-        guard piece.x + piece.width <= canvas.width, piece.y + piece.height <= canvas.height else { count("pieceOutside"); return }
+        guard piece.x + piece.width <= canvas.width, piece.y + piece.height <= canvas.height else {
+            count("pieceOutside"); pieces.outside += 1; tellPieces(); return
+        }
         // A piece that cannot be read leaves its place wrong: the whole picture is asked for again.
-        if !canvas.draw(piece) { count("badPiece"); askKey() }
+        if canvas.draw(piece) { pieces.drawn += 1 } else { count("badPiece"); pieces.unreadable += 1; tellPieces(); askKey() }
+    }
+
+    private func tellPieces() {
+        let size = canvas.map { "\($0.width)x\($0.height)" } ?? "none"
+        let words = "drawn \(pieces.drawn), outside \(pieces.outside), early \(pieces.early), unreadable \(pieces.unreadable); "
+            + "last \(lastPiece); canvas \(size), lit \(canvas?.lit() ?? 0)/1000, shown \(framesIn)"
+        let onPieces = onPieces
+        main { onPieces?(words) }
     }
 
     private func show() {
@@ -1338,6 +1358,7 @@ final class ScreenLink: @unchecked Sendable {
         }
         renderer.enqueue(sample)
         count("enqueued")
+        tellPieces()
         if fresh {
             fresh = false
             let onPicture = onPicture
