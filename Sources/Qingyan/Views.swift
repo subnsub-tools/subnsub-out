@@ -25,9 +25,7 @@ enum Metrics {
     /// window's own close and minimize buttons (TitleRowLights), sit in its middle (user 2026-11-22:
     /// the buttons at the top were too close to the window's top).
     static let titlebar: CGFloat = 38
-    /// On macOS 26, where content passes under a title row with a soft blur, how far below the row
-    /// it starts: at the row's lower edge its first block lay under the blur before anything was
-    /// scrolled (user 2026-11-23: the content sits too high and is covered by the top bar).
+    /// How far below a title row the content under it starts, before anything is scrolled.
     static let underBar: CGFloat = 8
     /// The side drawer (History or Settings) that slides out beside the column.
     static let drawer: CGFloat = 316
@@ -712,24 +710,13 @@ struct SideDrawer: View {
 
     private var showingSettings: Bool { settings.page == .settings }
 
-    /// On macOS 26 the pages pass under the title row with the system's soft blur, as the panel's
-    /// content passes under the panel's (user 2026-11-23: History and Settings should have the same
-    /// cover at the top as the main panel); they start a little below it, clear of the blur.
-    /// Earlier systems have no such blur, and the pages end at the title row's lower edge.
+    /// The pages end at the title row's lower edge, as the panel's content does: nothing passes
+    /// under the row, and the row has no cover of its own, so it is one piece of glass with the
+    /// rest of the window (user 2026-11-23: over some backgrounds the top row and the window under
+    /// it were not one piece; that was macOS 26's soft blur under the row).
     @ViewBuilder private var layout: some View {
-        if #available(macOS 26.0, *) {
-            if windowed {
-                pages(top: Metrics.underBar)
-                    .safeAreaBar(edge: .top, spacing: 0) { bar }
-                    .scrollEdgeEffectStyle(.soft, for: .top)
-            } else {
-                bar
-                pages(top: 0)
-            }
-        } else {
-            bar
-            pages(top: 0)
-        }
+        bar
+        pages(top: Metrics.underBar)
     }
 
     private var bar: some View {
@@ -900,16 +887,11 @@ struct MainView: View {
             }
     }
 
+    /// The content ends at the title row's lower edge on every system: macOS 26's soft blur under
+    /// the row made it a band apart from the window over some backgrounds (user 2026-11-23).
     @ViewBuilder private var scroller: some View {
-        if #available(macOS 26.0, *) {
-            ScrollView { measuredContent(top: Metrics.underBar) }
-                .scrollIndicators(.never)
-                .safeAreaBar(edge: .top, spacing: 0) { header }
-                .scrollEdgeEffectStyle(.soft, for: .top)
-        } else {
-            header
-            ScrollView { measuredContent() }.scrollIndicators(.never)
-        }
+        header
+        ScrollView { measuredContent(top: Metrics.underBar) }.scrollIndicators(.never)
     }
 
     private var receiving: Bool { settings.receiverOnly }

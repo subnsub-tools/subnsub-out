@@ -1608,8 +1608,29 @@ final class ScreenContainer: NSView {
         }
     }
     private let scroll = NSScrollView()
-    private let top = NSVisualEffectView()
-    private let bottom = NSVisualEffectView()
+    private let top = NSView()
+    private let bottom = NSView()
+    /// What the title strip and the line are drawn on over the picture: the picture blurred, fading
+    /// into it past their inner edge, with no line where they end (user 2026-11-23: the top and the
+    /// bottom are one piece with the window at all times). Not there while no picture is shown:
+    /// then they are on the window's own glass.
+    private let topBlur = NSVisualEffectView()
+    private let bottomBlur = NSVisualEffectView()
+    private static let fade: CGFloat = 14
+
+    /// A mask, solid over `solid` points at the top or the bottom and fading out over `fade` more.
+    private static func mask(solid: CGFloat, atTop: Bool) -> NSImage {
+        let height = solid + fade
+        let image = NSImage(size: NSSize(width: 8, height: height), flipped: false) { rect in
+            let clear = NSColor.black.withAlphaComponent(0)
+            let colors: [NSColor] = atTop ? [clear, .black, .black] : [.black, .black, clear]
+            let stops: [CGFloat] = atTop ? [0, fade / height, 1] : [0, solid / height, 1]
+            NSGradient(colors: colors, atLocations: stops, colorSpace: .deviceRGB)?.draw(in: rect, angle: 90)
+            return true
+        }
+        image.resizingMode = .stretch
+        return image
+    }
     private let titleRow: NSHostingView<ScreenTitleRow>
     private let bar: NSHostingView<ScreenInfoBar>
     private let rail: ScreenRailHost
@@ -1646,12 +1667,16 @@ final class ScreenContainer: NSView {
         black.frame = bounds
         black.autoresizingMask = [.width, .height]
         // Over the picture, the picture under them blurred.
-        for (pane, content) in [(top, titleRow as NSView), (bottom, bar as NSView)] {
-            pane.material = .hudWindow
-            pane.blendingMode = .withinWindow
-            pane.state = .active
+        for (pane, blur, content) in [(top, topBlur, titleRow as NSView), (bottom, bottomBlur, bar as NSView)] {
+            blur.material = .hudWindow
+            blur.blendingMode = .withinWindow
+            blur.state = .active
+            blur.isHidden = true
+            pane.addSubview(blur)
             pane.addSubview(content)
         }
+        topBlur.maskImage = Self.mask(solid: Self.rowHeight, atTop: true)
+        bottomBlur.maskImage = Self.mask(solid: Self.barHeight, atTop: false)
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
         // From the window's very top: not set below the title bar, as a scroll view sets itself by default.
@@ -1690,6 +1715,9 @@ final class ScreenContainer: NSView {
         titleRow.frame = top.bounds
         bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
         bar.frame = bottom.bounds
+        topBlur.frame = NSRect(x: 0, y: -Self.fade, width: bounds.width, height: Self.rowHeight + Self.fade)
+        bottomBlur.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.barHeight + Self.fade)
+        for blur in [topBlur, bottomBlur] where blur.isHidden == screen.showsPicture { blur.isHidden = !screen.showsPicture }
         rail.frame = railRoom
         hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - Self.barHeight, 0))
         rail.buttons = railRegion
@@ -1991,7 +2019,7 @@ final class ScreenView: NSView {
     var onEngage: (() -> Void)?
     /// The picture is drawn: not before a session is live, nor once it has ended (the window's glass
     /// shows behind what it says then).
-    var showsPicture = false { didSet { needsLayout = true } }
+    var showsPicture = false { didSet { needsLayout = true; if showsPicture != oldValue { onLayout?() } } }
     var cursorInPicture = false { didSet { window?.invalidateCursorRects(for: self) } }
     var remoteCursor: RemoteCursor? {
         didSet {
