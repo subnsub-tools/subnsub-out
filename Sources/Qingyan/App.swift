@@ -697,7 +697,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         let size = measuredOverlaySize()
         let rest: CGPoint
-        if wasHidden, let place = savedPlace {
+        // Not looked at while it stays where the user dragged it during this showing.
+        let captured = wasHidden || !overlayDraggedByUser
+            ? SightSensor.capture(excludingPanel: window, previousOrigin: wasHidden ? nil : overlayAnchorOrigin) : nil
+        if wasHidden, let captured, let spot = OverlayPlacement.besideCaret(size: size, in: captured.scene, margin: Self.capsuleMargin) {
+            // With the caret, when the field in front says where it is, before the place it was
+            // last dragged to (user 2026-11-23: it goes with the cursor).
+            overlayDraggedByUser = false
+            overlayCorner = spot.corner
+            overlayScreenFrame = captured.scene.visibleFrame
+            overlayAnchorOrigin = spot.origin
+            rest = spot.origin
+        } else if wasHidden, let place = savedPlace {
             // Where the user last put the capsule or the bar.
             let frame = Self.frame(size, topCenter: place, above: Self.capsuleMargin)
             overlayDraggedByUser = true
@@ -707,9 +718,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             rest = frame.origin
         } else if !wasHidden, overlayDraggedByUser, let visible = overlayScreenFrame ?? NSScreen.main?.visibleFrame {
             rest = OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: overlayCorner, in: visible).origin
-        } else if let captured = SightSensor.capture(excludingPanel: window, previousOrigin: wasHidden ? nil : overlayAnchorOrigin) {
+        } else if let captured {
             overlayDraggedByUser = false
-            let placement = OverlayPlacement.choose(size: size, in: captured.scene)
+            let placement = OverlayPlacement.choose(size: size, in: captured.scene, margin: Self.capsuleMargin)
             overlayCorner = placement.corner
             overlayScreenFrame = captured.scene.visibleFrame
             overlayAnchorOrigin = placement.origin
@@ -776,9 +787,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard !overlay.frame.insetBy(dx: -20, dy: -20).contains(pointer) else { return }
         guard let captured = SightSensor.capture(excludingPanel: window, previousOrigin: overlayAnchorOrigin) else { return }
         let sameScreen = captured.screen.frame.intersects(overlay.frame)
-        guard !sameScreen || OverlayPlacement.isObstructed(overlay.frame, in: captured.scene) else { return }
+        // With a caret known it goes where the caret went; otherwise only out of the way.
+        guard !sameScreen || captured.scene.caret != nil || OverlayPlacement.isObstructed(overlay.frame, in: captured.scene) else { return }
         let size = overlay.frame.size
-        let placement = OverlayPlacement.choose(size: size, in: captured.scene)
+        let placement = OverlayPlacement.choose(size: size, in: captured.scene, margin: Self.capsuleMargin)
         overlayCorner = placement.corner
         overlayScreenFrame = captured.scene.visibleFrame
         overlayAnchorOrigin = placement.origin

@@ -561,6 +561,22 @@ struct GlassMenu<Value: Hashable>: View {
     }
 }
 
+/// Two corners of a frame, upper left and lower right, as a pair of corner brackets stands: back to the full
+/// panel, on the bar (user 2026-11-23). Their arms are long and do not meet.
+struct CornerMarks: Shape {
+    func path(in rect: CGRect) -> Path {
+        let arm: CGFloat = 0.72
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + arm * rect.height))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + arm * rect.width, y: rect.minY))
+        path.move(to: CGPoint(x: rect.maxX, y: rect.maxY - arm * rect.height))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - arm * rect.width, y: rect.maxY))
+        return path
+    }
+}
+
 /// A ring that grows out of the record button and fades, over and over, while recording.
 struct RecordingRing: View {
     @State private var out = false
@@ -901,35 +917,15 @@ struct MainView: View {
     private var recording: Bool { controller.phase == .recording }
     private var processing: Bool { controller.phase == .processing }
 
-    /// The state, as the dot on put and, on hover, in words (user 2026-11-19: no words in the title row).
-    private var status: (ok: Bool, text: String) {
-        if recording { return (true, tr("Recording · Tap %@ again to stop.", settings.shortcutLabel)) }
-        if processing { return (true, tr("Processing · The text is being written.")) }
-        if receiving {
-            let ok = settings.accessibilityAllowed && controller.remoteListening
-            return (ok, ok ? tr("Ready to receive · Text from the other Macs is typed at the cursor on this Mac.")
-                           : tr("Setup needed · The panel lists the steps still missing."))
-        }
-        if controller.boundMicrophoneMissing { return (false, tr("Device offline · The locked microphone is not connected.")) }
-        let ok = settings.ready && controller.hotkeyInstalled
-        return (ok, ok ? tr("Ready · Tap %@ to start.", settings.shortcutLabel) : tr("Setup needed · The panel lists the steps still missing."))
-    }
-
     private var header: some View {
+        // Buttons alone: no name and no dot (user 2026-11-23). The first shrinks the panel into the
+        // bar; a window going to a corner, not a pin, since the bar is what it is for.
         HStack(spacing: 5) {
-            HStack(alignment: .top, spacing: 2) {
-                Text("Out").font(.system(size: 13, weight: .bold))
-                Circle().fill(status.ok ? Palette.accent : Color.orange).frame(width: 6, height: 6).padding(.top, 1)
-            }
-            .contentShape(Rectangle())
-            .help(status.text)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Out · " + status.text)
             Spacer(minLength: 4)
             HeaderIconButton(
-                symbol: "pin",
+                symbol: "rectangle.inset.topright.filled",
                 active: false,
-                helpText: tr("Keep on Top"),
+                helpText: tr("Shrink the panel into a bar that stays on top"),
                 accessibility: tr("Shrink the panel into a bar that stays on top")
             ) {
                 settings.setCompact?(true)

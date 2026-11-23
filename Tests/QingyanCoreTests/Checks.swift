@@ -103,7 +103,7 @@ struct Checks {
             ("Corrections: the field's text goes along only for a polished dictation, and a corrected word is offered only when the write itself changed", corrections),
             ("Updates: build numbers, the manifest names one build and never an address, checksum and size required, no credential, GitHub first and the site only when GitHub gives no answer", updates),
             ("Type the Clipboard: line breaks as Return, tabs, layout keys with Shift and Option, Unicode for the rest, control characters dropped", keystrokes),
-            ("Status capsule placement: compact footprint, never bottom-center, avoids panel, caret, pointer and active window", overlayPlacement),
+            ("Status capsule placement: compact footprint, never bottom-center, next to a known caret, avoids panel, field, pointer and active window", overlayPlacement),
             ("Microphone binding: a bound device is used only while connected and never falls back; unbound follows the system", microphoneBinding),
             ("Localization: the language setting, words from a table, formats, English where the table has no word", localization),
             ("Screen on the Monitor page: frames cut from pieces, the page's commands and their bounds, pointer, key and wheel, the picture's size, clicks in a row", screenWire),
@@ -2203,6 +2203,20 @@ struct Checks {
         let awayFromFocus = OverlayPlacement.choose(size: pill, in: topBusy)
         let awayRect = CGRect(origin: awayFromFocus.origin, size: pill)
         try check(!awayRect.intersects(topCenterFocus.insetBy(dx: -36, dy: -24)), "steps aside cleanly from the focused input field and pointer")
+
+        // With the caret known the capsule goes next to it: under its line, or over it at the screen's bottom.
+        let caret = CGRect(x: 400, y: 500, width: 24, height: 20)
+        let typing = OverlayPlacement.Scene(visibleFrame: visible, activeWindow: visible, focusedField: caret, caret: caret, pointer: CGPoint(x: 900, y: 300))
+        let under = OverlayPlacement.choose(size: pill, in: typing)
+        let underRect = CGRect(origin: under.origin, size: pill)
+        try check(under.corner == .topLeading && underRect.minX == caret.minX && underRect.maxY <= caret.minY && caret.minY - underRect.maxY <= 8, "with the caret known, the capsule sits right under it, starting where it is")
+        try check(OverlayPlacement.besideCaret(size: pill, in: normal) == nil, "a field's frame alone is not a caret")
+        let low = CGRect(x: 1400, y: 70, width: 24, height: 20)
+        let over = OverlayPlacement.choose(size: pill, in: OverlayPlacement.Scene(visibleFrame: visible, focusedField: low, caret: low))
+        let overRect = CGRect(origin: over.origin, size: pill)
+        try check(over.corner == .bottomLeading && overRect.minY >= low.maxY && visible.contains(overRect), "at the screen's bottom the capsule sits over the caret, inside the screen")
+        let elsewhere = CGRect(x: 3000, y: 500, width: 24, height: 20)
+        try check(OverlayPlacement.choose(size: pill, in: OverlayPlacement.Scene(visibleFrame: visible, caret: elsewhere)).corner == .topCenter, "a caret on another screen is not followed")
 
         // Reanchoring from top-center preserves horizontal centering and top edge; top-trailing preserves right and top edges.
         let centeredInitial = CGRect(x: 642, y: 827, width: 156, height: 46)

@@ -3,7 +3,8 @@ import Foundation
 
 /// Positions the miniature floating status capsule predictably and unobtrusively.
 ///
-/// Rather than scattering across arbitrary window edges, the capsule defaults to a consistent
+/// Where the field in front says where its caret is, the capsule goes next to it (`besideCaret`).
+/// Otherwise, rather than scattering across arbitrary window edges, it defaults to a consistent
 /// home right beneath the menu bar at top-center (Dynamic Island style) so the user always knows
 /// where to glance, and steps aside along the top edge (top-right or top-left) only when the
 /// focused input field, pointer, or input's own panel occupies that spot. It never pins to the
@@ -22,6 +23,9 @@ public enum OverlayPlacement {
         public var activeWindow: CGRect?
         public var otherWindows: [CGRect]
         public var focusedField: CGRect?
+        /// Where the caret (or the selection) is, when the field in front says so itself; not the
+        /// field's own frame, which `focusedField` falls back to.
+        public var caret: CGRect?
         public var panelFrame: CGRect?
         public var pointer: CGPoint?
         public var previousOrigin: CGPoint?
@@ -31,6 +35,7 @@ public enum OverlayPlacement {
             activeWindow: CGRect? = nil,
             otherWindows: [CGRect] = [],
             focusedField: CGRect? = nil,
+            caret: CGRect? = nil,
             panelFrame: CGRect? = nil,
             pointer: CGPoint? = nil,
             previousOrigin: CGPoint? = nil
@@ -39,6 +44,7 @@ public enum OverlayPlacement {
             self.activeWindow = activeWindow
             self.otherWindows = otherWindows
             self.focusedField = focusedField
+            self.caret = caret
             self.panelFrame = panelFrame
             self.pointer = pointer
             self.previousOrigin = previousOrigin
@@ -74,7 +80,24 @@ public enum OverlayPlacement {
         )
     }
 
-    public static func choose(size rawSize: CGSize, in scene: Scene) -> Placement {
+    /// Next to the caret, when it is known (user 2026-11-23: the capsule goes with the cursor,
+    /// above all once where it is is certain): right under its line and starting where it is, or
+    /// right over it where the screen leaves no room under. `margin` is how far the capsule's
+    /// window reaches beyond what is drawn. Nil when the caret is not known or not on this screen.
+    public static func besideCaret(size: CGSize, in scene: Scene, margin: CGFloat = 0) -> Placement? {
+        let visible = scene.visibleFrame
+        guard let caret = scene.caret, caret.height > 0, visible.intersects(caret.insetBy(dx: -1, dy: -1)),
+              visible.width > size.width + 16, visible.height > size.height + 16 else { return nil }
+        let gap: CGFloat = 4
+        let under = caret.minY - gap + margin - size.height
+        let fitsUnder = under >= visible.minY + 8
+        let point = CGPoint(x: caret.minX - margin, y: fitsUnder ? under : caret.maxY + gap - margin)
+        let origin = clamp(point, size: size, in: visible)
+        return Placement(origin: CGPoint(x: round(origin.x), y: round(origin.y)), corner: fitsUnder ? .topLeading : .bottomLeading)
+    }
+
+    public static func choose(size rawSize: CGSize, in scene: Scene, margin: CGFloat = 0) -> Placement {
+        if let spot = besideCaret(size: rawSize, in: scene, margin: margin) { return spot }
         let visible = scene.visibleFrame
         let size = CGSize(
             width: min(max(rawSize.width, 84), max(84, visible.width - 16)),

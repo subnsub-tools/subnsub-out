@@ -126,7 +126,9 @@ struct CompactBar: View {
                 onSize?(CGSize(width: Self.width, height: Self.height(shelfFolded: folded)))
             }
             barButton("pin.fill", tr("Stop Keeping on Top"), help: tr("Stop keeping on top: shown only while dictating and with results"), tint: Palette.accent, action: onUnpin)
-            barButton("arrow.up.left.and.arrow.down.right", tr("Back to the full panel"), action: onExpand)
+            barButton(tr("Back to the full panel"), action: onExpand) {
+                CornerMarks().stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)).frame(width: 10, height: 10)
+            }
         }
         .padding(.leading, 8).padding(.trailing, 7)
         .accessibilityElement(children: .contain)
@@ -246,9 +248,12 @@ struct CompactBar: View {
     }
 
     private func barButton(_ symbol: String, _ label: String, help: String? = nil, tint: Color? = nil, action: @escaping () -> Void) -> some View {
+        barButton(label, help: help, tint: tint, action: action) { Image(systemName: symbol).font(.system(size: 11, weight: .semibold)) }
+    }
+
+    private func barButton<Icon: View>(_ label: String, help: String? = nil, tint: Color? = nil, action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
+            icon()
                 .foregroundStyle(tint ?? Palette.ink)
                 .frame(width: 26, height: 24)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))

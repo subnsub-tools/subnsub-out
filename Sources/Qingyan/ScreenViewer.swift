@@ -754,6 +754,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     }
     func windowDidChangeBackingProperties(_ notification: Notification) { askSize() }
     func windowDidExitFullScreen(_ notification: Notification) { info.fullScreen = false; applyControl(); askSize() }
+    // Black around the picture from the moment the window leaves for full screen until it starts back.
+    func windowWillEnterFullScreen(_ notification: Notification) { container.fullScreen = true }
+    func windowWillExitFullScreen(_ notification: Notification) { container.fullScreen = false }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) { container.fullScreen = false }
+    func windowDidFailToExitFullScreen(_ window: NSWindow) { container.fullScreen = true }
     func windowDidEnterFullScreen(_ notification: Notification) { info.fullScreen = true; applyControl(); askSize() }
 
     func windowWillClose(_ notification: Notification) {
@@ -1498,6 +1503,18 @@ final class ScreenContainer: NSView {
     }
     private let info: ScreenInfo
     private let glass = NSVisualEffectView()
+    /// In full screen the room around the picture is black, not glass (user 2026-11-23), and what is
+    /// drawn over it (the title strip, the line, the words while there is no picture) is dark with it.
+    private let black = NSView()
+    var fullScreen = false {
+        didSet {
+            guard fullScreen != oldValue else { return }
+            glass.isHidden = fullScreen
+            black.isHidden = !fullScreen
+            let dark = fullScreen ? NSAppearance(named: .darkAqua) : nil
+            for view in [top, bottom, overlay] as [NSView] { view.appearance = dark }
+        }
+    }
     private let scroll = NSScrollView()
     private let top = NSVisualEffectView()
     private let bottom = NSVisualEffectView()
@@ -1528,6 +1545,11 @@ final class ScreenContainer: NSView {
         glass.state = .active
         glass.frame = bounds
         glass.autoresizingMask = [.width, .height]
+        black.wantsLayer = true
+        black.layer?.backgroundColor = NSColor.black.cgColor
+        black.isHidden = true
+        black.frame = bounds
+        black.autoresizingMask = [.width, .height]
         // Over the picture, the picture under them blurred.
         for (pane, content) in [(top, titleRow as NSView), (bottom, bar as NSView)] {
             pane.material = .hudWindow
@@ -1547,7 +1569,7 @@ final class ScreenContainer: NSView {
         scroll.contentView.drawsBackground = false
         scroll.documentView = screen
         screen.onLayout = { [weak self] in self?.needsLayout = true }
-        for sub in [glass, scroll, overlay, bottom, top, rail] as [NSView] { addSubview(sub) }
+        for sub in [glass, black, scroll, overlay, bottom, top, rail] as [NSView] { addSubview(sub) }
         // Info open keeps them; once it closes they go as the pointer says.
         watchingInfo = info.$showingInfo.dropFirst().sink { [weak self] showing in
             guard !showing else { return }

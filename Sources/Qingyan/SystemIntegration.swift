@@ -463,7 +463,8 @@ enum SightSensor {
             }
         }
 
-        let focusedField = frontPID.flatMap { focusedElementRect(pid: $0, primaryHeight: primaryHeight) }
+        let focus = frontPID.flatMap { focusedElementRect(pid: $0, primaryHeight: primaryHeight) }
+        let focusedField = focus?.rect
 
         let anchorPoint = focusedField.map { CGPoint(x: $0.midX, y: $0.midY) }
             ?? activeWindow.map { CGPoint(x: $0.midX, y: $0.midY) }
@@ -483,6 +484,7 @@ enum SightSensor {
             activeWindow: clippedActive,
             otherWindows: clippedOthers,
             focusedField: focusedField,
+            caret: focus?.caret == true ? focusedField : nil,
             panelFrame: panelFrame,
             pointer: screen.frame.contains(pointer) ? pointer : nil,
             previousOrigin: previousOrigin
@@ -490,7 +492,8 @@ enum SightSensor {
         return (screen, scene)
     }
 
-    private static func focusedElementRect(pid: pid_t, primaryHeight: CGFloat) -> CGRect? {
+    /// The caret's (or the selection's) place when the focused control gives it, or else the control's own frame.
+    private static func focusedElementRect(pid: pid_t, primaryHeight: CGFloat) -> (rect: CGRect, caret: Bool)? {
         guard AXIsProcessTrusted() else { return nil }
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, 0.06)
@@ -510,7 +513,7 @@ enum SightSensor {
                 if AXValueGetValue(unsafeBitCast(rawBounds, to: AXValue.self), .cgRect, &caret),
                    caret.width >= 0, caret.height > 0, caret.height < 400 {
                     let expanded = CGRect(x: caret.minX, y: caret.minY, width: max(caret.width, 24), height: max(caret.height, 20))
-                    return OverlayPlacement.quartzToAppKit(expanded, primaryHeight: primaryHeight)
+                    return (OverlayPlacement.quartzToAppKit(expanded, primaryHeight: primaryHeight), true)
                 }
             }
         }
@@ -525,7 +528,7 @@ enum SightSensor {
         guard AXValueGetValue(unsafeBitCast(rawPos, to: AXValue.self), .cgPoint, &origin),
               AXValueGetValue(unsafeBitCast(rawSize, to: AXValue.self), .cgSize, &size),
               size.width > 0, size.height > 0, size.height <= 320 else { return nil }
-        return OverlayPlacement.quartzToAppKit(CGRect(origin: origin, size: size), primaryHeight: primaryHeight)
+        return (OverlayPlacement.quartzToAppKit(CGRect(origin: origin, size: size), primaryHeight: primaryHeight), false)
     }
 }
 
