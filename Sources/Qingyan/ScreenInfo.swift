@@ -243,9 +243,11 @@ struct ScreenTitleRow: View {
 /// The window's buttons, round and floating over the picture down its right side (user 2026-11-23:
 /// no buttons at the top; two floating buttons at the right, Full Screen and More, as the preview
 /// window of the user's playhub has them; the pointer on More brings the rest; each is named only
-/// while the pointer is on it; all of them at the window's right, in full screen too). They are what
-/// Screen Sharing's own toolbar has, lit while on. Where the window is too short for one column, the
-/// next goes to its left. Dark with white signs whatever the appearance: they lie on that Mac's
+/// while the pointer is on it; all of them at the window's right, in full screen too). Lit while on.
+/// There is no Screenshot, Disconnect, Observe or Shared Clipboard button (user 2026-11-23: none of
+/// them is needed; the clipboard must be shared, and may have no button; Sound stays for now): a
+/// window works that Mac once its picture is double-clicked, and the clipboard is always shared.
+/// Where the window is too short for one column, the next goes to its left. Dark with white signs whatever the appearance: they lie on that Mac's
 /// picture, not on this window's glass.
 struct ScreenRail: View {
     @ObservedObject var info: ScreenInfo
@@ -255,10 +257,17 @@ struct ScreenRail: View {
 
     static let side: CGFloat = 34
     static let gap: CGFloat = 6
-    /// Full Screen and More, then what More brings.
-    static let count = 12
+    /// Full Screen and More, then what More brings. Full Quality only without Dynamic Resolution: a
+    /// display of the session's own is always sent at full quality (user 2026-11-23: with Dynamic
+    /// Resolution on, the Full Quality button goes).
+    enum Kind { case fullScreen, more, scaling, dynamic, quality, sound, keys, info }
+    static func kinds(own: Bool) -> [Kind] {
+        own ? [.fullScreen, .more, .scaling, .dynamic, .sound, .keys, .info] : [.fullScreen, .more, .scaling, .dynamic, .quality, .sound, .keys, .info]
+    }
+    /// The most there are, for the room a click may stop in.
+    static let most = 8
     static let moreIndex = 1
-    static let scalingIndex = 3
+    static let scalingIndex = 2
     static let lit = Color(red: 0.72, green: 0.84, blue: 0.60)
 
     /// How many buttons a column holds in a room that tall.
@@ -281,13 +290,14 @@ struct ScreenRail: View {
     var body: some View {
         GeometryReader { geometry in
             let rows = Self.rows(in: geometry.size.height)
-            let shown = info.railOpen ? Self.count : 2
+            let kinds = Self.kinds(own: info.own)
+            let shown = info.railOpen ? kinds.count : 2
             let columns = (shown + rows - 1) / rows
             HStack(alignment: .top, spacing: Self.gap) {
                 ForEach(Array((0..<columns).reversed()), id: \.self) { column in
                     VStack(spacing: Self.gap) {
-                        ForEach(Array((column * rows)..<min((column + 1) * rows, shown)), id: \.self) { index in
-                            button(index)
+                        ForEach(Array(kinds[(column * rows)..<min((column + 1) * rows, shown)]), id: \.self) { kind in
+                            button(kind)
                         }
                     }
                 }
@@ -296,70 +306,47 @@ struct ScreenRail: View {
         }
     }
 
-    @ViewBuilder private func button(_ index: Int) -> some View {
-        switch index {
-        case 0:
+    @ViewBuilder private func button(_ kind: Kind) -> some View {
+        switch kind {
+        case .fullScreen:
             ScreenRailButton(symbol: info.fullScreen ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.backward.and.arrow.down.forward",
                              title: tr("Full Screen"), active: info.fullScreen, hint: tr("Enter or leave full screen")) {
                 act(.fullScreen)
             }
-        case 1:
+        case .more:
             ScreenRailButton(symbol: "ellipsis", title: tr("More"), active: false, hint: "") { more() }
-        case 2:
-            ScreenRailButton(symbol: "eye", title: tr("Observe"), active: info.observing,
-                             hint: tr("Observe: only watch that Mac; the pointer and keys stay here")) {
-                act(.observe(!info.observing))
-            }
-            .disabled(info.viewOnly)
-        case 3:
+        case .scaling:
             ScreenRailButton(symbol: "arrow.down.right.and.arrow.up.left", title: tr("Scaling"), active: info.scaled,
                              hint: tr("Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.")) {
                 act(.scaling(!info.scaled))
             }
-        case 4:
+        case .dynamic:
             ScreenRailButton(symbol: "aspectratio", title: tr("Dynamic Resolution"), active: info.own,
                              hint: tr("The other Mac shows its screen on a display of its own that follows this window’s size. Its own displays are dark while you view it.")) {
                 act(.dynamic(!info.own))
             }
-        case 5:
+        case .quality:
             ScreenRailButton(symbol: "sparkles", title: tr("Full Quality"), active: info.fullQuality,
                              hint: tr("Full Quality lets Screen Sharing send up to 60 Mbps. Off: Adaptive Quality, up to 12 Mbps.")) {
                 act(.quality(!info.fullQuality))
             }
-        case 6:
-            ScreenRailButton(symbol: "doc.on.clipboard", title: tr("Shared Clipboard"), active: info.clipboard,
-                             hint: tr("Text copied on either Mac can be pasted on the other while this window is in front.")) {
-                act(.clipboard(!info.clipboard))
-            }
-        case 7:
+        case .sound:
             ScreenRailButton(symbol: info.sound ? "speaker.wave.2" : "speaker.slash", title: tr("Sound"), active: info.sound,
                              hint: tr("Play that Mac’s sound on this Mac.")) {
                 act(.sound(!info.sound))
             }
-        case 8:
+        case .keys:
             ScreenRailButton(symbol: "command", title: tr("Keys"), active: false, hint: tr("Send keys that this Mac keeps for itself")) {
                 act(.keys)
             }
             .disabled(!info.controlling)
-        case 9:
-            ScreenRailButton(symbol: "camera", title: tr("Screenshot"), active: false, hint: tr("Save a picture of the screen to this Mac’s Desktop")) {
-                act(.screenshot)
-            }
-            .disabled(!info.live)
-        case 10:
+        case .info:
             ScreenRailButton(symbol: "info.circle", title: tr("Info"), active: info.showingInfo,
                              hint: tr("Everything known of the connection and the stream")) {
                 info.showingInfo.toggle()
             }
             .accessibilityLabel(tr("Connection Info"))
             .popover(isPresented: $info.showingInfo, arrowEdge: .leading) { ScreenInfoView(info: info) }
-        case 11:
-            ScreenRailButton(symbol: info.ended ? "arrow.clockwise" : "xmark.circle", title: info.ended ? tr("Connect") : tr("Disconnect"), active: false,
-                             hint: info.ended ? tr("Connect to %@ again", info.device) : tr("End the session")) {
-                act(.connection)
-            }
-        default:
-            EmptyView()
         }
     }
 }

@@ -19,9 +19,9 @@ import VideoToolbox
 /// the wheel sent back. The account is asked for once and kept in this Mac's keychain. One window a Mac.
 ///
 /// The window has what Screen Sharing's own has (user 2026-11-22: and the features of macOS's own
-/// Screen Sharing go without saying), as buttons down its right side: Observe, Scaling, Dynamic Resolution (a
-/// display of the session's own that follows the window), Full Quality, the shared clipboard, the
-/// sound, keys this Mac keeps for itself, a screenshot, Info, full screen, disconnecting; each kept
+/// Screen Sharing go without saying): the shared clipboard always, and as buttons down its right
+/// side full screen, Scaling, Dynamic Resolution (a display of the session's own that follows the
+/// window), Full Quality without it, the sound, keys this Mac keeps for itself and Info; each kept
 /// for each Mac. Under the picture, always, what is known of the way there (ScreenInfo): the road,
 /// the path (direct, a peer relay or DERP) with a ping a second, the picture's size, codec, frame
 /// rate and bit rate; a click there, or Info, shows everything. The window is glass, as out's panel
@@ -103,14 +103,24 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     }
     /// The picture scaled to fit the window; off, at its own size, the window scrolling over it.
     private var scaled: Bool { get { kept("scaled", true) } set { keep("scaled", newValue) } }
-    /// Only watching: the pointer and the keys stay here.
-    private var observing: Bool { get { kept("observe", false) } set { keep("observe", newValue) } }
+    /// Only watching by choice: never now, and with no button (user 2026-11-23: no Observe button; a
+    /// window works that Mac once its picture is double-clicked, see `engaged`). A Mac whose Screen
+    /// Sharing lets this account watch only is still only watched (inputAllowed).
+    private var observing: Bool { get { false } set {} }
     private var fullQuality: Bool { get { kept("fullQuality", false) } set { keep("fullQuality", newValue) } }
     private var sound: Bool { get { kept("sound", true) } set { keep("sound", newValue) } }
-    private var sharedClipboard: Bool { get { kept("clipboard", true) } set { keep("clipboard", newValue) } }
+    /// Always, with no button (user 2026-11-23: the shared clipboard must be on, and may have no button).
+    private var sharedClipboard: Bool { get { true } set {} }
+    /// The pointer and the keys go to that Mac. In a window, only after a double-click on the picture,
+    /// until the window is no longer in front: before that a press on the picture moves the window
+    /// (user 2026-11-23: in a window, a press drags the whole window, and only a double-click starts
+    /// working that Mac, the pointer going through). In full screen, always.
+    private var engaged = false
     /// Full Quality: the most the helper lets Screen Sharing send; Adaptive, its usual ceiling.
     private static let fullKbps = 60_000
-    private var kbps: Int { fullQuality ? Self.fullKbps : ScreenWire.kbpsDefault }
+    /// A display of the session's own is always sent at full quality (user 2026-11-23: with Dynamic
+    /// Resolution on there is no Full Quality button).
+    private var kbps: Int { fullQuality || ownDisplay ? Self.fullKbps : ScreenWire.kbpsDefault }
 
     private init(device: TrustedDevice, controller: DictationController) {
         self.device = device
@@ -144,6 +154,13 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         }
         container.onInfo = { [weak self] in self?.info.showingInfo.toggle() }
         view.send = { [weak self] frame in self?.link?.send(frame) }
+        view.onEngage = { [weak self] in
+            guard let self, self.live, !self.engaged else { return }
+            self.engaged = true
+            self.applyControl()
+            // What was copied here meanwhile goes over now.
+            self.sendClipboard()
+        }
         info.sound = sound
         info.observing = observing
         info.fullQuality = fullQuality
@@ -247,6 +264,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             window.makeFirstResponder(view)
             container.banner = inputAllowed ? nil
                 : tr("View only: out on %@ has no Accessibility permission, so the pointer and keys do not reach it.", device.label)
+            if inputAllowed, !view.canControl { flash(tr("Double-click the picture to work %@. Until then, a drag moves the window.", device.label)) }
             info.live = true
             info.viewOnly = !inputAllowed
             info.since = Date()
@@ -288,7 +306,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     /// The pointer and the keys go to that Mac only while the session is live, that Mac takes them,
     /// and the window is not observing.
     private func applyControl() {
-        view.canControl = live && inputAllowed && !observing
+        view.canControl = live && inputAllowed && !observing && (engaged || window.styleMask.contains(.fullScreen))
         publish()
     }
 
@@ -700,6 +718,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // Keys and buttons held here are let go there: this window no longer hears them go up.
         view.releaseAll()
+        // And the window stops working that Mac until its picture is double-clicked again.
+        if engaged { engaged = false; applyControl() }
     }
 
     /// While scaled, and the other Mac's display is its own size, the window keeps its proportions.
@@ -733,8 +753,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         askSize()
     }
     func windowDidChangeBackingProperties(_ notification: Notification) { askSize() }
-    func windowDidExitFullScreen(_ notification: Notification) { info.fullScreen = false; askSize() }
-    func windowDidEnterFullScreen(_ notification: Notification) { info.fullScreen = true; askSize() }
+    func windowDidExitFullScreen(_ notification: Notification) { info.fullScreen = false; applyControl(); askSize() }
+    func windowDidEnterFullScreen(_ notification: Notification) { info.fullScreen = true; applyControl(); askSize() }
 
     func windowWillClose(_ notification: Notification) {
         ended = true
@@ -840,6 +860,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private func fillForPreview() {
         ended = false
         live = true
+        engaged = true
         applyControl()
         let layout = ScreenWire.Layout(width: 1512, height: 982, pictureWidth: 3024, pictureHeight: 1964)
         view.displayLayer = nil
@@ -1576,7 +1597,7 @@ final class ScreenContainer: NSView {
                       height: max(bounds.height - top - Self.barHeight - Self.railClear, least))
     }
     /// Where the rail's buttons are now: Full Screen and More, or all of them.
-    private var railRegion: NSRect { ScreenRail.region(shown: chromeShown ? ScreenRail.count : 2, in: railRoom) }
+    private var railRegion: NSRect { ScreenRail.region(shown: chromeShown ? ScreenRail.most : 2, in: railRoom) }
     /// Where one of the rail's buttons is, once they are all shown.
     func railFrame(of index: Int) -> NSRect { ScreenRail.frame(of: index, in: railRoom) }
     /// The pointer there keeps what More brought: on the title strip, on the line, or among the buttons.
@@ -1842,7 +1863,9 @@ final class ScreenView: NSView {
     }
     /// At its own size: a point of that display is a point here.
     var actual = false { didSet { needsLayout = true; window?.invalidateCursorRects(for: self); if !actual { stopEdge() } } }
-    var canControl = false
+    var canControl = false { didSet { if canControl != oldValue { window?.invalidateCursorRects(for: self) } } }
+    /// A double-click on the picture while the window does not work that Mac.
+    var onEngage: (() -> Void)?
     /// The picture is drawn: not before a session is live, nor once it has ended (the window's glass
     /// shows behind what it says then).
     var showsPicture = false { didSet { needsLayout = true } }
@@ -2012,7 +2035,8 @@ final class ScreenView: NSView {
     // MARK: The pointer's shape
 
     private var cursor: NSCursor {
-        guard !cursorInPicture, let remoteCursor, let layout = remoteLayout else { return .arrow }
+        // This Mac's own arrow until the window works that Mac.
+        guard canControl, !cursorInPicture, let remoteCursor, let layout = remoteLayout else { return .arrow }
         if let systemCursor { return systemCursor }
         let k = picture.width / CGFloat(layout.width)
         return remoteCursor.cursor(pointsPerPoint: k) ?? .arrow
@@ -2070,7 +2094,16 @@ final class ScreenView: NSView {
         }
     }
 
-    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); pointer(event, bit: 1, down: true) }
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        // A window that does not work that Mac yet: a press moves it, and a double-click starts
+        // working that Mac (user 2026-11-23). Neither goes to that Mac.
+        guard canControl else {
+            if event.clickCount >= 2 { onEngage?() } else { window?.performDrag(with: event) }
+            return
+        }
+        pointer(event, bit: 1, down: true)
+    }
     override func mouseUp(with event: NSEvent) { pointer(event, bit: 1, down: false) }
     override func rightMouseDown(with event: NSEvent) { pointer(event, bit: 4, down: true) }
     override func rightMouseUp(with event: NSEvent) { pointer(event, bit: 4, down: false) }
