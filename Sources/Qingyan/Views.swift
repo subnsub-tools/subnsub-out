@@ -826,7 +826,6 @@ struct MainView: View {
     @State private var shownSteps: [Step] = []
     @State private var recordButtonHovered = false
     @State private var shortcutHovered = false
-    @State private var micExpanded = false
 
     private struct Outcome: Equatable {
         var message: String
@@ -966,7 +965,7 @@ struct MainView: View {
         VStack(alignment: .leading, spacing: 0) {
             // No Style here: polishing is chosen only in Settings (user 2026-11-20).
             recordStrip
-            Reveal(open: !receiving) { microphoneCard.padding(.top, 8) }
+            // No Microphone block here: it is chosen in Settings alone (user 2026-11-23: one thing in one place).
             Reveal(open: !missing.isEmpty) { setupCard.padding(.top, 8) }
             Reveal(open: controller.learnedWord != nil) { learnedCard.padding(.top, 8) }
             Reveal(open: resultOpen) { resultCard.padding(.top, 8) }
@@ -1032,7 +1031,10 @@ struct MainView: View {
                     .lineLimit(choosing ? 4 : 1).fixedSize(horizontal: false, vertical: choosing)
             }
             Spacer(minLength: 2)
-            Button { controller.toggle() } label: {
+            // With the locked microphone away, the press opens Settings, where it is chosen.
+            Button {
+                if micOffline && !recording { if settings.page != .settings { settings.toggleSettings() } } else { controller.toggle() }
+            } label: {
                 Image(systemName: symbol)
                     .font(.system(size: 13, weight: .semibold))
                     .contentTransition(.symbolEffect(.replace))
@@ -1054,99 +1056,6 @@ struct MainView: View {
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(stripRim, lineWidth: 1))
         .animation(Motion.standard, value: controller.phase)
         .animation(Motion.standard, value: micOffline)
-    }
-
-    private var microphoneCard: some View {
-        let resolution = controller.microphoneResolution
-        let offline = controller.boundMicrophoneMissing
-        let isOpen = micExpanded || offline
-        let boundUID = settings.preferences.microphone
-        let badgeText: String = {
-            switch resolution {
-            case .boundAvailable(let info): return info.name
-            case .boundMissing(_, let name): return tr("%@ · Not connected", name)
-            case .systemDefault(let info): return tr("System default · %@", info.name)
-            case .noInputDevices: return tr("No input available")
-            }
-        }()
-        return Card {
-            VStack(alignment: .leading, spacing: 0) {
-                Button {
-                    let opening = !micExpanded
-                    micExpanded = opening
-                    if opening { settings.detailOpened.send() }
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Palette.muted)
-                            .rotationEffect(.degrees(isOpen ? 90 : 0)).frame(width: 9)
-                            .animation(Motion.standard, value: isOpen)
-                        Image(systemName: offline ? "exclamationmark.triangle.fill" : resolution.isBound ? "lock.fill" : "mic")
-                            .font(.system(size: 11))
-                            .foregroundStyle(offline ? Color.orange : resolution.isBound ? Palette.accent : Palette.ink)
-                            .frame(width: 15)
-                        Text(tr("Microphone")).font(.system(size: 12, weight: .semibold))
-                        Spacer(minLength: 4)
-                        Text(badgeText)
-                            .font(.system(size: 10.5, weight: resolution.isBound ? .medium : .regular))
-                            .foregroundStyle(offline ? Color.orange : resolution.isBound ? Palette.accent : Palette.muted)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .frame(minHeight: 24)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(isOpen ? tr("Hide the microphone list") : tr("Show the list and lock a microphone"))
-                .accessibilityLabel(tr("Microphone lock"))
-
-                Reveal(open: isOpen, animated: true) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        if offline {
-                            HStack(alignment: .top, spacing: 6) {
-                                Image(systemName: "mic.slash.fill").font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 2)
-                                CopyableText(tr("The locked microphone “%@” is not in the device list, so there is no input. Reconnect it, or click a device below to lock that one instead.", controller.boundMicrophoneLabel),
-                                             font: .system(size: 10.5), color: .orange)
-                            }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.orange.opacity(0.32), lineWidth: 0.8))
-                        } else {
-                            caption(resolution.isBound ? tr("This microphone is locked. If it disconnects, out pauses and you are notified; out never switches to another microphone on its own.") : tr("Click any microphone below to lock it permanently."))
-                        }
-
-                        ForEach(controller.microphones.all) { mic in
-                            let selected = boundUID == mic.uid
-                            MicrophoneOptionRow(
-                                title: mic.name,
-                                badge: selected ? tr("Locked") : tr("Lock"),
-                                symbol: selected ? "lock.fill" : "mic",
-                                active: selected,
-                                warning: false
-                            ) {
-                                settings.bindMicrophone(uid: mic.uid, name: mic.name)
-                            }
-                        }
-
-                        if controller.microphones.all.isEmpty && !settings.preview {
-                            caption(tr("No connected microphone was found."))
-                        }
-
-                        MicrophoneOptionRow(
-                            title: tr("System default"),
-                            badge: boundUID.isEmpty ? tr("Current") : tr("Unlock"),
-                            symbol: boundUID.isEmpty ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath",
-                            active: boundUID.isEmpty,
-                            warning: false
-                        ) {
-                            settings.bindMicrophone(uid: "", name: "")
-                        }
-                    }
-                    .disabled(controller.busy)
-                    .padding(.top, 8)
-                }
-            }
-        }
     }
 
     private struct Step: Identifiable {
