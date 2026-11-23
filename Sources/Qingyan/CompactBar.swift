@@ -20,13 +20,22 @@ struct CompactBar: View {
     var onUnpin: () -> Void = {}
     /// The bar's size whenever it changes (the Shelf hidden or shown), for its window.
     var onSize: ((CGSize) -> Void)? = nil
-    @AppStorage("compactShelfFolded") private var shelfFolded = false
+    @AppStorage(CompactBar.foldedKey) private var shelfFolded = false
     @State private var copied = false
     @State private var hovered: UUID?
     @State private var recordHovered = false
 
     static let width: CGFloat = 340
     static let rowHeight: CGFloat = 44
+    static let shelfHeight: CGFloat = 54
+    /// Where it is kept whether the Shelf is hidden.
+    static let foldedKey = "compactShelfFolded"
+    /// The bar's height: its first row, and under a line the Shelf unless it is hidden. Its window is
+    /// given this height outright, when it is made, each time it is shown and at each press of the
+    /// button that hides or shows the Shelf (user 2026-11-23: the bar was cut off at its top and
+    /// bottom: a window still as tall as the first row alone, with the Shelf shown under it; the
+    /// size the view reports back had not reached the window).
+    static func height(shelfFolded: Bool) -> CGFloat { rowHeight + (shelfFolded ? 0 : 1 + shelfHeight) }
     private static let corner: CGFloat = 13
 
     private var recording: Bool { controller.phase == .recording }
@@ -77,7 +86,7 @@ struct CompactBar: View {
             topRow.frame(height: Self.rowHeight)
             if !shelfFolded {
                 Rectangle().fill(Palette.line).frame(height: 1)
-                shelfRow.frame(height: 54)
+                shelfRow.frame(height: Self.shelfHeight)
             }
         }
         .frame(width: Self.width)
@@ -111,7 +120,10 @@ struct CompactBar: View {
             if live && (controller.busy || controller.phase == .error) { closeButton }
             Rectangle().fill(Palette.line).frame(width: 1, height: 20)
             barButton(shelfFolded ? "chevron.down" : "chevron.up", shelfFolded ? tr("Show the Shelf") : tr("Hide the Shelf")) {
-                shelfFolded.toggle()
+                let folded = !shelfFolded
+                shelfFolded = folded
+                // The window is told at once, not only by the size read back from the view.
+                onSize?(CGSize(width: Self.width, height: Self.height(shelfFolded: folded)))
             }
             barButton("pin.fill", tr("Stop Keeping on Top"), help: tr("Stop keeping on top: shown only while dictating and with results"), tint: Palette.accent, action: onUnpin)
             barButton("arrow.up.left.and.arrow.down.right", tr("Back to the full panel"), action: onExpand)

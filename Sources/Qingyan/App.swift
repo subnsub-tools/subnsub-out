@@ -588,8 +588,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard let panel = compactPanel else { return }
         let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
         userMoving = nil
-        panel.setFrame(Self.frame(panel.frame.size, topCenter: savedPlace ?? here ?? NSPoint(x: visible.midX, y: visible.maxY - 8)), display: true)
+        // At the height its content has now, whatever height it was left at.
+        panel.setFrame(Self.frame(Self.compactSize, topCenter: savedPlace ?? here ?? NSPoint(x: visible.midX, y: visible.maxY - 8)), display: true)
         panel.orderFrontRegardless()
+    }
+
+    /// The bar's size as its content is: with the Shelf or without.
+    private static var compactSize: NSSize {
+        NSSize(width: CompactBar.width, height: CompactBar.height(shelfFolded: UserDefaults.standard.bool(forKey: CompactBar.foldedKey)))
     }
 
     /// The Shelf hidden or shown: the bar keeps its top and its center.
@@ -608,16 +614,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// A glass bar above every window on every Space, full-screen apps included, that never takes
     /// the keyboard from the app in front and moves by any part that is not a control.
     private func makeCompact(onExpand: @escaping () -> Void, onUnpin: @escaping () -> Void = {}, glass: Bool = true) -> FloatingPanel {
-        // At the top of its window, which follows it a moment later (the Shelf hidden or shown).
-        let host = NSHostingView(rootView: CompactBar(settings: settings, controller: controller, shelf: controller.shelf,
-                                                      meter: controller.meter, glass: glass, onExpand: onExpand, onUnpin: onUnpin,
-                                                      onSize: { [weak self] size in DispatchQueue.main.async { self?.resizeCompact(to: size) } })
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
+        // At the top of its window, whatever the window's height: laid over a view that takes the
+        // window's size, the bar is never centered in a window that is not yet as tall as it is
+        // (which cut it off at its top and bottom).
+        let host = NSHostingView(rootView: Color.clear.overlay(alignment: .top) {
+            CompactBar(settings: settings, controller: controller, shelf: controller.shelf,
+                       meter: controller.meter, glass: glass, onExpand: onExpand, onUnpin: onUnpin,
+                       onSize: { [weak self] size in DispatchQueue.main.async { self?.resizeCompact(to: size) } })
+        })
         host.sizingOptions = []
-        let fitting = NSHostingView(rootView: CompactBar(settings: settings, controller: controller, shelf: controller.shelf,
-                                                         meter: controller.meter, glass: glass, onExpand: {}))
-        fitting.layoutSubtreeIfNeeded()
-        let size = NSSize(width: CompactBar.width, height: ceil(fitting.fittingSize.height))
+        let size = Self.compactSize
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
                                   backing: .buffered, defer: false)
         panel.isFloatingPanel = true
