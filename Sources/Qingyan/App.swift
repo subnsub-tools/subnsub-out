@@ -183,9 +183,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func installStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // The word alone, and any click opens the menu (its Show Main Panel opens the panel).
+        // The name alone, and any click opens the menu (its Show Main Panel opens the panel). A
+        // capital O and an exclamation mark, semibold, not the plain word (user 2026-11-23).
         if let button = statusItem?.button {
-            button.title = "out"
+            button.attributedTitle = NSAttributedString(string: "Out!", attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .semibold)
+            ])
             button.image = nil
         }
         let menu = NSMenu()
