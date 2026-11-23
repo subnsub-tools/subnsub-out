@@ -67,7 +67,7 @@ final class ScreenInfo: ObservableObject {
     @Published var controlling = false
     @Published var showingInfo = false
     @Published var fullScreen = false
-    /// The rail at the picture's right shows all its buttons, not Full Screen and More alone: with
+    /// The rail at the picture's right shows all its buttons, not Close, Full Screen and More alone: with
     /// the title strip and the line (ScreenContainer says when).
     @Published var railOpen = true
     static let history = 300
@@ -205,7 +205,7 @@ final class ScreenInfo: ObservableObject {
 /// What the rail's buttons ask the window to do.
 enum ScreenAction {
     case observe(Bool), scaling(Bool), dynamic(Bool), quality(Bool), clipboard(Bool), sound(Bool)
-    case keys, screenshot, fullScreen, connection
+    case keys, screenshot, fullScreen, connection, close
 }
 
 /// The screen window's title strip, on its glass as the panel's is (user 2026-11-22: the remote
@@ -244,6 +244,8 @@ struct ScreenTitleRow: View {
 /// no buttons at the top; two floating buttons at the right, Full Screen and More, as the preview
 /// window of the user's playhub has them; the pointer on More brings the rest; each is named only
 /// while the pointer is on it; all of them at the window's right, in full screen too). Lit while on.
+/// Close is above them and always there, as they are, and every button looks the same whatever its
+/// state: one that cannot be used now is not shown, never grayed (user 2026-11-23).
 /// There is no Screenshot, Disconnect, Observe or Shared Clipboard button (user 2026-11-23: none of
 /// them is needed; the clipboard must be shared, and may have no button; Sound stays for now): a
 /// window works that Mac once its picture is double-clicked, and the clipboard is always shared.
@@ -257,17 +259,23 @@ struct ScreenRail: View {
 
     static let side: CGFloat = 34
     static let gap: CGFloat = 6
-    /// Full Screen and More, then what More brings. Full Quality only without Dynamic Resolution: a
+    /// Close, Full Screen and More, then what More brings. Full Quality only without Dynamic Resolution: a
     /// display of the session's own is always sent at full quality (user 2026-11-23: with Dynamic
-    /// Resolution on, the Full Quality button goes).
-    enum Kind { case fullScreen, more, scaling, dynamic, quality, sound, keys, info }
-    static func kinds(own: Bool) -> [Kind] {
-        own ? [.fullScreen, .more, .scaling, .dynamic, .sound, .keys, .info] : [.fullScreen, .more, .scaling, .dynamic, .quality, .sound, .keys, .info]
+    /// Resolution on, the Full Quality button goes). Keys only while the window works that Mac.
+    enum Kind { case close, fullScreen, more, scaling, dynamic, quality, sound, keys, info }
+    static func kinds(own: Bool, controlling: Bool) -> [Kind] {
+        var kinds: [Kind] = [.close, .fullScreen, .more, .scaling, .dynamic]
+        if !own { kinds.append(.quality) }
+        kinds.append(.sound)
+        if controlling { kinds.append(.keys) }
+        kinds.append(.info)
+        return kinds
     }
-    /// The most there are, for the room a click may stop in.
-    static let most = 8
-    static let moreIndex = 1
-    static let scalingIndex = 2
+    /// The most there are, for the room a click may stop in, and how many are always there.
+    static let most = 9
+    static let always = 3
+    static let moreIndex = 2
+    static let scalingIndex = 3
     static let lit = Color(red: 0.72, green: 0.84, blue: 0.60)
 
     /// How many buttons a column holds in a room that tall.
@@ -290,8 +298,8 @@ struct ScreenRail: View {
     var body: some View {
         GeometryReader { geometry in
             let rows = Self.rows(in: geometry.size.height)
-            let kinds = Self.kinds(own: info.own)
-            let shown = info.railOpen ? kinds.count : 2
+            let kinds = Self.kinds(own: info.own, controlling: info.controlling)
+            let shown = info.railOpen ? kinds.count : Self.always
             let columns = (shown + rows - 1) / rows
             HStack(alignment: .top, spacing: Self.gap) {
                 ForEach(Array((0..<columns).reversed()), id: \.self) { column in
@@ -308,6 +316,8 @@ struct ScreenRail: View {
 
     @ViewBuilder private func button(_ kind: Kind) -> some View {
         switch kind {
+        case .close:
+            ScreenRailButton(symbol: "xmark", title: tr("Close"), active: false, hint: "") { act(.close) }
         case .fullScreen:
             ScreenRailButton(symbol: info.fullScreen ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.backward.and.arrow.down.forward",
                              title: tr("Full Screen"), active: info.fullScreen, hint: tr("Enter or leave full screen")) {
@@ -339,7 +349,6 @@ struct ScreenRail: View {
             ScreenRailButton(symbol: "command", title: tr("Keys"), active: false, hint: tr("Send keys that this Mac keeps for itself")) {
                 act(.keys)
             }
-            .disabled(!info.controlling)
         case .info:
             ScreenRailButton(symbol: "info.circle", title: tr("Info"), active: info.showingInfo,
                              hint: tr("Everything known of the connection and the stream")) {
@@ -361,7 +370,6 @@ private struct ScreenRailButton: View {
     let hint: String
     let action: () -> Void
     @State private var hovered = false
-    @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
 
     /// On, in the light green on dark glass and the accent on light glass.
@@ -381,7 +389,6 @@ private struct ScreenRailButton: View {
                     .clipShape(Circle())
                 }
                 .overlay(Circle().strokeBorder(active ? lit.opacity(0.7) : Palette.strong, lineWidth: 0.8))
-                .opacity(enabled ? 1 : 0.5)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

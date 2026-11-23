@@ -607,6 +607,9 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             screenshot()
         case .fullScreen:
             window.toggleFullScreen(nil)
+        case .close:
+            window.close()
+            return
         case .connection:
             if ended { connect() } else { disconnect() }
         }
@@ -804,7 +807,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
                 viewer.window.orderFrontRegardless()
                 try await Task.sleep(nanoseconds: 700_000_000)
                 let name = "\(language.rawValue)-\(dark ? "dark" : "light")"
-                // The picture with Full Screen and More alone, as a live session shows it; then with every
+                // The picture with Close, Full Screen and More alone, as a live session shows it; then with every
                 // button, the title strip and the line.
                 viewer.container.chrome(shown: false, animated: false)
                 try await Task.sleep(nanoseconds: 200_000_000)
@@ -1463,9 +1466,9 @@ enum SystemCursors {
 }
 
 /// The window's content. While the screen is shown, the picture fills the window (user 2026-11-23:
-/// the whole window is the remote desktop, with no frame and no title row), and two round buttons
-/// float over its right side, Full Screen and More (user 2026-11-23: no buttons at the top; two
-/// floating buttons at the right). The pointer on More, or a press of it, brings the rest of the
+/// the whole window is the remote desktop, with no frame and no title row), and three round buttons
+/// float over its right side, Close, Full Screen and More (user 2026-11-23: no buttons at the top;
+/// floating buttons at the right; a close button always there). The pointer on More, or a press of it, brings the rest of the
 /// buttons under them, and with them the title strip (the window's close, minimize and zoom buttons
 /// and the Mac's name) over the picture's top and the line of what is known of the connection (a
 /// click there opens Info) over its bottom; all go again soon after the pointer is back on the
@@ -1618,8 +1621,8 @@ final class ScreenContainer: NSView {
         return NSRect(x: 0, y: top, width: max(bounds.width - Self.railInset, ScreenRail.side),
                       height: max(bounds.height - top - Self.barHeight - Self.railClear, least))
     }
-    /// Where the rail's buttons are now: Full Screen and More, or all of them.
-    private var railRegion: NSRect { ScreenRail.region(shown: chromeShown ? ScreenRail.most : 2, in: railRoom) }
+    /// Where the rail's buttons are now: Close, Full Screen and More, or all of them.
+    private var railRegion: NSRect { ScreenRail.region(shown: chromeShown ? ScreenRail.most : ScreenRail.always, in: railRoom) }
     /// Where one of the rail's buttons is, once they are all shown.
     func railFrame(of index: Int) -> NSRect { ScreenRail.frame(of: index, in: railRoom) }
     /// The pointer there keeps what More brought: on the title strip, on the line, or among the buttons.
