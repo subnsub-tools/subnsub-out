@@ -351,8 +351,9 @@ struct ScreenRail: View {
     }
 }
 
-/// A button of the rail: a dark round with its sign, and its name beside it, at its left, only
-/// while the pointer is on it.
+/// A button of the rail: a round of glass with its sign, the picture under it blurred as under the
+/// window's top and bottom rows (user 2026-11-23), and its name beside it, at its left, on glass
+/// too, only while the pointer is on it.
 private struct ScreenRailButton: View {
     let symbol: String
     let title: String
@@ -361,15 +362,25 @@ private struct ScreenRailButton: View {
     let action: () -> Void
     @State private var hovered = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.colorScheme) private var scheme
+
+    /// On, in the light green on dark glass and the accent on light glass.
+    private var lit: Color { scheme == .dark ? ScreenRail.lit : Palette.accent }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(active ? ScreenRail.lit : Color.white)
+                .foregroundStyle(active ? lit : Palette.ink)
                 .frame(width: ScreenRail.side, height: ScreenRail.side)
-                .background(Color.black.opacity(hovered ? 0.64 : 0.46), in: Circle())
-                .overlay(Circle().stroke(active ? ScreenRail.lit.opacity(0.7) : Color.white.opacity(0.28), lineWidth: 0.8))
+                .background {
+                    ZStack {
+                        RailGlass()
+                        if hovered { Color.primary.opacity(0.1) }
+                    }
+                    .clipShape(Circle())
+                }
+                .overlay(Circle().strokeBorder(active ? lit.opacity(0.7) : Palette.strong, lineWidth: 0.8))
                 .opacity(enabled ? 1 : 0.5)
                 .contentShape(Circle())
         }
@@ -379,11 +390,12 @@ private struct ScreenRailButton: View {
             if hovered {
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Palette.ink)
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.black.opacity(0.64), in: Capsule())
+                    .background { RailGlass().clipShape(Capsule()) }
+                    .overlay(Capsule().strokeBorder(Palette.strong, lineWidth: 0.8))
                     .fixedSize()
                     .offset(x: -(ScreenRail.side + 6))
                     .allowsHitTesting(false)
@@ -394,6 +406,22 @@ private struct ScreenRailButton: View {
         .accessibilityHint(hint)
         .accessibilityAddTraits(active ? .isSelected : [])
     }
+}
+
+/// The panel's glass, blurring what is under it in the window (the picture), and never what a click
+/// lands on: the click goes to the button it is drawn under.
+private struct RailGlass: NSViewRepresentable {
+    final class View: NSVisualEffectView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+    func makeNSView(context: Context) -> View {
+        let view = View()
+        view.material = .hudWindow
+        view.blendingMode = .withinWindow
+        view.state = .active
+        return view
+    }
+    func updateNSView(_ view: View, context: Context) {}
 }
 
 /// The line under the picture; a click opens Info.

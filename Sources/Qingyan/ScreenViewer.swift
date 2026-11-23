@@ -1512,7 +1512,7 @@ final class ScreenContainer: NSView {
             glass.isHidden = fullScreen
             black.isHidden = !fullScreen
             let dark = fullScreen ? NSAppearance(named: .darkAqua) : nil
-            for view in [top, bottom, overlay] as [NSView] { view.appearance = dark }
+            for view in [top, bottom, overlay, rail] as [NSView] { view.appearance = dark }
         }
     }
     private let scroll = NSScrollView()
