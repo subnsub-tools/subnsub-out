@@ -982,6 +982,7 @@ final class ScreenLink: @unchecked Sendable {
     var onPieces: (@MainActor (String) -> Void)?
     private var pieces = (drawn: 0, outside: 0, early: 0, unreadable: 0)
     private var lastPiece = ""
+    private var piecesTold = Date.distantPast
     private var awaitingKey = true
     /// No picture has gone to the display layer since the last decoder record.
     private var fresh = false
@@ -1342,6 +1343,7 @@ final class ScreenLink: @unchecked Sendable {
     }
 
     private func tellPieces() {
+        piecesTold = Date()
         let size = canvas.map { "\($0.width)x\($0.height)" } ?? "none"
         let words = "drawn \(pieces.drawn), outside \(pieces.outside), early \(pieces.early), unreadable \(pieces.unreadable); "
             + "last \(lastPiece); canvas \(size), lit \(canvas?.lit() ?? 0)/1000, shown \(framesIn)"
@@ -1363,7 +1365,9 @@ final class ScreenLink: @unchecked Sendable {
         }
         renderer.enqueue(sample)
         count("enqueued")
-        tellPieces()
+        // Info reads it and nothing else does: once a second is enough, and a word for every
+        // picture had the window laid out again as often as pictures came.
+        if Date().timeIntervalSince(piecesTold) >= 1 { tellPieces() }
         if fresh {
             fresh = false
             let onPicture = onPicture
