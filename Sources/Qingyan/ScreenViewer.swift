@@ -1519,8 +1519,8 @@ final class ScreenContainer: NSView {
         // From the window's very top: not set below the title bar, as a scroll view sets itself by default.
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsetsZero
-        scroll.autohidesScrollers = true
-        scroll.scrollerStyle = .overlay
+        // No scroll bars, in this window as in every other (user 2026-11-23): at its own size the
+        // picture moves when the pointer reaches an edge, and with the wheel while observing.
         scroll.hasHorizontalScroller = false
         scroll.hasVerticalScroller = false
         scroll.contentView.drawsBackground = false
@@ -1564,8 +1564,6 @@ final class ScreenContainer: NSView {
         if !scaled, let layout = screen.remoteLayout {
             size = NSSize(width: max(CGFloat(layout.width), size.width), height: max(CGFloat(layout.height), size.height))
         }
-        scroll.hasHorizontalScroller = size.width > room.width
-        scroll.hasVerticalScroller = size.height > room.height
         if screen.frame.size != size { screen.frame = NSRect(origin: .zero, size: size) }
     }
 

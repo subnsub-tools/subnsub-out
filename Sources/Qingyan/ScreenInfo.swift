@@ -462,7 +462,7 @@ struct ScreenInfoView: View {
 
     var body: some View {
         if scrolls {
-            ScrollView { content }.frame(width: Self.width, height: 580)
+            ScrollView { content }.scrollIndicators(.never).frame(width: Self.width, height: 580)
         } else {
             content
         }

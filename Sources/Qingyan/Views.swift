@@ -25,6 +25,10 @@ enum Metrics {
     /// window's own close and minimize buttons (TitleRowLights), sit in its middle (user 2026-11-22:
     /// the buttons at the top were too close to the window's top).
     static let titlebar: CGFloat = 38
+    /// On macOS 26, where content passes under a title row with a soft blur, how far below the row
+    /// it starts: at the row's lower edge its first block lay under the blur before anything was
+    /// scrolled (user 2026-11-23: the content sits too high and is covered by the top bar).
+    static let underBar: CGFloat = 8
     /// The side drawer (History or Settings) that slides out beside the column.
     static let drawer: CGFloat = 316
     static let minHeight: CGFloat = 260
@@ -607,7 +611,8 @@ private struct ListHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// A list that is as tall as its rows until `maxHeight`, then scrolls inside the panel.
+/// A list that is as tall as its rows until `maxHeight`, then scrolls inside the panel, with no
+/// scroll bar (user 2026-11-23: no scroll bar in any window).
 struct FittedScroll<Content: View>: View {
     let maxHeight: CGFloat
     var content: Content
@@ -617,6 +622,7 @@ struct FittedScroll<Content: View>: View {
         ScrollView {
             content.background(GeometryReader { Color.clear.preference(key: ListHeightKey.self, value: $0.size.height) })
         }
+        .scrollIndicators(.never)
         .frame(height: min(max(height, 1), maxHeight))
         .onPreferenceChange(ListHeightKey.self) { next in
             if abs(height - next) > 0.5 { height = next }
@@ -690,57 +696,92 @@ struct SideDrawer: View {
 
     private var showingSettings: Bool { settings.page == .settings }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: showingSettings ? "gearshape" : PanelSection.history.symbol)
-                    .font(.system(size: 11.5, weight: .semibold))
-                Text(showingSettings ? tr("Settings") : tr("History"))
-                    .font(.system(size: 13, weight: .bold))
-                if !showingSettings && !settings.history.isEmpty {
-                    Text(settings.history.count == 1 ? tr("1 record") : tr("%ld records", settings.history.count)).font(.system(size: 11)).foregroundStyle(Palette.muted)
-                }
-                Spacer()
-                HeaderIconButton(
-                    symbol: "xmark",
-                    active: false,
-                    helpText: showingSettings ? tr("Hide Settings") : tr("Hide History"),
-                    accessibility: showingSettings ? tr("Hide Settings") : tr("Hide History")
-                ) {
-                    settings.closeDrawer()
-                }
+    /// On macOS 26 the pages pass under the title row with the system's soft blur, as the panel's
+    /// content passes under the panel's (user 2026-11-23: History and Settings should have the same
+    /// cover at the top as the main panel); they start a little below it, clear of the blur.
+    /// Earlier systems have no such blur, and the pages end at the title row's lower edge.
+    @ViewBuilder private var layout: some View {
+        if #available(macOS 26.0, *) {
+            if windowed {
+                pages(top: Metrics.underBar)
+                    .safeAreaBar(edge: .top, spacing: 0) { bar }
+                    .scrollEdgeEffectStyle(.soft, for: .top)
+            } else {
+                bar
+                pages(top: 0)
             }
-            .padding(.leading, windowed && settings.drawerLeft ? 54 : 12)
-            .padding(.trailing, 8)
-            .frame(height: Metrics.titlebar)
-
-            ZStack(alignment: .topLeading) {
-                HistorySection(settings: settings, controller: controller, full: true, fills: windowed)
-                    .padding(.horizontal, 10).padding(.bottom, 10)
-                    .opacity(showingSettings ? 0 : 1)
-                    .offset(x: showingSettings ? -10 : 0)
-                    .allowsHitTesting(!showingSettings)
-                    .accessibilityHidden(showingSettings)
-
-                Group {
-                    if windowed {
-                        ScrollView {
-                            SettingsPage(settings: settings, controller: controller)
-                                .padding(.horizontal, 10).padding(.bottom, 12)
-                        }
-                        .scrollIndicators(.never)
-                    } else {
-                        SettingsPage(settings: settings, controller: controller)
-                            .padding(.horizontal, 10).padding(.bottom, 12)
-                    }
-                }
-                .opacity(showingSettings ? 1 : 0)
-                .offset(x: showingSettings ? 0 : 10)
-                .allowsHitTesting(showingSettings)
-                .accessibilityHidden(!showingSettings)
-            }
-            .animation(Motion.standard, value: showingSettings)
+        } else {
+            bar
+            pages(top: 0)
         }
+    }
+
+    private var bar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: showingSettings ? "gearshape" : PanelSection.history.symbol)
+                .font(.system(size: 11.5, weight: .semibold))
+            Text(showingSettings ? tr("Settings") : tr("History"))
+                .font(.system(size: 13, weight: .bold))
+            if !showingSettings && !settings.history.isEmpty {
+                Text(settings.history.count == 1 ? tr("1 record") : tr("%ld records", settings.history.count)).font(.system(size: 11)).foregroundStyle(Palette.muted)
+            }
+            Spacer()
+            HeaderIconButton(
+                symbol: "xmark",
+                active: false,
+                helpText: showingSettings ? tr("Hide Settings") : tr("Hide History"),
+                accessibility: showingSettings ? tr("Hide Settings") : tr("Hide History")
+            ) {
+                settings.closeDrawer()
+            }
+        }
+        .padding(.leading, windowed && settings.drawerLeft ? 54 : 12)
+        .padding(.trailing, 8)
+        .frame(height: Metrics.titlebar)
+    }
+
+    /// History and Settings, one over the other; in the window each scrolls whole, with no scroll bar.
+    private func pages(top: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            Group {
+                if windowed {
+                    ScrollView {
+                        HistorySection(settings: settings, controller: controller, full: true, bare: true)
+                            .padding(.horizontal, 10).padding(.top, top).padding(.bottom, 10)
+                    }
+                    .scrollIndicators(.never)
+                } else {
+                    HistorySection(settings: settings, controller: controller, full: true)
+                        .padding(.horizontal, 10).padding(.bottom, 10)
+                }
+            }
+            .opacity(showingSettings ? 0 : 1)
+            .offset(x: showingSettings ? -10 : 0)
+            .allowsHitTesting(!showingSettings)
+            .accessibilityHidden(showingSettings)
+
+            Group {
+                if windowed {
+                    ScrollView {
+                        SettingsPage(settings: settings, controller: controller)
+                            .padding(.horizontal, 10).padding(.top, top).padding(.bottom, 12)
+                    }
+                    .scrollIndicators(.never)
+                } else {
+                    SettingsPage(settings: settings, controller: controller)
+                        .padding(.horizontal, 10).padding(.bottom, 12)
+                }
+            }
+            .opacity(showingSettings ? 1 : 0)
+            .offset(x: showingSettings ? 0 : 10)
+            .allowsHitTesting(showingSettings)
+            .accessibilityHidden(!showingSettings)
+        }
+        .animation(Motion.standard, value: showingSettings)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) { layout }
         .frame(width: Metrics.drawer)
         .frame(maxHeight: windowed ? .infinity : nil, alignment: .top)
         .clipped()
@@ -846,7 +887,7 @@ struct MainView: View {
 
     @ViewBuilder private var scroller: some View {
         if #available(macOS 26.0, *) {
-            ScrollView { measuredContent() }
+            ScrollView { measuredContent(top: Metrics.underBar) }
                 .scrollIndicators(.never)
                 .safeAreaBar(edge: .top, spacing: 0) { header }
                 .scrollEdgeEffectStyle(.soft, for: .top)
@@ -1446,6 +1487,8 @@ struct HistorySection: View {
     @ObservedObject var controller: DictationController
     var full: Bool
     var fills = false
+    /// What holds it scrolls it whole (the drawer): the list is as tall as its rows.
+    var bare = false
     @State private var query = ""
     @State private var confirm = false
     @State private var expanded: Set<HistoryEntry.ID> = []
@@ -1485,8 +1528,10 @@ struct HistorySection: View {
                 caption(tr("No records yet. You can record at any time, even with no text field in focus; results and audio waiting to be transcribed are kept on this Mac."))
             } else if shown.isEmpty {
                 caption(tr("No matching records."))
+            } else if bare {
+                lazyList(shown)
             } else if fills {
-                ScrollView { lazyList(shown) }.frame(maxHeight: .infinity)
+                ScrollView { lazyList(shown) }.scrollIndicators(.never).frame(maxHeight: .infinity)
             } else if full {
                 FittedScroll(maxHeight: 380) { lazyList(shown) }
             } else {
