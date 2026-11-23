@@ -207,18 +207,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        item(menu, controller.phase == .recording ? tr("out · Recording") : tr("out · %@ to Start or Stop", settings.shortcutLabel), nil)?.isEnabled = false
+        let recording = controller.phase == .recording
+        // Every item has a sign before its name (user 2026-11-23).
+        item(menu, recording ? tr("out · Recording") : tr("out · %@ to Start or Stop", settings.shortcutLabel), nil, recording ? "record.circle" : "command")?.isEnabled = false
         menu.addItem(.separator())
-        if controller.phase == .recording { item(menu, tr("Stop Recording"), #selector(stopRecording)) }
-        if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording)) }
-        if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording)) }
-        if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard)) }
-        if controller.screenState == .viewing { item(menu, tr("Stop Showing the Screen"), #selector(stopScreen)) }
-        item(menu, tr("Keep on Top"), #selector(togglePinned))?.state = pinned ? .on : .off
-        item(menu, tr("Settings…"), #selector(openSettings))
-        if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult)) }
+        if controller.phase == .recording { item(menu, tr("Stop Recording"), #selector(stopRecording), "stop.circle") }
+        if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording), "mic") }
+        if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording), "xmark.circle") }
+        if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard), "keyboard") }
+        if controller.screenState == .viewing { item(menu, tr("Stop Showing the Screen"), #selector(stopScreen), "eye.slash") }
+        item(menu, tr("Keep on Top"), #selector(togglePinned), "pin")?.state = pinned ? .on : .off
+        item(menu, tr("Settings…"), #selector(openSettings), "gearshape")
+        if !controller.result.isEmpty { item(menu, tr("Copy Last Result"), #selector(copyResult), "doc.on.doc") }
         menu.addItem(.separator())
-        item(menu, tr("Quit out"), #selector(quit))
+        item(menu, tr("Quit out"), #selector(quit), "power")
     }
 
     /// A click on Out! shows the panel along with the menu (user 2026-11-23). Kept on top, the bar is
@@ -238,8 +240,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
-    @discardableResult private func item(_ menu: NSMenu, _ title: String, _ action: Selector?) -> NSMenuItem? {
+    @discardableResult private func item(_ menu: NSMenu, _ title: String, _ action: Selector?, _ symbol: String) -> NSMenuItem? {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         item.target = self; menu.addItem(item); return item
     }
     @objc private func stopScreen() { controller.screen.stopViewing() }
