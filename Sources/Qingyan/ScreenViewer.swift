@@ -465,6 +465,9 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             // slow, and each update shown is said back.
             fields["jpeg"] = true
             fields["scaled"] = true
+            // And, from a helper that has it, that Mac's own Adaptive Quality picture as its Screen
+            // Sharing encodes it, decoded here, in place of the JPEGs.
+            fields["mvs"] = true
         } else if ownDisplay {
             let size = container.pictureSize
             let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
@@ -1337,8 +1340,8 @@ final class ScreenLink: @unchecked Sendable {
             }
             return
         }
-        lastPiece = "\(piece.x),\(piece.y) \(piece.width)x\(piece.height) \(piece.deflated.count) B" + (piece.jpeg ? " JPEG" : "")
-        if piece.jpeg, !adaptive {
+        lastPiece = "\(piece.x),\(piece.y) \(piece.width)x\(piece.height) \(piece.deflated.count) B" + (piece.jpeg ? " JPEG" : piece.coded ? " coded" : "")
+        if piece.jpeg || piece.coded, !adaptive {
             adaptive = true
             let onCodec = onCodec
             main { onCodec?("adaptive") }

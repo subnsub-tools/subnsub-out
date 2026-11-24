@@ -28,8 +28,11 @@ import Network
 ///                      deflated, or with flag 2 the rectangle as a JPEG (to a viewer whose open
 ///                      said jpeg; smaller than the rectangle to one that said scaled). Flag 1 =
 ///                      the update is whole: no rectangle, and for such a viewer x and y are the
-///                      update's number, which it says back (shown)
-///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, jpeg, scaled, w, h, scale},
+///                      update's number, which it says back (shown). With flag 4 (to a viewer whose
+///                      open said mvs) the rectangle as that Mac's Screen Sharing sent it in its own
+///                      codec (ScreenMVS); flag 8 with it = the first of a session, flag 16 with it =
+///                      the next piece holds more of the same rectangle's bytes
+///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, jpeg, scaled, mvs, w, h, scale},
 ///                      shown {n}, …
 ///                    2 pointer: buttons, x y (points)
 ///                    3 key: down, virtual key code
@@ -296,12 +299,17 @@ public extension ScreenWire {
 
     /// A piece of a standard session's picture: where it lies in the picture, in pixels, and its BGRA
     /// rows, deflated, or the same rectangle as a JPEG (`jpeg`: an adaptive session sends what
-    /// changes that way, and the same pixels deflated once that place rests); or, with no pixels,
-    /// the word that the pieces of one update have all come.
+    /// changes that way, and the same pixels deflated once that place rests); or the rectangle in
+    /// that Mac's own codec, as its Screen Sharing sent it (`coded`: `first` for the first of a
+    /// session, `more` when the next piece holds more of its bytes); or, with no pixels, the word
+    /// that the pieces of one update have all come.
     struct PicturePiece: Equatable, Sendable {
         public let x: Int, y: Int, width: Int, height: Int
         public let whole: Bool
         public let jpeg: Bool
+        public let coded: Bool
+        public let first: Bool
+        public let more: Bool
         public let deflated: Data
         /// Of the word that an update is whole: the update's number in an adaptive session, which
         /// the helper waits to hear back before it asks that Mac what changed next; 0 otherwise.
@@ -312,7 +320,8 @@ public extension ScreenWire {
         guard body.count >= 9 else { return nil }
         let b = [UInt8](body.prefix(9))
         func u(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
-        return PicturePiece(x: u(0), y: u(2), width: u(4), height: u(6), whole: b[8] & 1 == 1, jpeg: b[8] & 2 == 2, deflated: Data(body.dropFirst(9)))
+        return PicturePiece(x: u(0), y: u(2), width: u(4), height: u(6), whole: b[8] & 1 == 1, jpeg: b[8] & 2 == 2,
+                            coded: b[8] & 4 == 4, first: b[8] & 8 == 8, more: b[8] & 16 == 16, deflated: Data(body.dropFirst(9)))
     }
 
     /// The most pixels a picture has, its longest side, and the most bytes of pixels in one piece:

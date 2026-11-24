@@ -16,6 +16,9 @@ import QingyanCore
 /// A piece comes as exact pixels, or as a JPEG of them where that Mac's display is changing (an
 /// adaptive session, user 2026-11-24: without it the picture lags too far behind to work with);
 /// the helper sends the same place exact once it rests, so a JPEG's pixels are only ever drawn over.
+/// Or it comes in that Mac's own codec (a coded session, user 2026-11-24: the system's Screen Sharing
+/// to the same Mac is plainly smoother, and this is what it is sent): what that Mac's Screen Sharing
+/// encoded, passed on by the helper as it was and decoded here (ScreenMVS).
 ///
 /// A sample's pixels are a buffer from a pool. A buffer that comes round again still holds the
 /// picture it last carried, so only what changed since then is copied into it: the canvas remembers
@@ -28,6 +31,9 @@ final class ScreenCanvas {
     private var pixels: UnsafeMutablePointer<UInt8>?
     private var scratch: UnsafeMutablePointer<UInt8>?
     private var scratchCount = 0
+    /// A coded session's decoder, and the bytes so far of a rectangle that comes in several pieces.
+    private var codec: ScreenMVS?
+    private var held = Data()
     private var pool: CVPixelBufferPool?
     private var format: CMVideoFormatDescription?
 
@@ -64,6 +70,8 @@ final class ScreenCanvas {
         pixels = next
         width = w
         height = h
+        // What the decoder knew of each place went with the old size, as in Screen Sharing's own viewer.
+        codec?.resize(width: w, height: h)
         pool = nil
         format = nil
         carried = [:]
@@ -74,6 +82,7 @@ final class ScreenCanvas {
 
     /// One piece into the picture; false when it does not lie in it or its pixels are not what it says.
     func draw(_ piece: ScreenWire.PicturePiece) -> Bool {
+        if piece.coded { return drawCoded(piece) }
         guard let pixels, piece.width > 0, piece.height > 0, piece.x + piece.width <= width, piece.y + piece.height <= height else { return false }
         let count = piece.width * piece.height * 4
         guard count <= ScreenWire.pieceLimit else { return false }
@@ -95,6 +104,41 @@ final class ScreenCanvas {
         }
         changed = changed.map { $0.union(box) } ?? box
         return true
+    }
+
+    /// One rectangle in that Mac's own codec into the picture. The decoder keeps what that Mac's coder
+    /// keeps, so every rectangle of a session comes here, in order, the ones with no size too (the
+    /// codec's tables). False when one could not be read: the decoder is then not what that Mac's
+    /// coder takes it for, until the whole picture has come again.
+    private func drawCoded(_ piece: ScreenWire.PicturePiece) -> Bool {
+        guard let pixels else { return false }
+        if piece.first || codec == nil {
+            let made = ScreenMVS()
+            guard made.resize(width: width, height: height) else { return false }
+            codec = made
+            held = Data()
+        }
+        guard let codec else { return false }
+        if piece.more || !held.isEmpty {
+            guard held.count + piece.deflated.count <= ScreenMVS.maximumBodyLength else { held = Data(); return false }
+            held.append(piece.deflated)
+            if piece.more { return true }
+        }
+        let body = held.isEmpty ? piece.deflated : held
+        held = Data()
+        do {
+            let touched = try body.withUnsafeBytes { raw in
+                try codec.decode(x: piece.x, y: piece.y, width: piece.width, height: piece.height, body: raw, into: pixels)
+            }
+            if let touched {
+                let box = Box(x0: max(touched.x, 0), y0: max(touched.y, 0),
+                              x1: min(touched.x + touched.width, width), y1: min(touched.y + touched.height, height))
+                if box.x1 > box.x0, box.y1 > box.y0 { changed = changed.map { $0.union(box) } ?? box }
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// A JPEG's pixels into `room` as BGRA rows, nothing transparent; false when it is not a picture of
