@@ -26,9 +26,10 @@ import Network
 ///                    8 layout: the display in points w h, the picture in pixels w h
 ///                    9 picture (standard): x y w h (pixels), flags, then the rectangle's BGRA rows,
 ///                      deflated, or with flag 2 the rectangle as a JPEG (to a viewer whose open
-///                      said jpeg). Flag 1 = the update is whole: no rectangle, and for such a
-///                      viewer x and y are the update's number, which it says back (shown)
-///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, jpeg, w, h, scale},
+///                      said jpeg; smaller than the rectangle to one that said scaled). Flag 1 =
+///                      the update is whole: no rectangle, and for such a viewer x and y are the
+///                      update's number, which it says back (shown)
+///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, jpeg, scaled, w, h, scale},
 ///                      shown {n}, …
 ///                    2 pointer: buttons, x y (points)
 ///                    3 key: down, virtual key code

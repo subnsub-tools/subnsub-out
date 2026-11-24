@@ -98,15 +98,17 @@ final class ScreenCanvas {
     }
 
     /// A JPEG's pixels into `room` as BGRA rows, nothing transparent; false when it is not a picture of
-    /// this size. Drawn in the picture's own color space, so its values come as they were sent.
+    /// this size or smaller. One that is smaller is drawn over the whole (where that Mac's display
+    /// changes faster than the way carries, the helper sends less of it). Drawn in the picture's own
+    /// color space, so its values come as they were sent.
     private static func decode(_ jpeg: Data, into room: UnsafeMutablePointer<UInt8>, width: Int, height: Int) -> Bool {
         guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-              image.width == width, image.height == height,
+              image.width > 0, image.height > 0, image.width <= width, image.height <= height,
               let context = CGContext(data: room, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                       space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
-        context.interpolationQuality = .none
+        context.interpolationQuality = image.width == width && image.height == height ? .none : .low
         context.setBlendMode(.copy)
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         // The byte no color is in is not left to the drawing.

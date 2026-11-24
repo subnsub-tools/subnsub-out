@@ -461,8 +461,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         askedSize = nil
         if standard {
             fields["standard"] = true
-            // Adaptive: what changes may come as JPEGs, and each update shown is said back.
+            // Adaptive: what changes may come as JPEGs, smaller than their place where the way is
+            // slow, and each update shown is said back.
             fields["jpeg"] = true
+            fields["scaled"] = true
         } else if ownDisplay {
             let size = container.pictureSize
             let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
