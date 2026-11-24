@@ -82,11 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
-        if let index = CommandLine.arguments.firstIndex(of: "--screen-pipe-selftest"), CommandLine.arguments.count > index + 3 {
+        if let index = CommandLine.arguments.firstIndex(of: "--screen-selftest"), CommandLine.arguments.count > index + 2 {
             let arguments = CommandLine.arguments
+            let highPerformance = arguments.count > index + 3 && arguments[index + 3] == "hp"
             Task { @MainActor in
-                do { exit(try await ScreenPipeSelfTest.run(socket: arguments[index + 1], account: arguments[index + 2], report: arguments[index + 3]) ? 0 : 1) }
-                catch { fputs("Screen pipe self-test failed: \(error)\n", stderr); exit(1) }
+                do { exit(try await ScreenShareSelfTest.run(account: arguments[index + 1], report: arguments[index + 2], highPerformance: highPerformance) ? 0 : 1) }
+                catch { fputs("Screen self-test failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

@@ -320,10 +320,11 @@ public enum RemoteSender {
     }
 
     /// Opens a trusted Mac's screen in this out: the channel's handshake proves which Mac it is, and
-    /// once that Mac has said yes, the connection carries the screen session (ScreenWire) as it is.
-    /// Only through the Monitor helper, whose tunnel seals the session's frames.
+    /// once that Mac has said yes, the connection carries that Mac's Screen Sharing for this out's
+    /// own client (ScreenTunnel.swift); the yes says the Mac's name, its account and whether it has
+    /// Apple silicon. Only through the Monitor helper, whose tunnel seals what it carries.
     public static func openScreen(_ device: TrustedDevice, identity: DeviceIdentity, name: String, listening: Int,
-                                  timeout: TimeInterval = 8) async throws -> NWConnection {
+                                  timeout: TimeInterval = 8) async throws -> (NWConnection, ScreenSession.Host) {
         guard HelperLink.agent(of: device.host) != nil else {
             throw VoiceError(tr("%@ is not reached through the Monitor helper, so its screen cannot be shown.", device.label))
         }
@@ -339,13 +340,19 @@ public enum RemoteSender {
         }
         defer { deadline.cancel() }
         do {
-            try await channel.write(["screen": "open"])
+            try await channel.write(["screen": "open", "pipe": 2])
             let reply = try await channel.readObject()
             guard reply["ok"] as? Bool == true else {
                 channel.close()
                 throw VoiceError(reply["message"] as? String ?? tr("%@ did not show its screen.", device.label))
             }
-            return channel.connection
+            // An out there from before 2026-11-25 sends the helper's session, not Screen Sharing's bytes.
+            guard reply["pipe"] as? Int == 2 else {
+                channel.close()
+                throw VoiceError(tr("The two Macs run different versions of out. Update both to the same version."))
+            }
+            return (channel.connection, ScreenSession.Host(name: reply["name"] as? String ?? device.label, user: reply["user"] as? String ?? "",
+                                                           appleSilicon: reply["arm64"] as? Bool ?? false))
         } catch let error as VoiceError { throw error }
         catch {
             channel.close()
@@ -1026,6 +1033,10 @@ public final class RemoteReceiver {
             return (["ok": false, "message": tr("The other Mac does not allow this Mac to type text there."), "miss": MissReason.notAllowed.rawValue], .close)
         }
         if object["screen"] as? String == "open" {
+            // A viewer's out from before 2026-11-25 asks for the helper's session, which is gone.
+            guard object["pipe"] as? Int == 2 else {
+                return refuse(tr("The two Macs run different versions of out. Update both to the same version."))
+            }
             // The session's frames are not sealed as the channel's are: they go only on the road the
             // helpers keep between the owner's Macs, whose tunnel seals them.
             guard HelperLink.agent(of: channel.peerKey) != nil else {
@@ -1033,7 +1044,8 @@ public final class RemoteReceiver {
             }
             guard onScreen != nil else { return refuse(tr("out on the other Mac cannot show its screen.")) }
             expire(channel.connection, after: nil)
-            return (["ok": true], .screen)
+            return (["ok": true, "pipe": 2, "name": Host.current().localizedName ?? name, "user": NSUserName(),
+                     "arm64": ScreenTunnel.appleSilicon], .screen)
         }
         if let nonce = object["arm"] as? Int {
             guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }

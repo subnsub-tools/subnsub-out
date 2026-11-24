@@ -3,21 +3,19 @@ import Compression
 import CoreGraphics
 import Network
 
-/// A Mac's screen, shown on the owner's Monitor page and in another Mac's out, and worked from there.
+/// Another Mac's screen as out's window takes it, and worked from there.
 ///
-/// The picture, the sound and the input are that Mac's own Screen Sharing in its High Performance
-/// mode: the Monitor helper there signs in to it with the account the viewer gives and speaks
-/// these frames (helper/go/screenhp.go, put.sock {"op":"screen-hp"}); out on that Mac lets the
-/// viewer in and carries the session unread (ScreenHost). Until 0.1.59 out recorded the screen
-/// itself and spoke them; a Mac still on such an out says hello without "signin", and is opened as
-/// before. A viewer may ask for Screen Sharing's standard mode instead ("standard" in its first word,
-/// where the hello offers it): the Mac's display as it is, with no sound, sent as pixels where it
-/// changes and not at all while it does not (user 2026-11-23: a Mac showing the High Performance
-/// video runs hot, and the system's own standard mode does not). What travels is frames each way, [kind: 1 byte][length: 3 bytes][body]:
+/// The picture, the sound and the input are that Mac's own Screen Sharing. out's own client signs
+/// in to it with the account the window gives and speaks these frames to the window in this process
+/// (ScreenSession.swift); until 2026-11-25 the Monitor helper on that Mac did, and they crossed the
+/// road between the Macs. A window may ask for Screen Sharing's standard mode ("standard" in its
+/// first word): the Mac's display as it is, with no sound, sent where it changes and not at all while
+/// it does not (user 2026-11-23: a Mac showing the High Performance video runs hot, and the system's
+/// own standard mode does not). The frames, each way, [kind: 1 byte][length: 3 bytes][body]:
 ///
 ///     to the page    1 status (JSON): hello {v, name, user, codecs, signin}, connecting,
 ///                      live {w h (points), cw ch (pixels), own, audio, input}, end {why}
-///                    2 video configuration: codec, then avcC / hvcC
+///                    2 video configuration: codec (2, HEVC), then hvcC
 ///                    3 video frame: flags (1 = key), timestamp (90 kHz), then
 ///                      [length: 4 bytes][NAL unit] for each unit
 ///                    4 audio packet: codec (2 = AAC-LC, 3 = AAC-ELD), timestamp (samples), sequence, bytes
@@ -37,8 +35,6 @@ import Network
 ///                    2 pointer: buttons, x y (points)
 ///                    3 key: down, virtual key code
 ///                    4 scroll: dx dy (pixels, as a browser's wheel says them), x y
-///
-/// The page's viewer is screen-hp.js; the helper's side is screen.go, put.go and screenhp.go.
 public enum ScreenWire {
     public enum ToPage: UInt8 { case status = 1, videoConfig, videoFrame, audio, cursorStore, cursorSelect, clipboard, layout, picture }
     public enum FromPage: UInt8 { case control = 1, pointer, key, scroll }
@@ -538,29 +534,4 @@ public extension ScreenWire {
 
 extension Int {
     func clamped(_ low: Int, _ high: Int) -> Int { Swift.min(Swift.max(self, low), high) }
-}
-
-extension HelperLink {
-    /// The helper said no to a High Performance session, and its word for why: "unknown-op" from a
-    /// helper older than the question, "off" where it is turned off.
-    public struct ScreenStreamRefusal: Error, Sendable { public let code: String }
-
-    /// A session with this Mac's own Screen Sharing, which the helper signs in to with the account
-    /// the viewer names in its first word, and speaks ScreenWire on: the connection, once the helper
-    /// has said yes.
-    public static func screenStream() async throws -> NWConnection {
-        let connection = try await connect()
-        let answer: [String: Any]
-        do {
-            answer = try await bounded(connection, 5) {
-                try await ask(connection, ["op": "screen-hp"])
-                return try await readLine(connection)
-            }
-        } catch { connection.cancel(); throw Absence.notRunning }
-        guard answer["ok"] as? Bool == true else {
-            connection.cancel()
-            throw ScreenStreamRefusal(code: answer["error"] as? String ?? "")
-        }
-        return connection
-    }
 }

@@ -108,7 +108,8 @@ struct Checks {
             ("Microphone binding: a bound device is used only while connected and never falls back; unbound follows the system", microphoneBinding),
             ("Localization: the language setting, words from a table, formats, English where the table has no word", localization),
             ("Screen on the Monitor page: frames cut from pieces, the page's commands and their bounds, pointer, key and wheel, the picture's size, clicks in a row", screenWire),
-            ("Another Mac's screen in out: large pictures cut from pieces, what the window sends read as the page's, the wheel, layout, picture, sound and pointer frames, decoder records, where a click lands", screenViewerWire)
+            ("Another Mac's screen in out: large pictures cut from pieces, what the window sends read as the page's, the wheel, layout, picture, sound and pointer frames, decoder records, where a click lands", screenViewerWire),
+            ("out's own Screen Sharing client: HEVC as the Mac sends it, its decoder record, the road's frames, the keys, the host's rekey and clipboard", screenClient)
         ]
         for (name, test) in cases {
             do { try test(); print("PASS \(name)") }
@@ -324,6 +325,83 @@ struct Checks {
         let far = ScreenWire.remotePoint(CGPoint(x: 899.99, y: 499.99), picture: drawn, display: (1440, 900), flipped: true)
         try check(corner.map { [$0.x, $0.y] } == [0, 0] && middle.map { [$0.x, $0.y] } == [720, 450] && far.map { [$0.x, $0.y] } == [1439, 899], "corners and middle")
         try check(ScreenWire.remotePoint(CGPoint(x: 50, y: 250), picture: drawn, display: (1440, 900), flipped: true) == nil, "beside the picture, nothing")
+    }
+
+    static func screenClient() throws {
+        // The parameter sets a Mac with Apple silicon sent (macOS 27.2.1, one tile): Range
+        // Extensions, level 5, 4:4:4, 8 bits.
+        func hex(_ s: String) -> [UInt8] { stride(from: 0, to: s.count, by: 2).map { UInt8(s.dropFirst($0).prefix(2), radix: 16)! } }
+        let vps = hex("40010c01ffff040800000300be080000030000961b0240")
+        let sps = hex("420101040800000300be080000030000969000384400498f8fc40ddc8a465cfe27e17f437ea5370c0d010080")
+        let pps = hex("4401c072f05b24")
+        var ap: [UInt8] = [ScreenHEVC.ap << 1, 1]
+        for u in [vps, sps, pps] { ap += [UInt8(u.count >> 8), UInt8(u.count & 0xff)] + u }
+        let idr: [UInt8] = [20 << 1, 1] + [UInt8](repeating: 0xab, count: 3000)
+        var payloads = [ap]
+        var rest = Array(idr[2...])
+        var first = true
+        while !rest.isEmpty {
+            let n = min(rest.count, 1200)
+            var fh: UInt8 = 20
+            if first { fh |= 0x80 }
+            if n == rest.count { fh |= 0x40 }
+            payloads.append([ScreenHEVC.fu << 1, 1, fh] + rest.prefix(n))
+            rest.removeFirst(n)
+            first = false
+        }
+        let trail: [UInt8] = [1 << 1, 1, 0xd0, 0x02]
+        payloads.append(trail)
+        let units = ScreenHEVC.reassemble(payloads)
+        try check(units == [vps, sps, pps, idr, trail], "HEVC units from an aggregation packet, fragments and a unit alone")
+        try check(ScreenHEVC.reassemble([payloads[2]]).isEmpty, "a fragment whose start was lost is let go")
+        try check(ScreenHEVC.isKey(ScreenHEVC.type(idr[0])) && !ScreenHEVC.isKey(ScreenHEVC.type(trail[0])), "key frames by their type")
+        guard let record = ScreenHEVC.decoderRecord(vps: vps, sps: sps, pps: pps) else { throw VoiceError("no decoder record") }
+        try check(record[1] & 0x1f == 4 && record[12] == 150, "the record's profile and level")
+        try check(record[16] & 3 == 3 && record[17] & 7 == 0 && record[18] & 7 == 0, "4:4:4 at 8 bits, read from the SPS")
+        try check(ScreenWire.hevcParameterSets(Data(record)) == [Data(vps), Data(sps), Data(pps)], "the window reads the sets back from the record")
+
+        // The road's frames, in pieces of any size.
+        var parser = ScreenTunnel.Parser()
+        let frames = ScreenTunnel.frame(ScreenTunnel.tcp, [1, 2, 3]) + ScreenTunnel.word(["t": "connect", "route": 2, "udp": true])
+            + ScreenTunnel.frame(ScreenTunnel.udpVideo, [UInt8](repeating: 7, count: 1400))
+        var got: [(UInt8, [UInt8])] = []
+        for i in stride(from: 0, to: frames.count, by: 5) { got += parser.feed(frames.subdata(in: i..<min(i + 5, frames.count))) ?? [] }
+        try check(got.count == 3 && got[0].0 == ScreenTunnel.tcp && got[0].1 == [1, 2, 3] && got[2].1.count == 1400, "the road's frames come whole")
+        let word = (try? JSONSerialization.jsonObject(with: Data(got[1].1))) as? [String: Any]
+        try check(word?["route"] as? Int == 2 && word?["udp"] as? Bool == true, "a word on the road")
+        try check(ScreenTunnel.routes().last?.name == "lo-reuse", "the routes end with loopback")
+
+        // Keys as Screen Sharing takes them.
+        try check(ScreenKeys.keysym(forMacKey: 0x00) == 0x61 && ScreenKeys.keysym(forMacKey: 0x37) == 0xffeb && ScreenKeys.keysym(forMacKey: 0x3A) == 0xffe7,
+                  "a, Command as Super, Option as Meta")
+        try check(ScreenKeys.keysym(forMacKey: 0x3F) == 0, "Fn has no keysym")
+        try check(ScreenKeys.keysym(for: "\n") == 0xff0d && ScreenKeys.keysym(for: "\u{e9}") == 0xe9 && ScreenKeys.keysym(for: "\u{4e2d}") == 0x0100_4e2d,
+                  "characters as keysyms")
+
+        // The host's rekey found among what came before it.
+        var before: [UInt8] = [ScreenRFB.serverMiscStatus, 0, 0, 0, 0, 0, 0, 0, ScreenRFB.serverFramebufferUpdate, 0, 0, 1]
+        before += [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04, 0x4f] + [UInt8](repeating: 9, count: 36) + [0xaa]
+        let found = ScreenClient.scanForRekey(before)
+        try check(found?.0 == [UInt8](repeating: 9, count: 36) && found?.1 == before.count - 1, "the rekey and where what follows it begins")
+
+        // The host's clipboard archive: UTF-8 first, else UTF-16.
+        var archive: [UInt8] = [0, 0, 0, 2]
+        let flavors: [(String, [UInt8])] = [("public.utf16-plain-text", [0, 0x41, 0x4e, 0x2d]), ("public.utf8-plain-text", Array("hi".utf8))]
+        for (uti, data) in flavors {
+            let name = Array(uti.utf8)
+            archive += [0, 0, 0, UInt8(name.count)]
+            archive += name
+            archive += [UInt8](repeating: 0, count: 8)
+            archive += [0, 0, 0, UInt8(data.count)]
+            archive += data
+        }
+        try check(ScreenClient.pasteboardText(archive) == "hi", "UTF-8 text from the clipboard archive")
+
+        // A zlib stream flushed piece by piece, as the host sends cursors and pixels.
+        let plain = [UInt8](repeating: 5, count: 4000) + [UInt8](repeating: 6, count: 4000)
+        guard let z = ScreenClient.zlibCompress(plain) else { throw VoiceError("no compress") }
+        let inflater = ScreenInflater()
+        try check(inflater.inflate(z[...], want: 8000) == plain, "a piece inflated whole")
     }
 
     static func screenWire() throws {

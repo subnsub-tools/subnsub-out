@@ -280,10 +280,12 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         publish()
         Task { @MainActor [weak self] in
             do {
-                let connection = try await RemoteSender.openScreen(device, identity: identity, name: name, listening: listening)
+                let (connection, host) = try await RemoteSender.openScreen(device, identity: identity, name: name, listening: listening)
                 guard let self, self.link === next, !self.ended else { connection.cancel(); return }
                 self.info.route = HelperLink.route(of: connection) ?? ""
-                next.start(connection, scale: self.window.backingScaleFactor)
+                next.start(ScreenTunnelLink(connection), host: host,
+                           reopen: ScreenLink.reopen(device, identity: identity, name: name, listening: listening),
+                           scale: self.window.backingScaleFactor)
             } catch {
                 guard let self, self.link === next else { return }
                 self.ended = true
@@ -1112,7 +1114,9 @@ final class ScreenLink: @unchecked Sendable {
     let displayLayer = AVSampleBufferDisplayLayer()
     private let name: String
     private let queue = DispatchQueue(label: "local.hopo.qingyan.screen.viewer")
-    private var connection: NWConnection?
+    /// out's own Screen Sharing client for that Mac, which speaks ScreenWire to this link in this
+    /// process (ScreenSession.swift); until 2026-11-25 the helper on that Mac did, across the road.
+    private var session: ScreenSession?
     private var parser = ScreenWire.Parser(limit: ScreenWire.frameLimit + 8)
     private var closed = false
     private var opened = false
@@ -1158,28 +1162,52 @@ final class ScreenLink: @unchecked Sendable {
         set { sound.muted = newValue }
     }
 
-    func start(_ connection: NWConnection, scale: CGFloat) {
-        queue.async {
-            self.connection = connection
+    /// Starts the session on the road to that Mac (its first connection, and a way to open another
+    /// for the next route): its hello comes, and the window asks for an account.
+    func start(_ road: ScreenTunnelLink, host: ScreenSession.Host, reopen: @escaping () -> ScreenTunnelLink?, scale: CGFloat) {
+        let next = ScreenSession(first: road, host: host, reopen: reopen) { [weak self] frame in
+            // On the session's threads: taken here in order, and the reader waits for it, so that
+            // Screen Sharing is read no faster than this window draws.
+            self?.queue.sync { if let self, !self.closed { self.take(frame) } }
+        }
+        queue.sync {
+            self.session = next
             self.scale = scale
-            self.receive()
+        }
+        next.start()
+    }
+
+    /// Opens another road to the device, blocking; nil when it could not be.
+    static func reopen(_ device: TrustedDevice, identity: DeviceIdentity, name: String, listening: Int) -> () -> ScreenTunnelLink? {
+        {
+            final class Made: @unchecked Sendable { var link: ScreenTunnelLink? }
+            let made = Made(), done = DispatchSemaphore(value: 0)
+            Task.detached {
+                if let (connection, _) = try? await RemoteSender.openScreen(device, identity: identity, name: name, listening: listening) {
+                    made.link = ScreenTunnelLink(connection)
+                }
+                done.signal()
+            }
+            done.wait()
+            return made.link
         }
     }
 
     func send(_ frame: Data) {
-        queue.async {
-            guard !self.closed, let connection = self.connection else { return }
-            connection.send(content: frame, completion: .contentProcessed { [weak self] error in
-                if error != nil { self?.queue.async { self?.finish("lost") } }
-            })
-        }
+        queue.async { self.forward(frame) }
+    }
+
+    /// A frame of the window's to the session.
+    private func forward(_ frame: Data) {
+        guard !closed, let session, frame.count >= 4 else { return }
+        session.take(kind: frame[frame.startIndex], body: frame.dropFirst(4))
     }
 
     func close() {
         queue.async {
             guard !self.closed else { return }
             self.closed = true
-            self.connection?.cancel()
+            self.session?.close()
             self.sound.stop()
             self.dropShot()
         }
@@ -1218,22 +1246,10 @@ final class ScreenLink: @unchecked Sendable {
         main { waiting.done(nil) }
     }
 
-    private func receive() {
-        guard let connection else { return }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 256 << 10) { [weak self] data, _, complete, error in
-            self?.queue.async {
-                guard let self, !self.closed else { return }
-                if let data, !data.isEmpty { self.take(data) }
-                if complete || error != nil { self.finish("lost"); return }
-                if !self.closed { self.receive() }
-            }
-        }
-    }
-
     private func finish(_ why: String) {
         guard !closed else { return }
         closed = true
-        connection?.cancel()
+        session?.close()
         sound.stop()
         dropShot()
         let onEnd = onEnd
@@ -1265,8 +1281,7 @@ final class ScreenLink: @unchecked Sendable {
                         continue
                     }
                     // An out before 0.1.60 records its screen itself and asks for nothing.
-                    connection?.send(content: ScreenWire.control(["t": "open", "codecs": codecs, "audio": true, "kbps": ScreenWire.kbpsDefault]),
-                                     completion: .contentProcessed { _ in })
+                    forward(ScreenWire.control(["t": "open", "codecs": codecs, "audio": true, "kbps": ScreenWire.kbpsDefault]))
                 case "live":
                     count("live")
                     if status["audio"] as? Bool == true { sound.start() }
@@ -1471,7 +1486,7 @@ final class ScreenLink: @unchecked Sendable {
             show()
             // An adaptive session's helper waits for this before it asks that Mac what changed next.
             if piece.serial != 0 {
-                connection?.send(content: ScreenWire.control(["t": "shown", "n": piece.serial]), completion: .contentProcessed { _ in })
+                forward(ScreenWire.control(["t": "shown", "n": piece.serial]))
             }
             return
         }
@@ -1536,7 +1551,7 @@ final class ScreenLink: @unchecked Sendable {
     private func askKey() {
         guard Date().timeIntervalSince(keyAsked) > 0.5 else { return }
         keyAsked = Date()
-        connection?.send(content: ScreenWire.control(["t": "key"]), completion: .contentProcessed { _ in })
+        forward(ScreenWire.control(["t": "key"]))
     }
 }
 
