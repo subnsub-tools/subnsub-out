@@ -250,7 +250,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             guard let self, let next, self.link === next else { return }
             self.view.pictureCame = true
             self.reshapeCame(picture: true)
-            self.reveal()
+            if self.live { self.reveal() }
         }
         next.onPieces = { [weak self, weak next] words in
             guard let self, let next, self.link === next else { return }
@@ -338,6 +338,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             }
             startTally()
             publish()
+            // A standard session's first picture comes before the word that it is live.
+            if view.pictureCame { reveal() }
         case "stats":
             var numbers: [String: Double] = [:]
             for key in ["fps", "kbps", "audio", "lost", "keyframes", "bad", "dropped", "asks"] {
@@ -1822,16 +1824,24 @@ final class ScreenContainer: NSView {
     /// are on the window's own glass.
     private let topBlur = Solid()
     private let bottomBlur = Solid()
-    /// A plain fill of the window's background colour, in the appearance it is drawn in.
+    /// A plain fill of the window's background colour, in the appearance it is shown in: a layer's
+    /// colour, set again when the appearance changes. (Drawn instead, and said to be opaque, it
+    /// covered the whole picture while the title strip was shown: seen in 0.1.92.)
     private final class Solid: NSView {
-        override var isOpaque: Bool { true }
-        override func draw(_ dirtyRect: NSRect) {
-            NSColor.windowBackgroundColor.setFill()
-            dirtyRect.fill()
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            paint()
         }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func viewDidChangeEffectiveAppearance() {
             super.viewDidChangeEffectiveAppearance()
-            needsDisplay = true
+            paint()
+        }
+        private func paint() {
+            var color = NSColor.windowBackgroundColor.cgColor
+            effectiveAppearance.performAsCurrentDrawingAppearance { color = NSColor.windowBackgroundColor.cgColor }
+            layer?.backgroundColor = color
         }
     }
     private let titleRow: NSHostingView<ScreenTitleRow>
@@ -1869,8 +1879,10 @@ final class ScreenContainer: NSView {
         black.isHidden = true
         black.frame = bounds
         black.autoresizingMask = [.width, .height]
-        // Over the picture, on a solid fill.
+        // Over the picture, on a solid fill, each kept to its own bar.
         for (pane, fill, content) in [(top, topBlur, titleRow as NSView), (bottom, bottomBlur, bar as NSView)] {
+            pane.wantsLayer = true
+            pane.layer?.masksToBounds = true
             fill.isHidden = true
             pane.addSubview(fill)
             pane.addSubview(content)
