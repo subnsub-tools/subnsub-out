@@ -223,6 +223,12 @@ struct Checks {
                   "a piece that holds more or fewer pixels than its size is told from one that holds them all")
         try check(ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 0, 0, 0, 1]))?.whole == true && ScreenWire.picturePiece(Data([0, 0, 0])) == nil,
                   "the word that an update is whole")
+        // An adaptive session's: a piece that is a JPEG, and the number of an update that is whole.
+        let soft = ScreenWire.picturePiece(Data([0, 3, 0, 4, 0, 8, 0, 2, 2, 0xFF, 0xD8]))
+        let numbered = ScreenWire.picturePiece(Data([0, 1, 0, 2, 0, 0, 0, 0, 1]))
+        try check(soft?.jpeg == true && soft?.whole == false && soft?.serial == 0 && soft?.deflated == Data([0xFF, 0xD8]) && piece?.jpeg == false
+                  && numbered?.whole == true && numbered?.serial == 65538 && ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 0, 0, 0, 1]))?.serial == 0,
+                  "a piece that is a JPEG, and the number of an update that is whole")
         let sound = ScreenWire.audioPacket(Data([2, 0, 0, 0x04, 0x00, 0, 7, 0xDE, 0xAD]))
         try check(sound?.codec == 2 && sound?.samples == 1024 && sound?.sequence == 7 && sound?.bytes == Data([0xDE, 0xAD]), "a sound packet")
         var shape = Data([0, 0, 0, 9, 0, 3, 0, 4, 0, 2, 0, 1, 2])

@@ -183,7 +183,16 @@ final class ScreenInfo: ObservableObject {
         kbps >= 1000 ? String(format: "%.1f Mbps", kbps / 1000) : String(format: "%.0f kbps", kbps)
     }
 
-    static func codecName(_ codec: String) -> String { codec == "hevc" ? "HEVC" : codec == "avc" ? "H.264" : codec == "pixels" ? "zlib" : codec }
+    static func codecName(_ codec: String) -> String {
+        switch codec {
+        case "hevc": return "HEVC"
+        case "avc": return "H.264"
+        case "pixels": return "zlib"
+        // A standard session whose changes come as JPEGs and then exact (ScreenCanvas).
+        case "adaptive": return tr("Adaptive")
+        default: return codec
+        }
+    }
 
     /// The window's bottom line: the road, the path and its ping; the display, the codec, pictures
     /// and bits a second, and whether the pointer and keys go there.

@@ -24,9 +24,12 @@ import Network
 ///                    5 cursor shape: id, hot spot x y, size w h (pixels), pixels per point, RGBA
 ///                    6 cursor shown: id          7 clipboard (UTF-8)
 ///                    8 layout: the display in points w h, the picture in pixels w h
-///                    9 picture (standard): x y w h (pixels), flags (1 = the update is whole),
-///                      then the rectangle's BGRA rows, deflated
-///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, w, h, scale}, …
+///                    9 picture (standard): x y w h (pixels), flags, then the rectangle's BGRA rows,
+///                      deflated, or with flag 2 the rectangle as a JPEG (to a viewer whose open
+///                      said jpeg). Flag 1 = the update is whole: no rectangle, and for such a
+///                      viewer x and y are the update's number, which it says back (shown)
+///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, jpeg, w, h, scale},
+///                      shown {n}, …
 ///                    2 pointer: buttons, x y (points)
 ///                    3 key: down, virtual key code
 ///                    4 scroll: dx dy (pixels, as a browser's wheel says them), x y
@@ -291,18 +294,24 @@ public extension ScreenWire {
     }
 
     /// A piece of a standard session's picture: where it lies in the picture, in pixels, and its BGRA
-    /// rows, deflated; or, with no pixels, the word that the pieces of one update have all come.
+    /// rows, deflated, or the same rectangle as a JPEG (`jpeg`: an adaptive session sends what
+    /// changes that way, and the same pixels deflated once that place rests); or, with no pixels,
+    /// the word that the pieces of one update have all come.
     struct PicturePiece: Equatable, Sendable {
         public let x: Int, y: Int, width: Int, height: Int
         public let whole: Bool
+        public let jpeg: Bool
         public let deflated: Data
+        /// Of the word that an update is whole: the update's number in an adaptive session, which
+        /// the helper waits to hear back before it asks that Mac what changed next; 0 otherwise.
+        public var serial: Int { whole ? x << 16 | y : 0 }
     }
 
     static func picturePiece(_ body: Data) -> PicturePiece? {
         guard body.count >= 9 else { return nil }
         let b = [UInt8](body.prefix(9))
         func u(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
-        return PicturePiece(x: u(0), y: u(2), width: u(4), height: u(6), whole: b[8] & 1 == 1, deflated: Data(body.dropFirst(9)))
+        return PicturePiece(x: u(0), y: u(2), width: u(4), height: u(6), whole: b[8] & 1 == 1, jpeg: b[8] & 2 == 2, deflated: Data(body.dropFirst(9)))
     }
 
     /// The most pixels a picture has, its longest side, and the most bytes of pixels in one piece:

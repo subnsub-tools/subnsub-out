@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreMedia
 import CoreVideo
 import Foundation
+import ImageIO
 import IOSurface
 import QingyanCore
 
@@ -11,6 +12,10 @@ import QingyanCore
 /// shows it as it shows a High Performance session's video and needs to know nothing of the kind.
 /// Nothing is decoded and nothing is drawn while that Mac's display does not change (user
 /// 2026-11-23: the system's own standard mode keeps this Mac cool, and the video did not).
+///
+/// A piece comes as exact pixels, or as a JPEG of them where that Mac's display is changing (an
+/// adaptive session, user 2026-11-24: without it the picture lags too far behind to work with);
+/// the helper sends the same place exact once it rests, so a JPEG's pixels are only ever drawn over.
 ///
 /// A sample's pixels are a buffer from a pool. A buffer that comes round again still holds the
 /// picture it last carried, so only what changed since then is copied into it: the canvas remembers
@@ -79,11 +84,37 @@ final class ScreenCanvas {
             scratch = UnsafeMutablePointer<UInt8>.allocate(capacity: count + 1)
             scratchCount = count + 1
         }
-        guard let scratch, ScreenWire.inflate(piece.deflated, into: scratch, capacity: count + 1) == count else { return false }
+        guard let scratch else { return false }
+        if piece.jpeg {
+            guard Self.decode(piece.deflated, into: scratch, width: piece.width, height: piece.height) else { return false }
+        } else {
+            guard ScreenWire.inflate(piece.deflated, into: scratch, capacity: count + 1) == count else { return false }
+        }
         for row in 0..<piece.height {
             (pixels + ((piece.y + row) * width + piece.x) * 4).update(from: scratch + row * piece.width * 4, count: piece.width * 4)
         }
         changed = changed.map { $0.union(box) } ?? box
+        return true
+    }
+
+    /// A JPEG's pixels into `room` as BGRA rows, nothing transparent; false when it is not a picture of
+    /// this size. Drawn in the picture's own color space, so its values come as they were sent.
+    private static func decode(_ jpeg: Data, into room: UnsafeMutablePointer<UInt8>, width: Int, height: Int) -> Bool {
+        guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width == width, image.height == height,
+              let context = CGContext(data: room, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
+        context.interpolationQuality = .none
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        // The byte no color is in is not left to the drawing.
+        var at = room + 3
+        for _ in 0..<(width * height) {
+            at.pointee = 0xFF
+            at += 4
+        }
         return true
     }
 

@@ -461,6 +461,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         askedSize = nil
         if standard {
             fields["standard"] = true
+            // Adaptive: what changes may come as JPEGs, and each update shown is said back.
+            fields["jpeg"] = true
         } else if ownDisplay {
             let size = container.pictureSize
             let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
@@ -983,6 +985,8 @@ final class ScreenLink: @unchecked Sendable {
     var onPieces: (@MainActor (String) -> Void)?
     private var pieces = (drawn: 0, outside: 0, early: 0, unreadable: 0)
     private var lastPiece = ""
+    /// A piece came as a JPEG: the session is adaptive, and is named so.
+    private var adaptive = false
     private var piecesTold = Date.distantPast
     private var awaitingKey = true
     /// No picture has gone to the display layer since the last decoder record.
@@ -1323,8 +1327,20 @@ final class ScreenLink: @unchecked Sendable {
     private func piece(_ body: Data) {
         guard let piece = ScreenWire.picturePiece(body) else { count("badPiece"); return }
         bytesIn += body.count
-        if piece.whole { show(); return }
-        lastPiece = "\(piece.x),\(piece.y) \(piece.width)x\(piece.height) \(piece.deflated.count) B"
+        if piece.whole {
+            show()
+            // An adaptive session's helper waits for this before it asks that Mac what changed next.
+            if piece.serial != 0 {
+                connection?.send(content: ScreenWire.control(["t": "shown", "n": piece.serial]), completion: .contentProcessed { _ in })
+            }
+            return
+        }
+        lastPiece = "\(piece.x),\(piece.y) \(piece.width)x\(piece.height) \(piece.deflated.count) B" + (piece.jpeg ? " JPEG" : "")
+        if piece.jpeg, !adaptive {
+            adaptive = true
+            let onCodec = onCodec
+            main { onCodec?("adaptive") }
+        }
         guard let size = pictureSize else { count("pieceBeforeLayout"); pieces.early += 1; tellPieces(); return }
         let canvas = self.canvas ?? ScreenCanvas()
         self.canvas = canvas
@@ -1332,8 +1348,8 @@ final class ScreenLink: @unchecked Sendable {
             guard canvas.resize(width: size.width, height: size.height) else { count("badCanvas"); return }
             count("canvases")
             fresh = true
-            let onCodec = onCodec
-            main { onCodec?("pixels") }
+            let onCodec = onCodec, codec = adaptive ? "adaptive" : "pixels"
+            main { onCodec?(codec) }
         }
         // Not one that lies outside the picture the layout said: asking again would bring it again.
         guard piece.x + piece.width <= canvas.width, piece.y + piece.height <= canvas.height else {
