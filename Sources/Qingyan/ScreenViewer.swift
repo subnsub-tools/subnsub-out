@@ -92,7 +92,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private var clipboardSeen = 0
     private var clipboardTimer: Timer?
     /// The codecs both sides take, from the other Mac's hello, for the open that follows the sign-in.
-    private var codecs: [String] = ["avc"]
+    private var codecs: [String] = []
     /// The account the session is opening with, kept once the session is live when asked to; and one
     /// typed after a session ended, for the next.
     private var signingIn: (account: ScreenSignIn, remember: Bool)?
@@ -559,7 +559,9 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private func hello(_ hello: [String: Any], codecs: [String]) {
         self.codecs = codecs
         offersStandard = hello["standard"] as? Bool == true
-        offersOwn = hello["own"] as? Bool ?? true
+        // High Performance only in HEVC, which that Mac's helper offers on Apple silicon from
+        // 2026.11.25.3 and this Mac decodes in hardware (user 2026-11-25: only H.265, no H.264).
+        offersOwn = (hello["own"] as? Bool ?? true) && codecs.contains("hevc")
         // The button where there is something to choose: a display of the session's own or not.
         info.kinds = offersOwn
         info.own = ownDisplay
@@ -1070,7 +1072,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         info.route = "tailnet"
         info.live = true
         info.layout = layout
-        info.codec = "avc"
+        info.codec = "hevc"
         info.kinds = true
         info.account = "hopo"
         info.since = Date().addingTimeInterval(-754)
@@ -1253,14 +1255,9 @@ final class ScreenLink: @unchecked Sendable {
                 case "hello":
                     guard !opened else { continue }
                     opened = true
-                    let theirs = status["codecs"] as? [String] ?? ["avc"]
-                    var codecs: [String] = []
-                    var hevc = theirs.contains("hevc") && VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
-                    #if DEBUG
-                    if preferAVC { hevc = false }
-                    #endif
-                    if hevc { codecs.append("hevc") }
-                    if theirs.contains("avc") || theirs.isEmpty { codecs.append("avc") }
+                    // HEVC decoded by this Mac's hardware, or nothing: never H.264 (user 2026-11-25).
+                    let theirs = status["codecs"] as? [String] ?? []
+                    let codecs = theirs.contains("hevc") && VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? ["hevc"] : [String]()
                     if status["signin"] as? Bool == true {
                         // That Mac's Screen Sharing: the window asks for its account, then opens.
                         let onHello = onHello, chosen = codecs
@@ -1331,7 +1328,6 @@ final class ScreenLink: @unchecked Sendable {
     #if DEBUG
     /// For the self-test: each picture made for the display layer, and what the session counted.
     var onSample: ((CMSampleBuffer) -> Void)?
-    var preferAVC = false
     private(set) var counted: [String: Int] = [:]
     private func count(_ what: String) { counted[what, default: 0] += 1 }
     var counts: [String: Int] { queue.sync { counted.merging(["soundBuffers": sound.played]) { a, _ in a } } }
