@@ -228,30 +228,23 @@ enum ScreenAction {
 }
 
 /// The screen window's title strip, on its glass as the panel's is (user 2026-11-22: the remote
-/// desktop window in the same glass design as out's own): the Mac's name with a dot for whether its
-/// screen is shown, beside the window's close, minimize and zoom buttons. The buttons that were here
-/// are down the picture's right side (ScreenRail).
+/// desktop window in the same glass design as out's own): the Mac's name alone, in the middle of the
+/// window as a window's title is, with no dot or other sign beside it (user 2026-11-25: the name
+/// must be centred, and no green dot). The buttons that were here are down the picture's right side
+/// (ScreenRail).
 struct ScreenTitleRow: View {
     @ObservedObject var info: ScreenInfo
 
     var body: some View {
-        HStack(alignment: .top, spacing: 4) {
-            HStack(alignment: .top, spacing: 2) {
-                Text(info.device).font(.system(size: 13, weight: .bold)).lineLimit(1).truncationMode(.tail)
-                Circle().fill(info.live ? Palette.accent : info.ended ? Color.orange : Palette.muted)
-                    .frame(width: 6, height: 6).padding(.top, 1)
-            }
+        Text(info.device).font(.system(size: 13, weight: .bold)).lineLimit(1).truncationMode(.tail)
             .help(info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…"))
-            .accessibilityElement(children: .ignore)
             .accessibilityLabel(info.device + " · " + (info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…")))
             .frame(height: 22)
-            Spacer(minLength: 8)
-        }
         // The window's close, minimize and zoom buttons sit at the start of the strip where macOS puts
-        // them, and the name is level with them; in full screen they are gone.
+        // them, and the name is level with them, kept as far from the other side so that it stays in
+        // the middle; in full screen they are gone.
         .padding(.top, ScreenContainer.lightsMiddle - 11)
-        .padding(.leading, info.fullScreen ? 12 : 76)
-        .padding(.trailing, 8)
+        .padding(.horizontal, info.fullScreen ? 12 : 76)
         .frame(maxWidth: .infinity, minHeight: ScreenContainer.rowHeight, maxHeight: ScreenContainer.rowHeight, alignment: .top)
         .background(WindowDragArea())
         .foregroundStyle(Palette.ink).tint(Palette.accent)
@@ -279,8 +272,10 @@ struct ScreenRail: View {
     /// A press of More: the pointer on it has already brought the rest (ScreenContainer follows it).
     var more: () -> Void = {}
 
-    static let side: CGFloat = 34
-    static let gap: CGFloat = 6
+    /// A size larger and further apart than they were (user 2026-11-25: the buttons a size larger,
+    /// with more room between them).
+    static let side: CGFloat = 40
+    static let gap: CGFloat = 12
     /// Close, Full Screen and More, then what More brings. High Performance only where that Mac has
     /// both kinds of session, Sound only in a session that has sound (the standard kind has none),
     /// Keys only while the window works that Mac. There is no Dynamic Resolution or Full Quality
@@ -378,9 +373,10 @@ struct ScreenRail: View {
     }
 }
 
-/// A button of the rail: a round of glass with its sign, the picture under it blurred as under the
-/// window's top and bottom rows (user 2026-11-23), and its name beside it, at its left, on glass
-/// too, only while the pointer is on it.
+/// A button of the rail: a round of frosted glass with its sign, the picture under it blurred, on and
+/// off alike (user 2026-11-25: the buttons must be frosted glass, both on and off): a light glass
+/// with a black sign, or a dark glass with a white sign, each only lightly tinted so that the blur
+/// shows through. Its name is beside it, at its left, on glass too, only while the pointer is on it.
 private struct ScreenRailButton: View {
     let symbol: String
     let title: String
@@ -396,13 +392,13 @@ private struct ScreenRailButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(black ? Color.white : Color(white: 0.07))
                 .frame(width: ScreenRail.side, height: ScreenRail.side)
                 .background {
                     ZStack {
-                        RailGlass()
-                        black ? Color(white: 0.08).opacity(0.8) : Color.white.opacity(0.88)
+                        RailGlass(dark: black)
+                        black ? Color.black.opacity(0.32) : Color.white.opacity(0.38)
                         if hovered { (black ? Color.white : Color.black).opacity(0.12) }
                     }
                     .clipShape(Circle())
@@ -423,7 +419,7 @@ private struct ScreenRailButton: View {
                     .background { RailGlass().clipShape(Capsule()) }
                     .overlay(Capsule().strokeBorder(Palette.strong, lineWidth: 0.8))
                     .fixedSize()
-                    .offset(x: -(ScreenRail.side + 6))
+                    .offset(x: -(ScreenRail.side + 8))
                     .allowsHitTesting(false)
             }
         }
@@ -464,7 +460,10 @@ struct ScreenHint: View {
 
 /// The panel's glass, blurring what is under it in the window (the picture), and never what a click
 /// lands on: the click goes to the button it is drawn under.
+/// A rail button's glass is light or dark as the button is (`dark`), whatever the window's
+/// appearance; the rest follow the window's.
 private struct RailGlass: NSViewRepresentable {
+    var dark: Bool? = nil
     final class View: NSVisualEffectView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
@@ -473,9 +472,13 @@ private struct RailGlass: NSViewRepresentable {
         view.material = .hudWindow
         view.blendingMode = .withinWindow
         view.state = .active
+        updateNSView(view, context: context)
         return view
     }
-    func updateNSView(_ view: View, context: Context) {}
+    func updateNSView(_ view: View, context: Context) {
+        let named: NSAppearance.Name? = dark.map { $0 ? .darkAqua : .aqua }
+        if view.appearance?.name != named { view.appearance = named.flatMap { NSAppearance(named: $0) } }
+    }
 }
 
 /// The line under the picture; a click opens Info.
