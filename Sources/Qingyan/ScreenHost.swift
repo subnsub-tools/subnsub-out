@@ -2,114 +2,48 @@ import AppKit
 import Network
 import QingyanCore
 
-/// This Mac's screen, shown on the owner's Monitor page and in another Mac's out (ScreenWire has
-/// the protocol). The picture, the sound and the input are this Mac's own Screen Sharing in its
-/// High Performance mode: the Monitor helper here signs in to it with the account name and
-/// password the viewer gives, and speaks ScreenWire (helper/go/screenhp.go). out recorded the
-/// screen itself until 0.1.59, which macOS allows only with the Screen Recording permission; now
-/// it lets a viewer in and carries the session between it and the helper (user 2026-11-22: why
-/// should out need the Screen Recording permission when Screen Sharing is on; take the recording out).
+/// This Mac's screen, shown in another Mac's out (ScreenWire has the protocol). The picture, the
+/// sound and the input are this Mac's own Screen Sharing: the Monitor helper here signs in to it
+/// with the account name and password the viewer gives, and speaks ScreenWire
+/// (helper/go/screenhp.go). out records nothing (until 0.1.59 it recorded the screen itself, which
+/// macOS allows only with the Screen Recording permission; user 2026-11-22: take the recording out):
+/// it lets a viewer in and carries the session between it and the helper. One viewer at a time.
 ///
-/// For the Monitor page, out keeps a connection or two waiting at the helper while the switch is
-/// on; another Mac's out needs no switch (RemoteReceiver.onScreen). One viewer at a time.
+/// The Monitor page shows this screen another way, by this Mac's own VNC through the helper alone
+/// (helper/go/screen.go), and out has no part in it. Until 0.1.91 out had a switch for that, and kept
+/// connections waiting at the helper while it was on (user 2026-11-25: remove it; the page's screen
+/// follows the helper's console switch, as on any other machine).
 @MainActor
 final class ScreenHost: ObservableObject {
     enum State: Equatable {
         case off
-        /// Waiting at the helper for a page.
-        case waiting
         case viewing
-        /// The helper could not be asked, and why.
-        case unavailable(String)
     }
     @Published private(set) var state = State.off {
         didSet { if state != oldValue { onChange?() } }
     }
     /// Called when the state changes; set by the controller, which shows it.
     var onChange: (() -> Void)?
-    /// While viewing: the other Mac whose out shows this screen, or nil for the Monitor page.
+    /// While viewing: the other Mac whose out shows this screen.
     @Published private(set) var viewer: String?
     /// That Mac's key, so that its view ends once it is no longer trusted to work this Mac.
     private(set) var viewerKey: String?
 
-    private var loops: [Task<Void, Never>] = []
-    private var generation = 0
-    private var parked: [ObjectIdentifier: NWConnection] = [:]
     private var session: ScreenPipe?
 
-    func start() {
-        guard loops.isEmpty else { return }
-        let generation = generation
-        // Another Mac may be viewing already; it still is.
-        if session == nil { state = .waiting }
-        for _ in 0..<2 { loops.append(Task { @MainActor [weak self] in await self?.loop(generation) }) }
-    }
-
     func stop() {
-        generation += 1
-        for loop in loops { loop.cancel() }
-        loops.removeAll()
-        for connection in parked.values { connection.cancel() }
-        parked.removeAll()
         session?.end("off")
         session = nil
         state = .off
     }
 
-    /// The Monitor page's switch is off: out no longer waits at the helper for a page, and a page's
-    /// view ends; another Mac's out that shows this screen goes on.
-    func stopWaiting() {
-        guard !loops.isEmpty || (session != nil && viewer == nil) else { return }
-        generation += 1
-        for loop in loops { loop.cancel() }
-        loops.removeAll()
-        for connection in parked.values { connection.cancel() }
-        parked.removeAll()
-        if session != nil, viewer == nil { session?.end("off") }
-        if session == nil { state = .off }
-    }
-
-    /// Ends the view in progress; out goes on waiting for the next.
+    /// Ends the view in progress.
     func stopViewing() { session?.end("stopped") }
 
-    private func loop(_ generation: Int) async {
-        var pause: UInt64 = 1
-        while !Task.isCancelled && generation == self.generation {
-            do {
-                let connection = try await HelperLink.parkScreen()
-                guard !Task.isCancelled, generation == self.generation else { connection.cancel(); return }
-                let id = ObjectIdentifier(connection)
-                parked[id] = connection
-                if session == nil, state != .waiting { state = .waiting }
-                do { try await HelperLink.screenArrival(connection) }
-                catch { parked.removeValue(forKey: id); connection.cancel(); throw error }
-                parked.removeValue(forKey: id)
-                guard !Task.isCancelled, generation == self.generation else { connection.cancel(); return }
-                pause = 1
-                serve(connection)
-            } catch {
-                if Task.isCancelled || generation != self.generation { return }
-                if session == nil {
-                    let absence = error as? HelperLink.Absence
-                    state = .unavailable(absence == .notInstalled
-                        ? tr("The Monitor helper on this Mac is not installed, or is too old to show the screen. Install or update it from the Monitor page.")
-                        : tr("The Monitor helper on this Mac is not running."))
-                }
-                try? await Task.sleep(nanoseconds: pause * 1_000_000_000)
-                pause = min(pause * 2, 30)
-            }
-        }
-    }
-
     /// Another Mac's out asks to show this screen (RemoteReceiver.onScreen): a trusted Mac, allowed
-    /// to type here, through the Monitor helper. It needs no switch (user 2026-11-21: the Macs in
-    /// Multiple Macs can be worked from each other's out); the switch is the Monitor page's.
+    /// to type here, through the Monitor helper (user 2026-11-21: the Macs in Multiple Macs can be
+    /// worked from each other's out).
     func serveRemote(_ connection: NWConnection, key: String, viewer: String) {
-        // Started already: it came through the helper, as a page's does.
-        serve(connection, viewer: viewer, key: key)
-    }
-
-    private func serve(_ connection: NWConnection, viewer: String? = nil, key: String? = nil) {
         guard session == nil else {
             // One at a time: the second is told so and let go.
             connection.send(content: ScreenWire.status(["s": "end", "why": "busy"]), completion: .contentProcessed { _ in connection.cancel() })
@@ -126,7 +60,7 @@ final class ScreenHost: ObservableObject {
                 self.session = nil
                 self.viewer = nil
                 self.viewerKey = nil
-                if self.state == .viewing { self.state = self.loops.isEmpty ? .off : .waiting }
+                self.state = .off
             }
         }
         next.start()

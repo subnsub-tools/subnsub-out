@@ -50,16 +50,21 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         return open.values.first { $0.window.isKeyWindow && $0.live && $0.view.canControl }?.device.key
     }
 
+    /// The window comes only with that Mac's first picture (user 2026-11-25: no window without a
+    /// picture; one that cannot get in says so, and nothing is left open). Meanwhile the panel's
+    /// button for that Mac turns (DictationController.screenOpening), and an account is asked for in
+    /// a dialog of its own.
     static func show(_ device: TrustedDevice, controller: DictationController) {
         NSApp.activate(ignoringOtherApps: true)
         if let viewer = open[device.key] {
+            // Still on its way: its window comes with the picture.
+            guard viewer.revealed else { return }
             viewer.window.makeKeyAndOrderFront(nil)
             if viewer.ended { viewer.connect() }
             return
         }
         let viewer = ScreenViewer(device: device, controller: controller)
         open[device.key] = viewer
-        viewer.window.makeKeyAndOrderFront(nil)
         viewer.connect()
     }
 
@@ -98,6 +103,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     private var pathConnection: NWConnection?
     private var tallyTimer: Timer?
     private var tallied: (frames: Int, bytes: Int, at: TimeInterval)?
+    /// The window has been shown, with that Mac's first picture; before, nothing is on screen.
+    private var revealed = false
+    private var revealWork: DispatchWorkItem?
+    /// How long a window not yet shown waits for that Mac's first picture.
+    private static let revealLimit: TimeInterval = 30
 
     // MARK: What the window keeps for each Mac
 
@@ -192,7 +202,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
 
     private func connect() {
         guard let controller, let identity = controller.identity else {
-            container.say(tr("This Mac has no identity for working with other Macs yet. Open Multiple Macs on the panel first."), again: false)
+            let words = tr("This Mac has no identity for working with other Macs yet. Open Multiple Macs on the panel first.")
+            if revealed { container.say(words, again: false) } else { fail(words) }
             return
         }
         link?.close()
@@ -213,6 +224,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         container.banner = nil
         info.reset()
         container.say(tr("Connecting to %@…", device.label), again: false)
+        if !revealed {
+            controller.screenOpening.insert(device.key)
+            armReveal()
+        }
         let device = device, name = controller.deviceName, listening = controller.settings.preferences.remotePort
         let next = ScreenLink(name: device.label)
         next.muted = !sound
@@ -235,6 +250,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             guard let self, let next, self.link === next else { return }
             self.view.pictureCame = true
             self.reshapeCame(picture: true)
+            self.reveal()
         }
         next.onPieces = { [weak self, weak next] words in
             guard let self, let next, self.link === next else { return }
@@ -272,7 +288,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
                 guard let self, self.link === next else { return }
                 self.ended = true
                 self.publish()
-                self.container.say(error.localizedDescription, again: true)
+                if self.revealed { self.container.say(error.localizedDescription, again: true) } else { self.fail(error.localizedDescription) }
             }
         }
     }
@@ -372,7 +388,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             ScreenSignIn.forget(device.key)
             let tried = signingIn?.account.account ?? ""
             signingIn = nil
-            container.askSignIn(device: name, account: tried, error: tr("%@ did not accept that account name and password.", name))
+            let error = tr("%@ did not accept that account name and password.", name)
+            if revealed { container.askSignIn(device: name, account: tried, error: error) } else { askAccount(user: tried, error: error) }
             return
         case "busy": words = tr("%@’s screen is being shown elsewhere. Try again once that has ended.", name)
         case "perm-screen": words = tr("out on %@ may not record its screen. On that Mac, turn out on in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen out there.", name)
@@ -385,7 +402,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         default: words = tr("The connection to %@ was lost.", name)
         }
         signingIn = nil
-        container.say(words, again: true)
+        if revealed { container.say(words, again: true) } else { fail(words) }
     }
 
     /// Ends the session here; Connect starts the next.
@@ -421,6 +438,77 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
+    // MARK: The window, once there is a picture
+
+    private func armReveal() {
+        revealWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.revealed else { return }
+            self.fail(tr("%@’s screen could not be shown.", self.device.label))
+        }
+        revealWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revealLimit, execute: work)
+    }
+
+    /// That Mac's first picture: the window comes.
+    private func reveal() {
+        guard !revealed else { return }
+        revealed = true
+        revealWork?.cancel()
+        revealWork = nil
+        controller?.screenOpening.remove(device.key)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// The screen could not be had before the window was shown: said, and nothing is left open.
+    private func fail(_ words: String) {
+        discard()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = words
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// A viewer whose window was never shown, let go.
+    private func discard() {
+        tearDown()
+        window.delegate = nil
+        window.close()
+    }
+
+    /// The account for that Mac's Screen Sharing, asked for before the window is shown; Cancel lets
+    /// the viewer go.
+    private func askAccount(user: String, error: String?) {
+        revealWork?.cancel()
+        let alert = NSAlert()
+        alert.messageText = tr("Sign in to %@’s Screen Sharing with an account on that Mac.", device.label)
+        if let error { alert.informativeText = error }
+        alert.addButton(withTitle: tr("Sign In"))
+        alert.addButton(withTitle: tr("Cancel"))
+        let width: CGFloat = 260
+        let account = NSTextField(string: user)
+        account.placeholderString = tr("Account name")
+        account.frame = NSRect(x: 0, y: 56, width: width, height: 22)
+        let password = NSSecureTextField(string: "")
+        password.placeholderString = tr("Password")
+        password.frame = NSRect(x: 0, y: 28, width: width, height: 22)
+        let remember = NSButton(checkboxWithTitle: tr("Remember in this Mac’s keychain"), target: nil, action: nil)
+        remember.state = .on
+        remember.frame = NSRect(x: 0, y: 0, width: width, height: 20)
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 78))
+        for sub in [account, password, remember] as [NSView] { box.addSubview(sub) }
+        alert.accessoryView = box
+        alert.window.initialFirstResponder = user.isEmpty ? account : password
+        NSApp.activate(ignoringOtherApps: true)
+        let answer = alert.runModal()
+        let name = account.stringValue.trimmingCharacters(in: .whitespaces)
+        guard answer == .alertFirstButtonReturn, !name.isEmpty, !password.stringValue.isEmpty else { discard(); return }
+        armReveal()
+        signIn(ScreenSignIn(account: name, password: password.stringValue), remember: remember.state == .on)
+    }
+
     // MARK: Signing in to that Mac's Screen Sharing
 
     /// The other Mac's first word. A Mac whose out shows its screen through Screen Sharing asks for
@@ -442,9 +530,11 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             open(kept, remember: true)
             return
         }
+        let user = hello["user"] as? String ?? ""
+        guard revealed else { askAccount(user: user, error: nil); return }
         // The form on the window's glass, not over the picture kept from before.
         reshaped(animated: false)
-        container.askSignIn(device: device.label, account: hello["user"] as? String ?? "", error: nil)
+        container.askSignIn(device: device.label, account: user, error: nil)
     }
 
     private func signIn(_ account: ScreenSignIn, remember: Bool) {
@@ -812,7 +902,13 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     func windowDidFailToExitFullScreen(_ window: NSWindow) { container.fullScreen = true }
     func windowDidEnterFullScreen(_ notification: Notification) { info.fullScreen = true; applyControl(); askSize() }
 
-    func windowWillClose(_ notification: Notification) {
+    func windowWillClose(_ notification: Notification) { tearDown() }
+
+    /// The session ends and the viewer is let go: its window closed, or never shown.
+    private func tearDown() {
+        revealWork?.cancel()
+        revealWork = nil
+        controller?.screenOpening.remove(device.key)
         ended = true
         live = false
         reshaped(animated: false)
@@ -1679,26 +1775,23 @@ final class ScreenContainer: NSView {
     private let scroll = NSScrollView()
     private let top = NSView()
     private let bottom = NSView()
-    /// What the title strip and the line are drawn on over the picture: the picture blurred, fading
-    /// into it past their inner edge, with no line where they end (user 2026-11-23: the top and the
-    /// bottom are one piece with the window at all times). Not there while no picture is shown:
-    /// then they are on the window's own glass.
-    private let topBlur = NSVisualEffectView()
-    private let bottomBlur = NSVisualEffectView()
-    private static let fade: CGFloat = 14
-
-    /// A mask, solid over `solid` points at the top or the bottom and fading out over `fade` more.
-    private static func mask(solid: CGFloat, atTop: Bool) -> NSImage {
-        let height = solid + fade
-        let image = NSImage(size: NSSize(width: 8, height: height), flipped: false) { rect in
-            let clear = NSColor.black.withAlphaComponent(0)
-            let colors: [NSColor] = atTop ? [clear, .black, .black] : [.black, .black, clear]
-            let stops: [CGFloat] = atTop ? [0, fade / height, 1] : [0, solid / height, 1]
-            NSGradient(colors: colors, atLocations: stops, colorSpace: .deviceRGB)?.draw(in: rect, angle: 90)
-            return true
+    /// What the title strip and the line are drawn on over the picture: the window's own colour,
+    /// solid to their edge, with no blur and no fade into the picture (user 2026-11-25: no
+    /// transition, nothing fuzzy, no layer of blur). Not there while no picture is shown: then they
+    /// are on the window's own glass.
+    private let topBlur = Solid()
+    private let bottomBlur = Solid()
+    /// A plain fill of the window's background colour, in the appearance it is drawn in.
+    private final class Solid: NSView {
+        override var isOpaque: Bool { true }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.windowBackgroundColor.setFill()
+            dirtyRect.fill()
         }
-        image.resizingMode = .stretch
-        return image
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            needsDisplay = true
+        }
     }
     private let titleRow: NSHostingView<ScreenTitleRow>
     private let bar: NSHostingView<ScreenInfoBar>
@@ -1735,17 +1828,12 @@ final class ScreenContainer: NSView {
         black.isHidden = true
         black.frame = bounds
         black.autoresizingMask = [.width, .height]
-        // Over the picture, the picture under them blurred.
-        for (pane, blur, content) in [(top, topBlur, titleRow as NSView), (bottom, bottomBlur, bar as NSView)] {
-            blur.material = .hudWindow
-            blur.blendingMode = .withinWindow
-            blur.state = .active
-            blur.isHidden = true
-            pane.addSubview(blur)
+        // Over the picture, on a solid fill.
+        for (pane, fill, content) in [(top, topBlur, titleRow as NSView), (bottom, bottomBlur, bar as NSView)] {
+            fill.isHidden = true
+            pane.addSubview(fill)
             pane.addSubview(content)
         }
-        topBlur.maskImage = Self.mask(solid: Self.rowHeight, atTop: true)
-        bottomBlur.maskImage = Self.mask(solid: Self.barHeight, atTop: false)
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
         // From the window's very top: not set below the title bar, as a scroll view sets itself by default.
@@ -1784,8 +1872,8 @@ final class ScreenContainer: NSView {
         titleRow.frame = top.bounds
         bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
         bar.frame = bottom.bounds
-        topBlur.frame = NSRect(x: 0, y: -Self.fade, width: bounds.width, height: Self.rowHeight + Self.fade)
-        bottomBlur.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.barHeight + Self.fade)
+        topBlur.frame = top.bounds
+        bottomBlur.frame = bottom.bounds
         for blur in [topBlur, bottomBlur] where blur.isHidden == screen.showsPicture { blur.isHidden = !screen.showsPicture }
         rail.frame = railRoom
         hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - Self.barHeight, 0))

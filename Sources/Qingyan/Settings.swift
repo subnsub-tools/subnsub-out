@@ -55,9 +55,6 @@ struct Preferences: Codable, Equatable {
     var declinedWords: [String] = []
     /// Work with other Macs at all: answer their calls, send text to the one being operated, share the shelf.
     var linkEnabled = false
-    /// Show this Mac's screen on the owner's Monitor page, and let it be worked from there
-    /// (ScreenHost): off until it is turned on at this Mac.
-    var screenEnabled = false
     /// The Macs this one trusts, each by its key, with what it may do here.
     var devices: [TrustedDevice] = []
     /// Only take calls that arrive through Tailscale.
@@ -114,7 +111,6 @@ struct Preferences: Codable, Equatable {
         }
         devices = try values.decodeIfPresent([TrustedDevice].self, forKey: .devices) ?? devices
         tailscaleOnly = try values.decodeIfPresent(Bool.self, forKey: .tailscaleOnly) ?? tailscaleOnly
-        screenEnabled = try values.decodeIfPresent(Bool.self, forKey: .screenEnabled) ?? screenEnabled
         // A Mac that sent or received before keeps working with the others.
         linkEnabled = try values.decodeIfPresent(Bool.self, forKey: .linkEnabled) ?? (remoteRole != "off")
     }

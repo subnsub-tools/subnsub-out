@@ -981,7 +981,9 @@ struct MainView: View {
         let rim: Color = recording ? Color.red.opacity(0.35) : (micOffline ? Color.orange.opacity(0.4) : Palette.line)
         let buttonHelp: String = recording ? tr("Stop recording")
             : (micOffline ? tr("The locked microphone is not connected. Click for details.") : tr("Start recording"))
-        let stripTint: Color = micOffline ? Color.orange : Palette.accent
+        // Tinted only while recording, or warning; otherwise a card like the others (user 2026-11-25:
+        // green while idle meant nothing).
+        let stripFill: Color = micOffline ? Color.orange.opacity(0.10) : (recording ? Palette.accent.opacity(0.10) : Palette.fill)
         let stripRim: Color = micOffline ? Color.orange.opacity(0.32) : Palette.line
         let headlineTint: Color = micOffline && !recording && !choosing ? Color.orange : Palette.ink
         let label = settings.shortcutLabel
@@ -1034,7 +1036,7 @@ struct MainView: View {
             .accessibilityLabel(recording ? tr("Stop recording") : tr("Start recording"))
         }
         .padding(10)
-        .background(stripTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .background(stripFill, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(stripRim, lineWidth: 1))
         .animation(Motion.standard, value: controller.phase)
         .animation(Motion.standard, value: micOffline)
@@ -1292,12 +1294,9 @@ struct RemoteSection: View {
             Reveal(open: !on) {
                 caption(tr("Text is typed on this Mac only. When on, results go to the Mac you are controlling by remote desktop, and the Shelf is shared.")).padding(.top, 8)
             }
-            Row(tr("Show this screen on Monitor"), info: tr("When on, this Mac’s screen can be viewed and controlled from your Monitor page, through the Monitor helper and this Mac’s own Screen Sharing (System Settings → General → Sharing), signing in with an account on this Mac: the picture, the pointer, the keys and the clipboard. Only a browser the helper on this Mac trusts can open it.")) {
-                Toggle(tr("Show this screen on Monitor"), isOn: $settings.preferences.screenEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
-                    .onChange(of: settings.preferences.screenEnabled) { _, _ in controller.refresh() }
-            }.padding(.top, 10)
-            // Shown while another Mac's out views this screen too, which needs no switch.
-            Reveal(open: settings.preferences.screenEnabled || controller.screenState == .viewing) { screenStatus.padding(.top, 8) }
+            // While another Mac's out shows this screen (user 2026-11-25: no switch for the Monitor
+            // page; its screen follows the helper's console switch).
+            Reveal(open: controller.screenState == .viewing) { screenStatus.padding(.top, 10) }
         }
         .onAppear { controller.refreshHelper(force: true); controller.testPeers() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
@@ -1305,23 +1304,14 @@ struct RemoteSection: View {
         }
     }
 
-    /// Under the screen's switch: who is watching, or that it is ready.
+    /// Who is viewing this screen, with a press to stop it.
     @ViewBuilder private var screenStatus: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            switch controller.screenState {
-            case .viewing:
-                HStack(spacing: 6) {
-                    Circle().fill(Palette.accent).frame(width: 6, height: 6)
-                    Text(controller.screen.viewer.map { tr("Being viewed from %@", $0) } ?? tr("Being viewed from the Monitor page"))
-                        .font(.system(size: 11)).foregroundStyle(Palette.ink).lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 6)
-                    Button(tr("Stop")) { controller.screen.stopViewing() }.buttonStyle(QuietButton())
-                }
-            case .unavailable(let why):
-                CopyableText(why, font: .system(size: 11), color: .orange)
-            case .waiting, .off:
-                caption(tr("Ready. Open this Mac’s screen from its terminal on the Monitor page."))
-            }
+        HStack(spacing: 6) {
+            Circle().fill(Palette.accent).frame(width: 6, height: 6)
+            Text(tr("Being viewed from %@", controller.screen.viewer ?? ""))
+                .font(.system(size: 11)).foregroundStyle(Palette.ink).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 6)
+            Button(tr("Stop")) { controller.screen.stopViewing() }.buttonStyle(QuietButton())
         }
     }
 
@@ -1349,9 +1339,16 @@ struct RemoteSection: View {
             // Its screen in a window of out's own (user 2026-11-21): a Mac reached through the helper.
             if HelperLink.agent(of: device.host) != nil {
                 Button { ScreenViewer.show(device, controller: controller) } label: {
-                    Image(systemName: "display")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Palette.ink.opacity(0.8))
+                    // Turning while its screen is on its way: the window comes with the picture.
+                    Group {
+                        if controller.screenOpening.contains(device.key) {
+                            ProgressView().controlSize(.mini).scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "display")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(Palette.ink.opacity(0.8))
+                        }
+                    }
                         .frame(width: 22, height: 18)
                         .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                         .contentShape(Rectangle())

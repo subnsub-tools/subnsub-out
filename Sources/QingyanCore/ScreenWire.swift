@@ -563,22 +563,4 @@ extension HelperLink {
         }
         return connection
     }
-
-    /// Leaves a connection waiting at the helper for a screen session from the Monitor page.
-    public static func parkScreen() async throws -> NWConnection {
-        let connection = try await connect()
-        do { try await bounded(connection, 5) { try await ask(connection, ["op": "screen"]) } }
-        catch { connection.cancel(); throw Absence.notRunning }
-        return connection
-    }
-
-    /// The session on a parked connection, once the page opens one. A helper too old to know
-    /// the question answers it with a refusal instead.
-    public static func screenArrival(_ connection: NWConnection) async throws {
-        let header = try await readLine(connection)
-        if header["ok"] as? Bool == false { throw Absence.notInstalled }
-        guard header["from"] as? String == "page" else {
-            throw VoiceError(tr("The helper on this Mac answered in a way out does not understand."))
-        }
-    }
 }

@@ -99,6 +99,8 @@ final class DictationController: ObservableObject {
     /// This Mac's screen on the owner's Monitor page.
     let screen = ScreenHost()
     @Published var screenState = ScreenHost.State.off
+    /// The Macs whose screen is on its way to a window (ScreenViewer): the panel's button turns.
+    @Published var screenOpening: Set<String> = []
     /// Sender side, one dictation: the armed links, and the knock typed when recording stopped.
     private var remoteSession: RemoteSession?
     private struct Delivered {
@@ -348,9 +350,6 @@ final class DictationController: ObservableObject {
         }
         if shortcutStatus != nextStatus { shortcutStatus = nextStatus }
         syncRemote()
-        // The screen is offered to the Monitor page while its switch is on, whatever the other
-        // settings say; to the other Macs' out without it (RemoteReceiver.onScreen).
-        if settings.preferences.screenEnabled { screen.start() } else { screen.stopWaiting() }
         // Another Mac's view lasts only while that Mac is still trusted to type here.
         if let key = screen.viewerKey,
            !settings.preferences.linkEnabled || !settings.preferences.devices.contains(where: { $0.key == key && $0.canWrite }) {
