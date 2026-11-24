@@ -1292,7 +1292,7 @@ struct RemoteSection: View {
             Reveal(open: !on) {
                 caption(tr("Text is typed on this Mac only. When on, results go to the Mac you are controlling by remote desktop, and the Shelf is shared.")).padding(.top, 8)
             }
-            Row(tr("Show this screen on Monitor"), info: tr("When on, this Mac’s screen can be viewed and controlled from your Monitor page, through the Monitor helper and this Mac’s own Screen Sharing (System Settings → General → Sharing), signing in with an account on this Mac: the picture, the Mac’s sound, the pointer, the keys and the clipboard. Only a browser the helper on this Mac trusts can open it.")) {
+            Row(tr("Show this screen on Monitor"), info: tr("When on, this Mac’s screen can be viewed and controlled from your Monitor page, through the Monitor helper and this Mac’s own Screen Sharing (System Settings → General → Sharing), signing in with an account on this Mac: the picture, the pointer, the keys and the clipboard. Only a browser the helper on this Mac trusts can open it.")) {
                 Toggle(tr("Show this screen on Monitor"), isOn: $settings.preferences.screenEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                     .onChange(of: settings.preferences.screenEnabled) { _, _ in controller.refresh() }
             }.padding(.top, 10)

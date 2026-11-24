@@ -143,15 +143,15 @@ On each Mac, install out, and install the Monitor helper from the Monitor page w
 
 ## The screen on the Monitor page
 
-out can show this Mac's screen on your Monitor page, where it can be controlled as well as viewed. It stays off until you turn it on with the "Show this screen on Monitor" switch in the panel's Multiple Macs block.
+out can let your Monitor page show this Mac's screen, where it can be controlled as well as viewed. It stays off until you turn it on with the "Show this screen on Monitor" switch in the panel's Multiple Macs block.
 
-- What shows it: this Mac's own Screen Sharing (System Settings → General → Sharing → Screen Sharing), in its High Performance mode. The Monitor helper on this Mac signs in to it, on this Mac only, with the account name and password the viewer gives, and passes the session on as out's frames; out lets the viewer in and carries the session without reading it. out records nothing itself and needs no Screen Recording permission (until 0.1.59 it recorded the screen itself and did). The account is that of a user who may use Screen Sharing on this Mac; the helper keeps it in memory for the session only.
-- What is sent: the main display as H.264 video at up to 60 frames a second, the Mac's sound (AAC-ELD), and the pointer's shape. What comes back: pointer movement and clicks, key presses by physical key position (this Mac's own keyboard layout decides what they type), scrolling, text an input method commits on the viewing side, and clipboard text, which goes both ways (with a helper here from 2026.11.23.1, any text reaches this Mac's clipboard unless it is very long; before that, Latin-1 text only).
-- How it travels: through the Monitor helper on this Mac, like Multiple Macs. The page starts the session with a command signed by a key the helper has pinned, the helper hands the session's two streams to out, and out joins them to the helper's Screen Sharing session.
-- Dynamic resolution: the session gets a display of its own, which takes the size of the viewer's window and follows it; this Mac's own displays are dark while it lasts, as with Screen Sharing's own High Performance mode. Without it, the picture is this Mac's main display as it is.
-- One viewer at a time, as Screen Sharing allows one High Performance session. While a page is viewing the screen, the panel says so and has a Stop button, and the menu bar menu has Stop Showing the Screen; macOS shows its own Screen Sharing indicator.
+- What shows it: this Mac's own Screen Sharing (System Settings → General → Sharing → Screen Sharing), as any VNC viewer sees it. The page's viewer signs in to it with an account on this Mac, typed on the page and kept there only. The Monitor helper on this Mac carries the bytes between the page and Screen Sharing, which it reaches on this Mac's own loopback address, and reads none of them. out records nothing and needs no Screen Recording permission.
+- What is sent: the picture as Screen Sharing sends it to a VNC viewer, at the quality and compression chosen in the page's settings, with no sound. What comes back: the pointer, keys, scrolling, and clipboard text sent from the page's clipboard panel.
+- When it opens: the page starts a session with a command signed by a key the helper has pinned, and the helper opens one only while this switch is on (with a Monitor helper of 2026.11.24.9 or newer here; out keeps a connection waiting at the helper while the switch is on). Turning the switch off, or quitting out, ends a page's session within a few seconds.
+- The panel does not show a page's session; macOS shows its own Screen Sharing indicator while one is open.
 - A Mac's screen can be shown on the Monitor page only when out is installed on it.
-- Screen Sharing decides what a viewer may do. A user it lets observe only (for example under Remote Management with Observe but not Control) sees the screen and the pointer they move drawn over it, but clicks and keys do not reach the Mac.
+- Screen Sharing decides what a viewer may do. A user it lets observe only (for example under Remote Management with Observe but not Control) sees the screen, but clicks and keys do not reach the Mac.
+- Until 2026-11-24 the page could also show this Mac's screen in High Performance mode (video with the Mac's sound, on a display of the session's own). That was removed: the page has ordinary VNC alone. Another Mac's out still shows this screen in either kind (below).
 
 ## Another Mac's screen in out
 
