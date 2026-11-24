@@ -299,6 +299,12 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         case "connecting":
             container.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
         case "live":
+            // High Performance is a display of the session's own or nothing (user 2026-11-25: where
+            // the dynamic resolution cannot be had, the connection fails and the standard kind is used).
+            if ownDisplay, offersStandard, status["own"] as? Bool == false {
+                fallBack()
+                return
+            }
             live = true
             container.say(nil, again: false)
             inputAllowed = status["input"] as? Bool != false
@@ -370,6 +376,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
 
     private func end(_ why: String) {
         guard !ended else { return }
+        if ownDisplay, offersStandard, ["no-hp", "no-media", "no-display"].contains(why) {
+            fallBack()
+            return
+        }
         ended = true
         live = false
         reshaped(animated: false)
@@ -403,6 +413,37 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         }
         signingIn = nil
         if revealed { container.say(words, again: true) } else { fail(words) }
+    }
+
+    /// High Performance could not have its display of its own: the session ends with a word that it
+    /// failed, and that Mac is connected again in the standard kind, which is kept for it.
+    private func fallBack() {
+        highPerformance = false
+        info.own = false
+        if let signingIn { typed = signingIn }
+        signingIn = nil
+        link?.close()
+        link = nil
+        ended = true
+        live = false
+        info.live = false
+        reshaped(animated: false)
+        stopClipboardWatch()
+        stopTally()
+        view.releaseAll()
+        view.showsPicture = false
+        publish()
+        let words = tr("%@’s High Performance connection failed. Connecting in standard mode.", device.label)
+        if revealed {
+            flash(words)
+        } else {
+            revealWork?.cancel()
+            let alert = NSAlert()
+            alert.messageText = words
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+        connect()
     }
 
     /// Ends the session here; Connect starts the next.

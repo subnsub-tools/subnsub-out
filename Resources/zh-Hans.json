@@ -643,6 +643,7 @@
  "%@ did not accept that account name and password.": "「%@」不接受这个账户名和密码。",
  "%@’s Screen Sharing did not start its High Performance mode.": "「%@」的屏幕共享没有启动高性能模式。",
  "%@’s screen could not be shown.": "无法显示「%@」的屏幕。",
+ "%@’s High Performance connection failed. Connecting in standard mode.": "「%@」的高性能连接失败，改用标准模式连接。",
  "Account name": "账户名",
  "High Performance": "高性能",
  "Password": "密码",
