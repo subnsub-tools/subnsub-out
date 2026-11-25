@@ -178,7 +178,7 @@ private struct ModelRows: View {
                                              set: { value in
                                                  if value == Self.other { typing = true } else { typing = false; model.wrappedValue = value }
                                              }),
-                          options: suggestions.map { ($0, onMac ? Platform.languageName($0, english: Localization.current != .simplifiedChinese) : $0) }
+                          options: suggestions.map { ($0, onMac ? Platform.languageName($0) : $0) }
                               + (fixed && listed ? [] : [(Self.other, tr("Custom model…"))]))
             }
         }
@@ -282,8 +282,8 @@ private struct KeyGroup: View {
                 if textHere { wanted.append(prefs.textModel) }
                 let missing = wanted.filter { !models.contains($0) }
                 let custom = id == Platform.custom.id
-                // The list is joined the way each language writes one: ", " in English, an ideographic comma in Chinese.
-                let separator = Localization.current == .simplifiedChinese ? "\u{3001}" : ", "
+                // The list is joined the way each language writes one: ", ", or an ideographic comma in Chinese and Japanese.
+                let separator = Localization.current.listSeparator
                 let absent = missing.map { $0.isEmpty ? tr("(blank)") : $0 }.joined(separator: separator)
                 settings.keyMessages[id] = missing.isEmpty
                     ? (custom ? tr("The endpoint answers, and the chosen models are available.")
@@ -475,10 +475,9 @@ private struct GeneralGroup: View {
         SettingsGroup(tr("General")) {
             Row(tr("Language")) {
                 GlassMenu(label: tr("Language"), selection: $settings.preferences.language,
-                          options: [(Localization.followSystem, tr("Follow macOS")),
-                                    (Localization.Language.english.rawValue, "English"),
-                                    // The language's own name, the same in either language.
-                                    (Localization.Language.simplifiedChinese.rawValue, "\u{7B80}\u{4F53}\u{4E2D}\u{6587}")])
+                          // Each language by its own name, the same in every language.
+                          options: [(Localization.followSystem, tr("Follow macOS"))]
+                            + Localization.Language.allCases.map { ($0.rawValue, $0.nativeName) })
             }
             Row(tr("Launch at login")) {
                 Toggle(tr("Launch at login"), isOn: Binding(

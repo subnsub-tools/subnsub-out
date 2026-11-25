@@ -4,7 +4,7 @@ A native macOS voice-input tool. Press Fn once to start recording, press it agai
 
 out is an independent implementation. It is not the official Typeless client and does not copy all of its features. It covers dictation, including editing existing text by voice; it does not answer questions, operate the computer or sync history to the cloud.
 
-The interface is in English and Simplified Chinese (Settings → General → Language; "Follow macOS" picks Chinese when the first preferred language of macOS is Chinese).
+The interface is in the eleven languages of the SUB&SUB website: English, German, Spanish, French, Hindi, Japanese, Korean, Portuguese (Brazil), Russian, Simplified Chinese and Traditional Chinese (Settings → General → Language). "Follow macOS" takes the first language in the list of preferred languages in macOS that out has, and English when it has none of them; any Portuguese is shown in Brazilian Portuguese, and Chinese for Taiwan, Hong Kong or Macau in Traditional Chinese.
 
 ## Install
 

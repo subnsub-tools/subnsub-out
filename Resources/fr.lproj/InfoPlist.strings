@@ -1,0 +1,4 @@
+/* The permission prompts in French. */
+"NSMicrophoneUsageDescription" = "out n’enregistre qu’après que vous avez appuyé sur le raccourci, et transforme l’audio en texte sur ce Mac ou par le service de reconnaissance que vous avez choisi. L’enregistrement s’arrête quand vous appuyez de nouveau dessus ou sur Esc.";
+"NSSpeechRecognitionUsageDescription" = "out reconnaît la parole sur ce Mac uniquement lorsque Ce Mac est choisi pour la reconnaissance vocale.";
+"NSLocalNetworkUsageDescription" = "out transmet le texte reconnu entre deux Mac : vous parlez sur l’un et il est saisi sur l’autre. Utilisé uniquement après l’activation de Plusieurs Mac.";

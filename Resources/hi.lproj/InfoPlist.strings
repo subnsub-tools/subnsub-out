@@ -1,0 +1,4 @@
+/* The permission prompts in Hindi. */
+"NSMicrophoneUsageDescription" = "out सिर्फ़ शॉर्टकट दबाने के बाद रिकॉर्ड करता है, और ऑडियो को इस Mac पर या आपकी चुनी पहचान सेवा के ज़रिए टेक्स्ट में बदलता है। उसे फिर से या Esc दबाने पर रिकॉर्डिंग रुक जाती है।";
+"NSSpeechRecognitionUsageDescription" = "out इस Mac पर स्पीच तभी पहचानता है जब स्पीच पहचान के लिए यह Mac चुना गया हो।";
+"NSLocalNetworkUsageDescription" = "out पहचाने गए टेक्स्ट को दो Mac के बीच भेजता है: आप एक पर बोलते हैं और वह दूसरे पर टाइप होता है। सिर्फ़ कई Mac चालू करने के बाद इस्तेमाल होता है।";

@@ -37,10 +37,18 @@ lipo "$APP/Contents/MacOS/out" -verify_arch arm64 x86_64 || { printf 'The app is
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # The icon (made from Resources/AppIcon.svg by tools/icon.swift).
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-# The words of the app in Simplified Chinese (QingyanCore's Localization reads zh-Hans.json), and
-# the permission prompts' text for macOS in the same language.
-cp "$ROOT/Resources/zh-Hans.json" "$APP/Contents/Resources/zh-Hans.json"
-cp -R "$ROOT/Resources/zh-Hans.lproj" "$APP/Contents/Resources/zh-Hans.lproj"
+# The words of the app in each language Info.plist declares but English (QingyanCore's Localization
+# reads <code>.json), and the permission prompts' text for macOS in the same languages
+# (<code>.lproj): every one of them is required, so a language is never offered and shown in English.
+languages=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations' "$ROOT/Resources/Info.plist" | sed -n 's/^ *\([A-Za-z][A-Za-z-]*\)$/\1/p')
+[[ -n "$languages" ]] || { printf 'Info.plist names no localizations.\n' >&2; exit 1; }
+for code in $languages; do
+  [[ "$code" == en ]] && continue
+  [[ -f "$ROOT/Resources/$code.json" && -f "$ROOT/Resources/$code.lproj/InfoPlist.strings" ]] \
+    || { printf 'Resources/%s.json or Resources/%s.lproj/InfoPlist.strings is missing.\n' "$code" "$code" >&2; exit 1; }
+  cp "$ROOT/Resources/$code.json" "$APP/Contents/Resources/$code.json"
+  cp -R "$ROOT/Resources/$code.lproj" "$APP/Contents/Resources/"
+done
 if [[ -n "$INPUT_BUILD" ]]; then
   [[ "$INPUT_BUILD" =~ ^[0-9]+$ ]] || { printf 'INPUT_BUILD must be a number.\n' >&2; exit 1; }
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $INPUT_BUILD" -c "Set :CFBundleShortVersionString 0.1.$INPUT_BUILD" "$APP/Contents/Info.plist"

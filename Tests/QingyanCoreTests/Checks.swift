@@ -393,8 +393,23 @@ struct Checks {
     static func localization() throws {
         defer { Localization.use(.english) }
         try check(Localization.resolve("system", preferred: ["zh-Hans-CN"]) == .simplifiedChinese
-                  && Localization.resolve("system", preferred: ["en-US"]) == .english && Localization.resolve("en") == .english,
+                  && Localization.resolve("system", preferred: ["en-US"]) == .english && Localization.resolve("en") == .english
+                  && Localization.resolve("de") == .german && Localization.resolve("pt-BR") == .portuguese,
                   "the setting names a language, or follows the first language macOS prefers")
+        // Down the list to the first language out has; English when it has none of them.
+        try check(Localization.resolve("system", preferred: ["it-IT", "ja-JP", "en-US"]) == .japanese
+                  && Localization.resolve("system", preferred: ["it-IT", "nl-NL"]) == .english
+                  && Localization.resolve("system", preferred: []) == .english,
+                  "following macOS, the first language out has in the list, else English")
+        try check(Localization.Language.matching("zh-Hant-HK") == .traditionalChinese && Localization.Language.matching("zh-TW") == .traditionalChinese
+                  && Localization.Language.matching("zh-HK") == .traditionalChinese && Localization.Language.matching("zh") == .simplifiedChinese
+                  && Localization.Language.matching("zh-Hans-SG") == .simplifiedChinese && Localization.Language.matching("pt-PT") == .portuguese
+                  && Localization.Language.matching("de_AT") == .german && Localization.Language.matching("hi-IN") == .hindi
+                  && Localization.Language.matching("en-GB") == .english && Localization.Language.matching("it") == nil
+                  && Localization.Language.matching("zh-Hans-CN-x-hant") == .simplifiedChinese
+                  && Localization.Language.matching("zh-CN-x-tw") == .simplifiedChinese,
+                  "macOS language identifiers: the script, else the region for Chinese; any Portuguese is Brazil's")
+        try check(Set(Localization.Language.allCases.map(\.nativeName)).count == 11, "every language has its own name")
         // "Ready" in Chinese.
         Localization.install(["Ready": "\u{5C31}\u{7EEA}"], for: .simplifiedChinese)
         Localization.use(.simplifiedChinese)
@@ -2070,8 +2085,9 @@ struct Checks {
                   && OpenAIWire.joinPieces("OK", "\u{597D}") == "OK\u{597D}"
                   && OpenAIWire.joinPieces("", "x") == "x" && OpenAIWire.joinPieces("one", "") == "one",
                   "transcript pieces join in the spoken spacing")
-        try check(Platform.languageName("zh-CN", english: true) != "zh-CN" && Platform.languageName("zh-CN", english: false) != "zh-CN",
-                  "a language id shows its name")
+        try check(Localization.Language.allCases.allSatisfy { Platform.languageName("zh-CN", in: $0) != "zh-CN" }
+                  && Platform.languageName("de", in: .english) == "German" && Platform.languageName("de", in: .german) == "Deutsch",
+                  "a language id shows its name, in each of the app's languages")
     }
 
     static func styles() throws {

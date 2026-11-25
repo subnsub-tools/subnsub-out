@@ -1,0 +1,4 @@
+/* The permission prompts in Japanese. */
+"NSMicrophoneUsageDescription" = "outはショートカットを押したあとにのみ録音し、このMacまたは選択した認識サービスで音声をテキストに変換します。もう一度押すかEscを押すと録音を停止します。";
+"NSSpeechRecognitionUsageDescription" = "outがこのMacで音声を認識するのは、音声認識に「このMac」を選んだときだけです。";
+"NSLocalNetworkUsageDescription" = "outは認識したテキストを2台のMacの間で受け渡します。一方で話すと、もう一方で入力されます。「複数のMac」をオンにしたあとにのみ使用します。";

@@ -80,8 +80,8 @@ public struct Platform: Equatable, Identifiable, Sendable {
 
     /// A locale identifier ("zh-CN") as its display name in the app's language, itself when
     /// the system has no name for it.
-    public static func languageName(_ id: String, english: Bool) -> String {
-        Locale(identifier: english ? "en" : "zh-Hans").localizedString(forIdentifier: id) ?? id
+    public static func languageName(_ id: String, in language: Localization.Language = Localization.current) -> String {
+        Locale(identifier: language.rawValue).localizedString(forIdentifier: id) ?? id
     }
 
     /// OpenAI's model for finished recordings. It is sent the whole file rather than a stream:

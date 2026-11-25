@@ -70,7 +70,7 @@ struct Preferences: Codable, Equatable {
     var foldedBlocks: [String] = []
     /// Install new builds from the repository by itself.
     var autoUpdate = true
-    /// The language of the app's own words: "system" follows macOS, or "en", "zh-Hans".
+    /// The language of the app's own words: "system" follows macOS, or a language's code ("en", "de", "zh-Hans"…).
     var language = Localization.followSystem
 
     init() {}
