@@ -819,6 +819,8 @@ public final class RemoteReceiver {
     private var context: (() -> (before: String, after: String)?)?
     private var armed: [Int: Channel] = [:]
     private var deadlines: [ObjectIdentifier: DispatchWorkItem] = [:]
+    /// Connections their deadline closed here (not the Mac at the other end), for the log.
+    private var timedOut = Set<ObjectIdentifier>()
     /// A dictation may be transcribed for a while before its text arrives.
     private static let armedLifetime: TimeInterval = 300
     private enum Next { case close, keep, handOver, screen }
@@ -935,15 +937,20 @@ public final class RemoteReceiver {
     /// The event tap saw a complete knock. Tell the Mac that armed it, if there is one: its text
     /// comes here.
     public func knocked(_ nonce: Int) {
-        guard let channel = armed[nonce] else { return }
+        guard let channel = armed[nonce] else { Trace.note("receive: a knock was typed here that no Mac is waiting on"); return }
         channel.post(["seen": true])
-        // The name the owner's Mac list gives it, else the one it gave itself.
-        let device = trusted(channel.peerKey)
-        let from = device.flatMap { $0.name.isEmpty ? nil : $0.name }
-            ?? (channel.peerName.isEmpty ? device?.label ?? tr("Unnamed Mac") : channel.peerName)
+        let from = sender(channel)
+        Trace.note("receive: knock seen; \(from) is told its text comes here")
         incoming.removeAll { $0.connection === channel.connection }
         incoming.append((channel.connection, from))
         onIncoming?(from)
+    }
+
+    /// The name the owner's Mac list gives the Mac at the other end, else the one it gave itself.
+    private func sender(_ channel: Channel) -> String {
+        let device = trusted(channel.peerKey)
+        return device.flatMap { $0.name.isEmpty ? nil : $0.name }
+            ?? (channel.peerName.isEmpty ? device?.label ?? tr("Unnamed Mac") : channel.peerName)
     }
 
     private func update(_ listening: Bool, _ status: String) {
@@ -953,7 +960,10 @@ public final class RemoteReceiver {
     }
 
     private func expire(_ connection: NWConnection, after seconds: TimeInterval?) {
-        let item = seconds.map { _ in DispatchWorkItem { connection.cancel() } }
+        let item = seconds.map { _ in DispatchWorkItem { [weak self] in
+            self?.timedOut.insert(ObjectIdentifier(connection))
+            connection.cancel()
+        } }
         if let item { deadlines.updateValue(item, forKey: ObjectIdentifier(connection))?.cancel() }
         else { deadlines.removeValue(forKey: ObjectIdentifier(connection))?.cancel() }
         if let item, let seconds { DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item) }
@@ -980,6 +990,7 @@ public final class RemoteReceiver {
         expire(connection, after: 8)
         defer {
             expire(connection, after: nil)
+            timedOut.remove(ObjectIdentifier(connection))
             armed = armed.filter { $0.value.connection !== connection }
             if let index = incoming.firstIndex(where: { $0.connection === connection }) {
                 let named = index == incoming.count - 1
@@ -999,7 +1010,9 @@ public final class RemoteReceiver {
             connection.cancel(); return
         }
         guard let frame = try? RemoteWire.frame(reply), (try? await RemoteIO.write(connection, frame)) != nil else { connection.cancel(); return }
+        var textCame = false
         while let request = try? await channel.readObject() {
+            if request["text"] != nil { textCame = true }
             let (reply, next) = await answer(request, on: channel)
             guard (try? await channel.write(reply)) != nil else { break }
             switch next {
@@ -1013,6 +1026,17 @@ public final class RemoteReceiver {
                 onScreen(connection, channel.peerKey, trusted(channel.peerKey)?.label ?? channel.peerName)
                 return
             }
+        }
+        // A Mac that was waiting to send, gone before its text came (or before the answer to it went).
+        if textCame {
+            Trace.note("receive: the answer to \(sender(channel)) could not be sent back; the connection ended")
+        } else if armed.values.contains(where: { $0.connection === connection }) || incoming.contains(where: { $0.connection === connection }) {
+            let knocked = incoming.contains { $0.connection === connection }
+            // Not knocked at: the sending Mac asked every Mac, and the knock was for another one.
+            Trace.note(timedOut.contains(ObjectIdentifier(connection))
+                       ? "receive: \(sender(channel)) sent no text in time\(knocked ? " after its knock" : ""); closed here"
+                       : knocked ? "receive: the connection from \(sender(channel)) ended without text after its knock was seen"
+                       : "receive: \(sender(channel)) stopped waiting to send here")
         }
         connection.cancel()
     }
@@ -1028,7 +1052,10 @@ public final class RemoteReceiver {
             return (["ok": ok, "message": message, "name": name, "paired": true, "arm64": ScreenTunnel.appleSilicon], .close)
         }
         if object["pair"] as? Bool == true { return await pair(object, on: channel, known: device) }
+        // Asked to wait for a knock, or sent text: either is a step of sending text here.
+        let sending = object["arm"] != nil || object["text"] != nil
         guard let device else {
+            if sending { Trace.note("receive: \(sender(channel)) wants to send; refused: it is not in this Mac's list") }
             return (["ok": false, "message": tr("The other Mac has not added this Mac to its trusted list. Pair the two Macs first."),
                      "miss": MissReason.notAllowed.rawValue], .close)
         }
@@ -1038,6 +1065,7 @@ public final class RemoteReceiver {
             return (shelf.adopt(channel, hello: object), .handOver)
         }
         guard device.canWrite else {
+            if sending { Trace.note("receive: \(sender(channel)) wants to send; refused: typing from it is not allowed here") }
             return (["ok": false, "message": tr("The other Mac does not allow this Mac to type text there."), "miss": MissReason.notAllowed.rawValue], .close)
         }
         if object["screen"] as? String == "open" {
@@ -1059,8 +1087,15 @@ public final class RemoteReceiver {
             guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }
             let (ok, message) = probe?() ?? (false, tr("out on the other Mac is not ready."))
             // The app's probe says no only without Accessibility permission.
-            guard ok else { return (["ok": false, "message": message, "miss": MissReason.accessibility.rawValue], .close) }
-            guard armed[nonce] == nil || armed[nonce] === channel else { return refuse(tr("The signal channel is busy. Try again.")) }
+            guard ok else {
+                Trace.note("receive: \(sender(channel)) wants to send; refused: no Accessibility permission here")
+                return (["ok": false, "message": message, "miss": MissReason.accessibility.rawValue], .close)
+            }
+            guard armed[nonce] == nil || armed[nonce] === channel else {
+                Trace.note("receive: \(sender(channel)) wants to send; refused: another Mac waits with the same knock")
+                return refuse(tr("The signal channel is busy. Try again."))
+            }
+            Trace.note("receive: \(sender(channel)) is ready to send, waiting for its knock")
             armed[nonce] = channel
             expire(channel.connection, after: Self.armedLifetime)
             return (["ok": true, "message": "armed", "name": name], .keep)
@@ -1073,23 +1108,35 @@ public final class RemoteReceiver {
         }
         let replace = (object["replace"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         let field = object["field"] as? String
-        guard let text = object["text"] as? String, !text.isEmpty || replace != nil || field != nil else { return refuse(tr("No text was received.")) }
+        guard let text = object["text"] as? String, !text.isEmpty || replace != nil || field != nil else {
+            Trace.note("receive: \(sender(channel)) sent a request with no text")
+            return refuse(tr("No text was received."))
+        }
         guard field == nil || device.canRead else {
+            Trace.note("receive: \(sender(channel)) sent a field's new content; refused: reading the field is not allowed")
             return (["ok": false, "message": tr("The other Mac does not allow changing its text field."), "miss": MissReason.notAllowed.rawValue], .close)
         }
+        let kind = field != nil ? "a field's new content" : replace != nil ? "a replacement for its last text" : "text"
+        Trace.note("receive: \(kind) from \(sender(channel)), \(text.count) characters")
+        let started = Date()
         let request = Request(text: text, mode: WritingMode(rawValue: object["mode"] as? String ?? "") ?? .dictate,
                               seconds: object["seconds"] as? Double ?? 0, replace: replace, field: field,
                               // As the capsule names it (knocked).
                               from: !device.name.isEmpty ? device.name : channel.peerName.isEmpty ? device.label : channel.peerName)
         do {
             let outcome = try await deliver?(request) ?? ""
+            Trace.note("receive: \(outcome.miss.map { "not typed (\($0.rawValue))" } ?? "typed") after \(Trace.ms(since: started)) ms\(outcome.onClipboard ? ", on the clipboard" : "")")
             // Said either way, so that the sending Mac never has to guess from the words.
             var reply: [String: Any] = ["ok": true, "message": outcome.message, "clipboard": outcome.onClipboard]
             if let miss = outcome.miss { reply["miss"] = miss.rawValue }
             return (reply, .close)
         } catch let problem as DeliveryProblem {
+            Trace.note("receive: not typed (\(problem.miss.rawValue)) after \(Trace.ms(since: started)) ms\(problem.onClipboard ? ", on the clipboard" : "")")
             return (["ok": false, "message": problem.message, "miss": problem.miss.rawValue, "clipboard": problem.onClipboard], .close)
-        } catch { return refuse(error.localizedDescription) }
+        } catch {
+            Trace.note("receive: not typed (\(type(of: error))) after \(Trace.ms(since: started)) ms")
+            return refuse(error.localizedDescription)
+        }
     }
 
     private func pair(_ object: [String: Any], on channel: Channel, known: TrustedDevice?) async -> ([String: Any], Next) {

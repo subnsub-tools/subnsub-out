@@ -450,6 +450,7 @@ final class DictationController: ObservableObject {
         // New text, not a field rewritten or a deletion: the panel's Received card, and this Mac's
         // clipboard whatever became of it (user 2026-11-25: and copied automatically, on the receiving Mac).
         let fresh = request.field == nil && !request.text.isEmpty
+        Trace.note("receive: writing into \(Self.frontApp)")
         receivedCount += 1
         let order = receivedCount, arrived = Date()
         func show(written: Bool, status: [String]) {
@@ -615,10 +616,11 @@ final class DictationController: ObservableObject {
     /// transcribed. In front of any other window there is nothing to look for: the text is typed on
     /// this Mac and no other Mac holds it up.
     private func scoutRemote() {
-        endRemote()
+        endRemote("looking again at the window in front")
         let devices = settings.preferences.devices.filter(\.reachable)
         guard let identity, settings.sendsRemotely, !settings.preview, !devices.isEmpty, AXIsProcessTrusted(), remoteInFront else { return }
         if let shown = viewedInFront {
+            Trace.note("send: out's screen window of \(shown.label) is in front; getting that Mac ready, no knock")
             // out's own window of that Mac's screen: only that Mac is armed, and nothing is knocked.
             let session = RemoteSession(devices: [shown], identity: identity, name: deviceName, listening: settings.preferences.remotePort)
             remoteSession = session
@@ -633,11 +635,28 @@ final class DictationController: ObservableObject {
             return
         }
         let session = RemoteSession(devices: devices, identity: identity, name: deviceName, listening: settings.preferences.remotePort)
+        Trace.note("send: a remote desktop (\(Self.frontApp)) is in front; getting \(devices.count) Mac(s) ready and knocking")
         remoteSession = session
         remoteScout = Task { @MainActor [weak self] in
             guard let self else { return (nil, nil) }
             return await self.locate(in: session)
         }
+    }
+
+    /// The app a focus mark is in, by name, for the log.
+    private static func appName(_ mark: FocusMark?) -> String {
+        mark.flatMap { NSRunningApplication(processIdentifier: $0.pid)?.localizedName } ?? "no app"
+    }
+
+    /// The app in front, by name, for the log (no Accessibility query).
+    private static var frontApp: String { NSWorkspace.shared.frontmostApplication?.localizedName ?? "no app" }
+
+    /// Which Macs were ready, which said no and why, and how many could not be reached: names and
+    /// codes only, for the log (the words of a Mac's answer stay out of it).
+    private static func readiness(_ session: RemoteSession) -> String {
+        let refused = session.refusals.map { "\($0.peer) said no (\($0.miss.rawValue))" }
+        let unreached = session.reachable.values.filter { !$0 }.count - session.refusals.count
+        return (["\(session.armedCount) ready"] + refused + (unreached > 0 ? ["\(unreached) not reached"] : [])).joined(separator: ", ")
     }
 
     /// Which Mac the front window shows, and the focus when the knock that told it was typed: the
@@ -648,14 +667,26 @@ final class DictationController: ObservableObject {
     private func locate(in session: RemoteSession) async -> (FocusMark?, Int?) {
         var mark: FocusMark?
         let first = session.index(namedIn: FocusMark.current()?.title ?? "", learned: armedNames)
+        let started = Date()
+        var knocks = 0
         let found = await session.find(first: first, doubtful: unopened, timeout: 1.5, dial: Self.scoutDial) {
-            guard self.remoteInFront else { return false }
+            guard self.remoteInFront else {
+                Trace.note("send: no knock: the window in front is no longer a remote desktop (\(Self.frontApp))")
+                return false
+            }
             mark = FocusMark.current()
+            knocks += 1
             await KnockKeys.post(nonce: session.nonce)
             return true
         }
+        let named = first.map { session.name($0) } ?? "none"
         // A search whose dictation is over (its links closed under it) says nothing about the Macs.
         if remoteSession === session {
+            if let found {
+                Trace.note("send: \(session.name(found)) saw knock \(knocks) after \(Trace.ms(since: started)) ms (the window's title names \(named))")
+            } else if knocks > 0 {
+                Trace.note("send: no Mac saw the knock (\(knocks) typed, \(Trace.ms(since: started)) ms; \(Self.readiness(session)); the title names \(named))")
+            }
             remember(session.names)
             armedNames.merge(session.names) { _, new in new }
             peerReachable.merge(session.reachable) { _, new in new }
@@ -665,7 +696,9 @@ final class DictationController: ObservableObject {
         return (mark, found)
     }
 
-    private func endRemote() {
+    /// `why`: for the log, when there were connections to close.
+    private func endRemote(_ why: String) {
+        if remoteSession != nil { Trace.note("send: closing the connections to the other Macs: \(why)") }
         remoteSession?.close(); remoteSession = nil; remoteScout = nil; remoteViewing = nil
     }
 
@@ -685,23 +718,38 @@ final class DictationController: ObservableObject {
     /// Typing on this Mac waits for no other Mac; a remote desktop brought to the front after the
     /// recording stopped is looked behind now. A claim counts only for the window still in front.
     private func destination() async -> Destination {
-        guard remoteInFront else { return Destination(session: remoteSession, target: nil) }
+        guard remoteInFront else {
+            if remoteSession != nil { Trace.note("send: text ready; the window in front (\(Self.frontApp)) is not a remote desktop, so it is for this Mac") }
+            return Destination(session: remoteSession, target: nil)
+        }
         if let shown = viewedInFront {
             // The window in front is out's own of that Mac's screen: the text is for that Mac.
             if remoteViewing != shown.key || remoteScout == nil { scoutRemote() }
             guard let session = remoteSession, let scout = remoteScout else { return Destination(session: remoteSession, target: nil) }
             let (_, armed) = await scout.value
-            return Destination(session: session, target: viewedInFront?.key == shown.key ? armed : nil)
+            let target = viewedInFront?.key == shown.key ? armed : nil
+            Trace.note("send: text ready for out's screen window of \(shown.label): \(target == nil ? "that Mac is not ready, or the window went" : "sending there")")
+            return Destination(session: session, target: target)
         }
         // What was armed for out's own window says nothing about the remote desktop in front now.
         if remoteViewing != nil { scoutRemote() }
         if remoteSession == nil { scoutRemote() }
         guard let session = remoteSession, let scout = remoteScout else { return Destination(session: remoteSession, target: nil) }
         let (mark, early) = await scout.value
-        guard remoteInFront else { return Destination(session: session, target: nil) }
-        if mark?.same(as: FocusMark.current()) ?? false { return Destination(session: session, target: early) }
+        guard remoteInFront else {
+            Trace.note("send: text ready; the remote desktop is no longer in front (\(Self.frontApp)), so it is for this Mac")
+            return Destination(session: session, target: nil)
+        }
+        let now = FocusMark.current()
+        if mark?.same(as: now) ?? false {
+            Trace.note("send: text ready in the window the knock was typed in: \(early.map { "for \(session.name($0))" } ?? "no Mac saw that knock")")
+            return Destination(session: session, target: early)
+        }
+        Trace.note("send: text ready, but the window in front is not the one the knock was typed in (\(mark == nil ? "no knock was typed" : "\(Self.appName(mark)) then, \(Self.appName(now)) now\(mark?.pid == now?.pid ? ", the same app" : "")")); knocking again")
         let (again, found) = await locate(in: session)
-        return Destination(session: session, target: again?.same(as: FocusMark.current()) == true ? found : nil)
+        let target = again?.same(as: FocusMark.current()) == true ? found : nil
+        if found != nil, target == nil { Trace.note("send: the window in front changed again while knocking; not sending to \(found.map { session.name($0) } ?? "")") }
+        return Destination(session: session, target: target)
     }
 
     private enum Revision {
@@ -748,9 +796,15 @@ final class DictationController: ObservableObject {
         if let resolved { found = resolved } else { found = await destination() }
         // The session that looked, which may have been opened just now; never a later dictation's.
         let session = found.session, target = found.target
-        defer { session?.close(); if remoteSession === session { remoteSession = nil; remoteScout = nil } }
+        defer {
+            if session != nil { Trace.note("send: done; closing the connections to the other Macs") }
+            session?.close(); if remoteSession === session { remoteSession = nil; remoteScout = nil }
+        }
         // Cancelled while looking: nothing is sent or typed.
-        try Task.checkCancellation()
+        do { try Task.checkCancellation() } catch {
+            if session != nil { Trace.note("send: cancelled before sending") }
+            throw error
+        }
         if let session, let target {
             let name = session.name(target), id = session.key(target)
             sendingTo = name
@@ -763,12 +817,28 @@ final class DictationController: ObservableObject {
             case .previous(let previous): replace = previous
             }
             let reply: SendReply
+            let kind = field != nil ? "a field's new content" : replace != nil ? "a replacement for the last text" : "text"
+            Trace.note("send: sending \(kind) to \(name), \(text.count) characters")
+            let started = Date()
             do { reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field) }
-            catch let refusal as RemoteRefusal { throw refusal }
-            catch is CancellationError { throw CancellationError() }
-            catch let error as RemoteUnreachable { throw RemoteRefusal(peer: name, miss: .unreachable, description: error.description) }
-            catch let error as DeliveryUnconfirmed { throw RemoteRefusal(peer: name, miss: .unconfirmed, description: error.localizedDescription) }
-            catch { throw RemoteRefusal(peer: name, miss: .other, description: error.localizedDescription) }
+            catch let refusal as RemoteRefusal {
+                Trace.note("send: \(name) did not type it (\(refusal.miss.rawValue)) after \(Trace.ms(since: started)) ms\(refusal.onClipboard ? ", on its clipboard" : "")")
+                throw refusal
+            }
+            catch is CancellationError { Trace.note("send: cancelled while sending to \(name)"); throw CancellationError() }
+            catch let error as RemoteUnreachable {
+                Trace.note("send: \(name) could not be reached after \(Trace.ms(since: started)) ms")
+                throw RemoteRefusal(peer: name, miss: .unreachable, description: error.description)
+            }
+            catch let error as DeliveryUnconfirmed {
+                Trace.note("send: no answer from \(name) after \(Trace.ms(since: started)) ms, once the text was out")
+                throw RemoteRefusal(peer: name, miss: .unconfirmed, description: error.localizedDescription)
+            }
+            catch {
+                Trace.note("send: sending to \(name) failed (\(type(of: error))) after \(Trace.ms(since: started)) ms")
+                throw RemoteRefusal(peer: name, miss: .other, description: error.localizedDescription)
+            }
+            Trace.note("send: \(name) answered after \(Trace.ms(since: started)) ms: \(reply.miss.map { "not typed (\($0.rawValue))" } ?? "typed")\(reply.onClipboard ? ", on its clipboard" : "")")
             // A text that may not be in a field is nothing to take back by backspace later.
             lastDelivered = text.isEmpty || field != nil || reply.miss != nil ? nil
                 : Delivered(text: text, peer: id, mark: FocusMark.current(), at: Date())
@@ -779,12 +849,14 @@ final class DictationController: ObservableObject {
             // A remote desktop in front, and Macs to send to (or a helper that should name them): the
             // text is for the Mac behind it, never this one.
             guard let session else {
+                Trace.note("send: a remote desktop is in front, but no other Mac could be asked (helper \(helperState))")
                 throw RemoteRefusal(peer: nil, miss: .unreachable,
                                     description: helperState == .ready ? tr("A remote desktop window is in front, but none of your other Macs can be reached.")
                                         : tr("A remote desktop window is in front, but the Monitor helper on this Mac cannot reach your other Macs."))
             }
             if session.armedCount == 0 {
                 let problems = session.problems.joined(separator: " ")
+                Trace.note("send: a remote desktop is in front, but no other Mac was ready (\(Self.readiness(session))): not typed")
                 // A Mac that said no, and why, before one that could not be reached.
                 if let refusal = session.refusals.first {
                     throw RemoteRefusal(peer: refusal.peer, miss: refusal.miss,
@@ -794,9 +866,11 @@ final class DictationController: ObservableObject {
                                     description: problems.isEmpty ? tr("A remote desktop window is in front, but none of your other Macs can be reached.")
                                         : tr("A remote desktop window is in front, but none of your other Macs can be reached. %@", problems))
             }
+            Trace.note("send: a remote desktop is in front, but no Mac is the one for the window in front now (none saw the knock, or the window changed since; \(Self.readiness(session))): not typed")
             throw RemoteRefusal(peer: nil, miss: .noAnswer,
                                 description: tr("A remote desktop window is in front, but none of your other Macs answered. Make sure out is running on the Mac you are controlling."))
         }
+        if session != nil { Trace.note("send: writing the text on this Mac") }
         let outcome: WriteResult
         switch plan {
         case .field(let old):
@@ -1085,7 +1159,7 @@ final class DictationController: ObservableObject {
             settings.preferences.microphoneName = matched.name
         }
         stopRetry()
-        endRemote()
+        endRemote("a new recording starts")
         let id = UUID()
         sessionID = id
         entry = nil; audioFile = nil; connectionError = nil
@@ -1305,7 +1379,7 @@ final class DictationController: ObservableObject {
     }
 
     private func keepForRetry(_ error: Error) {
-        endRemote()
+        endRemote("the recording is kept to try again (\(type(of: error)))")
         guard settings.history.first(where: { $0.id == entry?.id })?.state != .completed else {
             phase = .error; message = tr("The text is saved, but the original audio could not be removed. Delete it in History."); return
         }
@@ -1333,7 +1407,7 @@ final class DictationController: ObservableObject {
     }
 
     private func localFailure(_ error: Error? = nil) {
-        endRemote()
+        endRemote("it failed on this Mac\(error.map { " (\(type(of: $0)))" } ?? "")")
         microphones.refresh()
         sessionID = UUID()
         recorder.stop(); captureJob?.cancel(); job?.cancel(); clock?.cancel(); client?.cancel()
@@ -1370,7 +1444,7 @@ final class DictationController: ObservableObject {
         // Typing has a cancel of its own: the recording state (and History) is not its to touch.
         if typingJob != nil { stopTyping(); return }
         heldRecording = false
-        endRemote()
+        endRemote("cancelled")
         let discard = busy ? entry?.id : nil
         sessionID = UUID()
         recorder.stop(); client?.cancel(); client = nil
@@ -1470,7 +1544,7 @@ final class DictationController: ObservableObject {
     func suspend() {
         if typingJob != nil { stopTyping() }
         stopRetry()
-        endRemote()
+        endRemote("this Mac sleeps or out quits")
         // A recording still starting is dropped; nothing has reached History yet.
         if starting { sessionID = UUID(); recorder.stop() }
         if busy {
