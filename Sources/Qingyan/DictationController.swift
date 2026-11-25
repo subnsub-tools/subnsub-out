@@ -33,6 +33,17 @@ final class DictationController: ObservableObject {
     @Published var peerTesting: Set<String> = []
     /// Whether each paired Mac answered the last time it was asked; absent means not asked yet.
     @Published var peerReachable: [String: Bool] = [:]
+    /// Whether each paired Mac has Apple silicon, as its out last said (its answer to a test, or to
+    /// opening its screen); absent until it has. A Mac without has no screen button: out shows a
+    /// screen in High Performance alone, which needs it (user 2026-11-25). Kept across launches.
+    @Published private(set) var peerAppleSilicon: [String: Bool] =
+        (UserDefaults.standard.dictionary(forKey: "screen.appleSilicon") as? [String: Bool]) ?? [:]
+
+    func learnChip(_ key: String, appleSilicon: Bool) {
+        guard peerAppleSilicon[key] != appleSilicon else { return }
+        peerAppleSilicon[key] = appleSilicon
+        UserDefaults.standard.set(peerAppleSilicon, forKey: "screen.appleSilicon")
+    }
     /// Other Macs asking to be trusted, waiting for an answer.
     /// Macs running input that were found on the tailnet and are not trusted yet.
     /// For each address this Mac asked to pair with: what is happening.
@@ -99,7 +110,7 @@ final class DictationController: ObservableObject {
     /// This Mac's screen on the owner's Monitor page.
     let screen = ScreenHost()
     @Published var screenState = ScreenHost.State.off
-    /// The Macs whose screen is on its way to a window (ScreenViewer): the panel's button turns.
+    /// The Macs whose screen is on its way to a window (ScreenViewer): their row says so.
     @Published var screenOpening: Set<String> = []
     /// Sender side, one dictation: the armed links, and the knock typed when recording stopped.
     private var remoteSession: RemoteSession?
@@ -509,11 +520,13 @@ final class DictationController: ObservableObject {
         let name = deviceName, listening = settings.preferences.remotePort
         Task { [weak self] in
             var outcome: String, called = "", ok = false
+            var chip: Bool?
             do {
                 let reply = try await RemoteSender.ping(device, identity: identity, name: name, listening: listening)
-                outcome = reply.message; called = reply.name; ok = reply.ok
+                outcome = reply.message; called = reply.name; ok = reply.ok; chip = reply.appleSilicon
             } catch { outcome = error.localizedDescription }
             guard let self else { return }
+            if let chip { self.learnChip(key, appleSilicon: chip) }
             self.peerTesting.remove(key); self.peerStatus[key] = outcome; self.peerReachable[key] = ok
             if ok { self.unopened.remove(key) }
             if !called.isEmpty { self.remember([key: called]) }

@@ -2,30 +2,23 @@
 //  ScreenSession.swift
 //
 //  Another Mac's screen as out's window takes it: ScreenWire's frames (status,
-//  video, sound, cursor, layout, clipboard, picture), made here from out's own
-//  Screen Sharing client (ScreenClient.swift), and the window's frames
-//  (control words, pointer, keys, wheel) turned into what Screen Sharing
-//  takes. Until 2026-11-25 the Monitor helper on the other Mac did this
+//  video, sound, cursor, layout, clipboard), made here from out's own Screen
+//  Sharing client (ScreenClient.swift), and the window's frames (control
+//  words, pointer, keys, wheel) turned into what Screen Sharing takes. Until
+//  2026-11-25 the Monitor helper on the other Mac did this
 //  (helper/go/screenhp.go) and the frames crossed the road between the Macs;
 //  now only Screen Sharing's own bytes cross it (ScreenTunnel.swift), and the
 //  frames go from here to the window in this process.
 //
 //  The window's side is as it was: a hello that asks for an account, the
-//  window's open with it, live once the first picture (standard) or the
-//  first media packet (High Performance) has come, stats every two seconds,
-//  and an end with its reason. High Performance is HEVC or nothing (user
-//  2026-11-25), on a Mac with Apple silicon.
-//
-//  A standard session's picture: each rectangle in the Mac's own codec goes
-//  to the window as it came, and exact pixels deflated; each update ends with
-//  a numbered word that the window says back once it is on its screen. The
-//  client's reader waits while more than a few updates are not yet shown, so
-//  Screen Sharing, which writes as fast as the road and this Mac take, sends
-//  what both can show.
+//  window's open with it, live once the first media packet has come, stats
+//  every two seconds, and an end with its reason. A session is High
+//  Performance alone, in HEVC, on a display of its own that follows the
+//  window, on a Mac with Apple silicon (user 2026-11-25: the standard mode is
+//  gone; High Performance, H.265 and Dynamic Resolution, and nothing else).
 //
 
 import Foundation
-import Compression
 
 public final class ScreenSession: @unchecked Sendable {
     /// What the other Mac's out said with its yes.
@@ -51,28 +44,14 @@ public final class ScreenSession: @unchecked Sendable {
     private var ended = false
     private var client: ScreenClient?
     private var link: ScreenTunnelLink?
-    private var own = false, audio = false, standard = false
     private var want: (w: Int, h: Int, scale: Double)?
     private var buttons: UInt8 = 0
     private var wheelX = 0, wheelY = 0
     private var scale = 1
     private var conf: Data?
-    private var codedFirst = true
-    private var picW = 0, picH = 0
-    // Updates sent whole, and the last the window said it has shown.
-    private var serial: UInt32 = 0
-    private var shown: UInt32 = 0
-    private let shownCame = NSCondition()
-    private var sentAt = [Date](repeating: .distantPast, count: 64)
-    private var tookLast: TimeInterval = 0, tookLeast: TimeInterval = 0
-    private var picBytes: Int64 = 0, wholes: Int64 = 0
 
     static let kbpsDefault = 12000, kbpsMin = 1000, kbpsMax = 60000
     static let scrollStep = 4, scrollMost = 64
-    /// The reader waits while this many updates are not yet on the window's screen.
-    static let shownAhead: UInt32 = 3
-    static let codedPiece = 4 << 20
-    static let pictureBand = 1 << 20
     static let firstPicture: TimeInterval = 5
     static let routeGap: TimeInterval = 3
 
@@ -86,7 +65,7 @@ public final class ScreenSession: @unchecked Sendable {
     /// Says hello: the window asks for an account and opens.
     public func start() {
         status(["s": "hello", "v": 3, "name": host.name, "user": host.user,
-                "codecs": host.appleSilicon ? ["hevc"] : [String](), "signin": true, "standard": true, "own": host.appleSilicon])
+                "codecs": host.appleSilicon ? ["hevc"] : [String](), "signin": true, "own": host.appleSilicon])
     }
 
     public func close() {
@@ -98,7 +77,6 @@ public final class ScreenSession: @unchecked Sendable {
         client?.close()
         link?.close()
         first?.close()
-        shownCame.lock(); shownCame.broadcast(); shownCame.unlock()
     }
 
     // MARK: To the window
@@ -122,16 +100,6 @@ public final class ScreenSession: @unchecked Sendable {
         var b: [UInt8] = []
         b.put16(UInt16(clamping: sw)); b.put16(UInt16(clamping: sh)); b.put16(UInt16(clamping: bw)); b.put16(UInt16(clamping: bh))
         send(ScreenWire.ToPage.layout.rawValue, Data(b))
-    }
-
-    private func piece(_ x: Int, _ y: Int, _ w: Int, _ h: Int, flags: UInt8, _ bytes: some Collection<UInt8>) {
-        var b: [UInt8] = []
-        b.reserveCapacity(9 + bytes.count)
-        b.put16(UInt16(clamping: x)); b.put16(UInt16(clamping: y)); b.put16(UInt16(clamping: w)); b.put16(UInt16(clamping: h))
-        b.append(flags)
-        b += bytes
-        lock.lock(); picBytes += Int64(b.count); lock.unlock()
-        send(ScreenWire.ToPage.picture.rawValue, Data(b))
     }
 
     // MARK: From the window
@@ -188,25 +156,10 @@ public final class ScreenSession: @unchecked Sendable {
             if sc < 1 || sc > 3 { sc = 1 }
             lock.lock()
             want = (w, h, sc)
-            let own = self.own
             lock.unlock()
-            if own { client?.resize(width: w, height: h, scale: sc) }
+            client?.resize(width: w, height: h, scale: sc)
         case "key":
             client?.requestKeyframe()
-        case "shown":
-            shownCame.lock()
-            let n = UInt32(truncatingIfNeeded: int("n"))
-            if n &- shown < 1 << 31 { shown = n }
-            let at = sentAt[Int(n % 64)]
-            shownCame.broadcast()
-            shownCame.unlock()
-            let took = Date().timeIntervalSince(at)
-            if took >= 0 && took < 60 {
-                lock.lock()
-                tookLast = took
-                if tookLeast == 0 || took < tookLeast { tookLeast = took }
-                lock.unlock()
-            }
         case "mode":
             client?.setMode(control: !(o["observe"] as? Bool ?? false))
         case "kbps":
@@ -257,26 +210,22 @@ public final class ScreenSession: @unchecked Sendable {
         let user = (o["user"] as? String ?? "").trimmingCharacters(in: .whitespaces)
         let password = o["password"] as? String ?? ""
         guard !user.isEmpty, !password.isEmpty else { status(["s": "end", "why": "auth"]); return }
-        let standard = o["standard"] as? Bool ?? false
         let codecs = o["codecs"] as? [String] ?? []
-        // High Performance is HEVC or nothing.
-        guard standard || (codecs.contains("hevc") && host.appleSilicon) else { status(["s": "end", "why": "no-hp"]); return }
+        // High Performance in HEVC, on a display of its own, or nothing.
+        guard codecs.contains("hevc"), host.appleSilicon else { status(["s": "end", "why": "no-hp"]); return }
         var kbps = (o["kbps"] as? NSNumber)?.intValue ?? 0
         if kbps <= 0 { kbps = Self.kbpsDefault }
         kbps = min(max(kbps, Self.kbpsMin), Self.kbpsMax)
-        let audio = (o["audio"] as? Bool ?? true) && !standard
-        let own = (o["own"] as? Bool ?? false) && !standard && host.appleSilicon
-        var config = ScreenClient.Config(user: user, password: password, standard: standard, ownDisplay: own,
-                                         audio: audio, maxBitrate: kbps * 1000)
+        let audio = o["audio"] as? Bool ?? true
+        var config = ScreenClient.Config(user: user, password: password, audio: audio, maxBitrate: kbps * 1000)
         config.log = { [weak self] text in self?.note(text) }
         let w = (o["w"] as? NSNumber)?.intValue ?? 0, h = (o["h"] as? NSNumber)?.intValue ?? 0
-        if own && w >= 320 && h >= 200 && w <= 7680 && h <= 4320 {
+        if w >= 320 && h >= 200 && w <= 7680 && h <= 4320 {
             config.width = w; config.height = h
             if let sc = (o["scale"] as? NSNumber)?.doubleValue, sc >= 1, sc <= 3 { config.scale = sc }
         }
         lock.lock()
-        self.own = own; self.audio = audio; self.standard = standard
-        if let want, own { config.width = want.w; config.height = want.h; config.scale = want.scale }
+        if let want { config.width = want.w; config.height = want.h; config.scale = want.scale }
         lock.unlock()
         status(["s": "connecting"])
         var why = "failed"
@@ -294,7 +243,7 @@ public final class ScreenSession: @unchecked Sendable {
             guard let link else { break }
             lock.lock(); self.link = link; lock.unlock()
             link.start()
-            link.say(["t": "connect", "route": route, "udp": !standard])
+            link.say(["t": "connect", "route": route, "udp": true])
             guard let answer = link.nextWord(timeout: 15) else { link.close(); why = "failed"; route += 1; continue }
             routes = (answer["routes"] as? Int) ?? routes
             if answer["t"] as? String == "failed" {
@@ -314,7 +263,7 @@ public final class ScreenSession: @unchecked Sendable {
                     link.say(["t": "hangup"])
                     Thread.sleep(forTimeInterval: 1.4)
                     link.forgetIncoming()
-                    link.say(["t": "connect", "route": route, "udp": !standard])
+                    link.say(["t": "connect", "route": route, "udp": true])
                     guard let again = link.nextWord(timeout: 15), again["t"] as? String == "connected" else {
                         throw ScreenClient.Failure.protocolError("Screen Sharing did not take a second connection")
                     }
@@ -326,17 +275,15 @@ public final class ScreenSession: @unchecked Sendable {
             } catch {
                 note("route \(route): \(error)")
                 link.close()
-                why = standard ? "failed" : "no-media"
-                if standard { break }
+                why = "no-media"
                 route += 1
                 continue
             }
             lock.lock()
             self.client = client
-            codedFirst = true
             let late = want
             lock.unlock()
-            if own, let late, late.w != config.width || late.h != config.height || late.scale != config.scale {
+            if let late, late.w != config.width || late.h != config.height || late.scale != config.scale {
                 client.resize(width: late.w, height: late.h, scale: late.scale)
             }
             // Signed in is not yet a picture: the media has to find its way here.
@@ -344,7 +291,7 @@ public final class ScreenSession: @unchecked Sendable {
             var failure: Error?
             let reader = Thread { [weak self] in
                 guard let self else { return }
-                do { try client.run(self.handler(standard: standard)) } catch { failure = error }
+                do { try client.run(self.handler()) } catch { failure = error }
                 ran.signal()
             }
             reader.qualityOfService = .userInteractive
@@ -354,43 +301,28 @@ public final class ScreenSession: @unchecked Sendable {
             while Date() < deadline {
                 if ran.wait(timeout: .now() + 0.1) == .success { ran.signal(); break }
                 let st = client.currentStats()
-                if st.videoPackets - st.videoBad > 0 || (standard && st.pictures > 0) { live = true; break }
+                if st.videoPackets - st.videoBad > 0 { live = true; break }
             }
             if !live {
                 client.close()
                 ran.wait()
                 lock.lock(); self.client = nil; lock.unlock()
-                why = standard ? "no-picture" : "no-media"
+                why = "no-media"
                 if let failure { note("route \(route): \(failure)") }
-                if standard { break }
                 route += 1
                 continue
             }
             let (sw, sh, _, _) = client.layout()
-            let (cw, ch) = standard ? (picW, picH) : client.canvas()
-            status(["s": "live", "w": sw, "h": sh, "cw": cw, "ch": ch, "own": own, "audio": audio, "input": true,
-                    "codec": standard ? "pixels" : "hevc", "standard": standard, "adaptive": standard, "mvs": standard])
+            let (cw, ch) = client.canvas()
+            status(["s": "live", "w": sw, "h": sh, "cw": cw, "ch": ch, "own": true, "audio": audio, "input": true, "codec": "hevc"])
             let stats = DispatchSource.makeTimerSource(queue: queue)
             stats.schedule(deadline: .now() + 2, repeating: 2)
             var last = client.currentStats()
-            var lastBytes: Int64 = 0, lastWholes: Int64 = 0
             stats.setEventHandler { [weak self] in
                 guard let self else { return }
                 let st = client.currentStats()
-                self.lock.lock()
-                let bytes = self.picBytes, wholes = self.wholes, least = self.tookLeast, took = self.tookLast
-                self.lock.unlock()
-                var fps = Double(st.frames - last.frames) / 2, kbps = Double(st.bytes - last.bytes) * 8 / 1000 / 2
-                if standard {
-                    fps = Double(wholes - lastWholes) / 2
-                    kbps = Double(bytes - lastBytes) * 8 / 1000 / 2
-                    if wholes != lastWholes {
-                        self.status(["s": "note", "text": String(format: "adaptive, the Mac's own codec: an update shown in %.0f ms at the least, %.0f ms the last; %.1f a second, %.0f KB a second",
-                                                                 least * 1000, took * 1000, fps, Double(bytes - lastBytes) / 1024 / 2)])
-                    }
-                    lastBytes = bytes; lastWholes = wholes
-                }
-                self.status(["s": "stats", "fps": fps, "kbps": kbps, "audio": Double(st.audioPackets - last.audioPackets) / 2,
+                self.status(["s": "stats", "fps": Double(st.frames - last.frames) / 2, "kbps": Double(st.bytes - last.bytes) * 8 / 1000 / 2,
+                             "audio": Double(st.audioPackets - last.audioPackets) / 2,
                              "lost": st.framesLost, "keyframes": st.keyframes, "bad": st.videoBad, "dropped": 0, "asks": st.keyAsks])
                 last = st
             }
@@ -410,7 +342,7 @@ public final class ScreenSession: @unchecked Sendable {
         status(["s": "note", "text": text])
     }
 
-    private func handler(standard: Bool) -> ScreenClient.Handler {
+    private func handler() -> ScreenClient.Handler {
         var h = ScreenClient.Handler()
         h.hevcConfig = { [weak self] vps, sps, pps in
             guard let self, let record = ScreenHEVC.decoderRecord(vps: vps, sps: sps, pps: pps) else { return }
@@ -457,86 +389,14 @@ public final class ScreenSession: @unchecked Sendable {
             guard let self else { return }
             self.lock.lock()
             if sw > 0 && bw > 0 { self.scale = min(max((bw + sw / 2) / sw, 1), 4) }
-            var (pw, ph) = (bw, bh)
-            // The picture is the size its rectangles are drawn in.
-            if self.standard && self.picW > 0 { pw = self.picW; ph = self.picH }
             self.lock.unlock()
-            self.layoutFrame(sw, sh, pw, ph)
+            self.layoutFrame(sw, sh, bw, bh)
         }
         h.clipboard = { [weak self] text in
             guard text.utf8.count <= 256 << 10 else { return }
             self?.send(ScreenWire.ToPage.clipboard.rawValue, Data(text.utf8))
         }
-        h.pictureSize = { [weak self] w, hh in
-            guard let self else { return }
-            self.lock.lock()
-            self.picW = w; self.picH = hh
-            let client = self.client
-            self.lock.unlock()
-            // The layout again, with the picture's new size.
-            if let client {
-                let (sw, sh, _, _) = client.layout()
-                self.layoutFrame(sw, sh, w, hh)
-            }
-        }
-        h.picture = { [weak self] x, y, w, hh, bgra in
-            guard let self, w > 0, hh > 0, bgra.count >= w * hh * 4 else { return }
-            let rows = max(1, Self.pictureBand / (w * 4))
-            var top = 0
-            while top < hh {
-                let n = min(rows, hh - top)
-                let band = bgra[(top * w * 4)..<((top + n) * w * 4)]
-                if let deflated = Self.deflate(band) { self.piece(x, y + top, w, n, flags: 0, deflated) }
-                top += n
-            }
-        }
-        h.pictureCoded = { [weak self] x, y, w, hh, body in
-            guard let self else { return }
-            self.lock.lock()
-            var flags: UInt8 = 4
-            if self.codedFirst { self.codedFirst = false; flags |= 8 }
-            self.lock.unlock()
-            var rest = body
-            while rest.count > Self.codedPiece {
-                self.piece(x, y, w, hh, flags: flags | 16, rest.prefix(Self.codedPiece))
-                rest = rest.dropFirst(Self.codedPiece)
-                flags = 4
-            }
-            self.piece(x, y, w, hh, flags: flags, rest)
-        }
-        h.pictureEnd = { [weak self] in self?.whole() }
         return h
-    }
-
-    /// The update is all sent: a numbered word that it is whole, and, while more than a few are not
-    /// yet on the window's screen, a wait (the reader's, so Screen Sharing waits too).
-    private func whole() {
-        shownCame.lock()
-        serial &+= 1
-        if serial == 0 { serial = 1 }
-        let n = serial
-        sentAt[Int(n % 64)] = Date()
-        shownCame.unlock()
-        lock.lock(); wholes += 1; lock.unlock()
-        piece(Int(n >> 16), Int(n & 0xffff), 0, 0, flags: 1, [UInt8]())
-        let deadline = Date().addingTimeInterval(1)
-        shownCame.lock()
-        while n &- shown >= Self.shownAhead, Date() < deadline {
-            lock.lock(); let gone = ended; lock.unlock()
-            if gone { break }
-            shownCame.wait(until: deadline)
-        }
-        shownCame.unlock()
-    }
-
-    /// Raw deflate, as the window inflates a piece (no zlib header).
-    static func deflate(_ bytes: ArraySlice<UInt8>) -> [UInt8]? {
-        let capacity = bytes.count + bytes.count / 8 + 1024
-        var out = [UInt8](repeating: 0, count: capacity)
-        let n = bytes.withUnsafeBufferPointer { src in
-            compression_encode_buffer(&out, capacity, src.baseAddress!, src.count, nil, COMPRESSION_ZLIB)
-        }
-        return n > 0 ? Array(out.prefix(n)) : nil
     }
 }
 

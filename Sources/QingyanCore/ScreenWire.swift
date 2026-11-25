@@ -1,5 +1,4 @@
 import Foundation
-import Compression
 import CoreGraphics
 import Network
 
@@ -8,10 +7,9 @@ import Network
 /// The picture, the sound and the input are that Mac's own Screen Sharing. out's own client signs
 /// in to it with the account the window gives and speaks these frames to the window in this process
 /// (ScreenSession.swift); until 2026-11-25 the Monitor helper on that Mac did, and they crossed the
-/// road between the Macs. A window may ask for Screen Sharing's standard mode ("standard" in its
-/// first word): the Mac's display as it is, with no sound, sent where it changes and not at all while
-/// it does not (user 2026-11-23: a Mac showing the High Performance video runs hot, and the system's
-/// own standard mode does not). The frames, each way, [kind: 1 byte][length: 3 bytes][body]:
+/// road between the Macs. A session is Screen Sharing's High Performance mode alone, in HEVC, on a
+/// display of its own that follows the window (user 2026-11-25: the standard mode never came near the
+/// system's own Adaptive Quality, and is gone). The frames, each way, [kind: 1 byte][length: 3 bytes][body]:
 ///
 ///     to the page    1 status (JSON): hello {v, name, user, codecs, signin}, connecting,
 ///                      live {w h (points), cw ch (pixels), own, audio, input}, end {why}
@@ -22,21 +20,12 @@ import Network
 ///                    5 cursor shape: id, hot spot x y, size w h (pixels), pixels per point, RGBA
 ///                    6 cursor shown: id          7 clipboard (UTF-8)
 ///                    8 layout: the display in points w h, the picture in pixels w h
-///                    9 picture (standard): x y w h (pixels), flags, then the rectangle's BGRA rows,
-///                      deflated, or with flag 2 the rectangle as a JPEG (to a viewer whose open
-///                      said jpeg; smaller than the rectangle to one that said scaled). Flag 1 =
-///                      the update is whole: no rectangle, and for such a viewer x and y are the
-///                      update's number, which it says back (shown). With flag 4 (to a viewer whose
-///                      open said mvs) the rectangle as that Mac's Screen Sharing sent it in its own
-///                      codec (ScreenMVS); flag 8 with it = the first of a session, flag 16 with it =
-///                      the next piece holds more of the same rectangle's bytes
-///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, own, standard, jpeg, scaled, mvs, w, h, scale},
-///                      shown {n}, …
+///     from the page  1 control (JSON): open {codecs, audio, kbps, user, password, w, h, scale}, size, key, …
 ///                    2 pointer: buttons, x y (points)
 ///                    3 key: down, virtual key code
 ///                    4 scroll: dx dy (pixels, as a browser's wheel says them), x y
 public enum ScreenWire {
-    public enum ToPage: UInt8 { case status = 1, videoConfig, videoFrame, audio, cursorStore, cursorSelect, clipboard, layout, picture }
+    public enum ToPage: UInt8 { case status = 1, videoConfig, videoFrame, audio, cursorStore, cursorSelect, clipboard, layout }
     public enum FromPage: UInt8 { case control = 1, pointer, key, scroll }
     public enum Codec: UInt8, Sendable {
         case avc = 1, hevc = 2
@@ -291,50 +280,6 @@ public extension ScreenWire {
         func u(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
         let layout = Layout(width: u(0), height: u(2), pictureWidth: u(4), pictureHeight: u(6))
         return layout.width > 0 && layout.height > 0 && layout.pictureWidth > 0 && layout.pictureHeight > 0 ? layout : nil
-    }
-
-    /// A piece of a standard session's picture: where it lies in the picture, in pixels, and its BGRA
-    /// rows, deflated, or the same rectangle as a JPEG (`jpeg`: an adaptive session sends what
-    /// changes that way, and the same pixels deflated once that place rests); or the rectangle in
-    /// that Mac's own codec, as its Screen Sharing sent it (`coded`: `first` for the first of a
-    /// session, `more` when the next piece holds more of its bytes); or, with no pixels, the word
-    /// that the pieces of one update have all come.
-    struct PicturePiece: Equatable, Sendable {
-        public let x: Int, y: Int, width: Int, height: Int
-        public let whole: Bool
-        public let jpeg: Bool
-        public let coded: Bool
-        public let first: Bool
-        public let more: Bool
-        public let deflated: Data
-        /// Of the word that an update is whole: the update's number in an adaptive session, which
-        /// the helper waits to hear back before it asks that Mac what changed next; 0 otherwise.
-        public var serial: Int { whole ? x << 16 | y : 0 }
-    }
-
-    static func picturePiece(_ body: Data) -> PicturePiece? {
-        guard body.count >= 9 else { return nil }
-        let b = [UInt8](body.prefix(9))
-        func u(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
-        return PicturePiece(x: u(0), y: u(2), width: u(4), height: u(6), whole: b[8] & 1 == 1, jpeg: b[8] & 2 == 2,
-                            coded: b[8] & 4 == 4, first: b[8] & 8 == 8, more: b[8] & 16 == 16, deflated: Data(body.dropFirst(9)))
-    }
-
-    /// The most pixels a picture has, its longest side, and the most bytes of pixels in one piece:
-    /// what the helper sends is well inside each.
-    static let pictureAreaLimit = 48 << 20
-    static let pictureSideLimit = 16384
-    static let pieceLimit = 8 << 20
-
-    /// A piece's pixels inflated into `room`, which holds `capacity` bytes: how many came, and never
-    /// more than `capacity`. A piece of `n` bytes is read into room for one more, so that one that
-    /// holds more than it says is told from one that holds exactly that.
-    static func inflate(_ deflated: Data, into room: UnsafeMutablePointer<UInt8>, capacity: Int) -> Int {
-        guard capacity > 0, !deflated.isEmpty else { return 0 }
-        return deflated.withUnsafeBytes { raw -> Int in
-            guard let source = raw.bindMemory(to: UInt8.self).baseAddress else { return 0 }
-            return compression_decode_buffer(room, capacity, source, deflated.count, nil, COMPRESSION_ZLIB)
-        }
     }
 
     /// A picture: whether it is a key frame, its time (90 kHz), and its units, each after four bytes of length.

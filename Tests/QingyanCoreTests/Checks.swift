@@ -1,4 +1,3 @@
-import Compression
 import Foundation
 import AppKit
 import Network
@@ -204,73 +203,6 @@ struct Checks {
                   && ScreenWire.layout(Data([0, 0, 0, 0, 0, 0, 0, 0])) == nil, "the display's points and the picture's pixels")
         let video = ScreenWire.videoFrame(Data([1, 0, 0, 0x01, 0x2C, 0, 0, 0, 2, 0x65, 0x88]))
         try check(video?.key == true && video?.stamp == 300 && video?.units == Data([0, 0, 0, 2, 0x65, 0x88]) && ScreenWire.videoFrame(Data([1, 0, 0])) == nil, "a picture's header")
-        // A standard session's picture: sixteen pixels of two colors, deflated, and where they go.
-        let rows: [UInt8] = (0..<16).flatMap { $0 < 8 ? [1, 2, 3, 255] as [UInt8] : [4, 5, 6, 255] }
-        let packedRoom = 256
-        var packed = [UInt8](repeating: 0, count: packedRoom)
-        let packedCount = compression_encode_buffer(&packed, packedRoom, rows, rows.count, nil, COMPRESSION_ZLIB)
-        let piece = ScreenWire.picturePiece(Data([0, 3, 0, 4, 0, 8, 0, 2, 0]) + Data(packed.prefix(packedCount)))
-        let deflated = piece?.deflated ?? Data()
-        var unpacked = [UInt8](repeating: 0, count: rows.count + 8)
-        let inflated = ScreenWire.inflate(deflated, into: &unpacked, capacity: rows.count + 1)
-        let first = Array(unpacked.prefix(rows.count))
-        try check(packedCount > 0 && piece?.x == 3 && piece?.y == 4 && piece?.width == 8 && piece?.height == 2 && piece?.whole == false
-                  && inflated == rows.count && first == rows, "a piece of a standard session's picture")
-        // Read as a piece of fewer pixels, it fills the room given, a byte more than that piece's size; as one of more, it comes short.
-        let asFewer = ScreenWire.inflate(deflated, into: &unpacked, capacity: rows.count - 3)
-        let asMore = ScreenWire.inflate(deflated, into: &unpacked, capacity: rows.count + 5)
-        let ofNothing = ScreenWire.inflate(Data(), into: &unpacked, capacity: 8)
-        try check(asFewer == rows.count - 3 && asMore == rows.count && ofNothing == 0,
-                  "a piece that holds more or fewer pixels than its size is told from one that holds them all")
-        try check(ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 0, 0, 0, 1]))?.whole == true && ScreenWire.picturePiece(Data([0, 0, 0])) == nil,
-                  "the word that an update is whole")
-        // An adaptive session's: a piece that is a JPEG, and the number of an update that is whole.
-        let soft = ScreenWire.picturePiece(Data([0, 3, 0, 4, 0, 8, 0, 2, 2, 0xFF, 0xD8]))
-        let numbered = ScreenWire.picturePiece(Data([0, 1, 0, 2, 0, 0, 0, 0, 1]))
-        try check(soft?.jpeg == true && soft?.whole == false && soft?.serial == 0 && soft?.deflated == Data([0xFF, 0xD8]) && piece?.jpeg == false
-                  && numbered?.whole == true && numbered?.serial == 65538 && ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 0, 0, 0, 1]))?.serial == 0,
-                  "a piece that is a JPEG, and the number of an update that is whole")
-        // A coded session's: a rectangle in that Mac's own codec, and what the decoder makes of the
-        // codec's tables, a full update of sixteen pixels a side and a partial one after it (the
-        // colors as the decoder compared with Screen Sharing's own gives them).
-        let codedPiece = ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 16, 0, 16, 12, 0]))
-        try check(codedPiece?.coded == true && codedPiece?.first == true && codedPiece?.more == false && codedPiece?.jpeg == false
-                  && ScreenWire.picturePiece(Data([0, 0, 0, 0, 0, 16, 0, 16, 20]))?.more == true && soft?.coded == false,
-                  "a piece in that Mac's own codec")
-        let mvs = ScreenMVS()
-        var mvsPicture = [UInt8](repeating: 0, count: 16 * 16 * 4)
-        func mvsDecoded(_ decoder: ScreenMVS, _ body: Data, side: Int) -> Bool {
-            do {
-                _ = try body.withUnsafeBytes { raw in
-                    try mvsPicture.withUnsafeMutableBufferPointer { room in
-                        try decoder.decode(x: 0, y: 0, width: side, height: side, body: raw, into: room.baseAddress!)
-                    }
-                }
-                return true
-            } catch {
-                return false
-            }
-        }
-        func mvsColors() -> UInt64 {
-            var sum: UInt64 = 0xcbf2_9ce4_8422_2325
-            for (at, byte) in mvsPicture.enumerated() where at % 4 != 3 { sum = (sum ^ UInt64(byte)) &* 0x100_0000_01b3 }
-            return sum
-        }
-        let mvsTables = Data(base64Encoded: "AgwJCQsSERIZCQkJCRQODxIKCgsSDxARFQoNCxASExoaDREOExgYGiESDw0VGx4hKRcbFRcaISkwGxcZHSIqMTkPDxIkOUtLSw8QFDJLS0tLEhQqS0tLS0skMktLS0tLSzlLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tL") ?? Data()
-        let mvsFull = Data(base64Encoded: "AA8ZAAAJWTaAGHX/ixziIgKQEQzx+G+p4ZCPq8d9TwyD69Y3tHRsY0pVE2gAAAAAAAAAAAAAAAAAAAAA") ?? Data()
-        let mvsPartial = Data(base64Encoded: "AQ4Tf/gRAIEAxsAYAAAAAAAAADR/sckBacgNnK8ob5Kf5OGgDAAAAAAAAAAAAAAApMqyMFPGUZJUZ64p/xgAAAAAAAAAAAAAAAAAt56g0/9CebvCSIxe+G6eCiWlLb0tgUxSAmNwCQynIINAabXZzAAAAAAAAAAAAAAAAAAAAAA=") ?? Data()
-        let mvsSized = mvs.resize(width: 16, height: 16)
-        let mvsTabled = mvsDecoded(mvs, mvsTables, side: 0)
-        let mvsFilled = mvsDecoded(mvs, mvsFull, side: 16)
-        let mvsAfterFull = mvsColors()
-        let mvsRefined = mvsDecoded(mvs, mvsPartial, side: 16)
-        let mvsAfterPartial = mvsColors()
-        try check(mvsSized && mvsTabled && mvsFilled && mvsAfterFull == 0xc5e4456d11742d89 && mvsRefined && mvsAfterPartial == 0x4b1b91f8067ed0fc
-                  && mvsPicture[3] == 0xFF, "that Mac's own codec, decoded")
-        let mvsFresh = ScreenMVS()
-        let mvsFreshSized = mvsFresh.resize(width: 16, height: 16)
-        try check(mvsFreshSized && !mvsDecoded(mvsFresh, mvsPartial, side: 16) && !mvsDecoded(mvsFresh, Data([2, 1, 2]), side: 0),
-                  "a partial update before any full one, and tables of the wrong length, are refused")
         let sound = ScreenWire.audioPacket(Data([2, 0, 0, 0x04, 0x00, 0, 7, 0xDE, 0xAD]))
         try check(sound?.codec == 2 && sound?.samples == 1024 && sound?.sequence == 7 && sound?.bytes == Data([0xDE, 0xAD]), "a sound packet")
         var shape = Data([0, 0, 0, 9, 0, 3, 0, 4, 0, 2, 0, 1, 2])

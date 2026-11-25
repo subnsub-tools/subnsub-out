@@ -8,20 +8,12 @@
 //  that shows the screen: it reaches the other Mac's Screen Sharing through
 //  out there, which only carries its bytes (ScreenTunnel.swift).
 //
-//  A session of either kind begins the same way. The client says hello and
-//  signs in (ScreenAuth.swift), says what it is and names its encodings in
-//  the clear, and waits for the host's rekey (encoding 0x44f), from which the
-//  record encryption of the rest of the connection is made.
-//
-//  A standard session then has its picture on that connection: rectangles of
-//  the display in the Mac's own codec (RFB encoding 0x3f3, Adaptive Quality,
-//  decoded by ScreenMVS.swift) or exact pixels, deflated. The host is asked to
-//  send what changes as it changes, back to back, as the system's viewer asks
-//  (auto update, 0x09, every 0 ms), and the connection is read only as fast
-//  as this Mac draws, so that the host, which judges the way by how fast it
-//  can write, sends what the way and this Mac can take.
-//
-//  A High Performance session offers its media (0x1c) with the SRTP keys of
+//  A session is High Performance alone (user 2026-11-25: the standard mode
+//  is gone). The client says hello and signs in (ScreenAuth.swift), says
+//  what it is, asks for a display of the session's own and names its
+//  encodings in the clear, and waits for the host's rekey (encoding 0x44f),
+//  from which the record encryption of the rest of the connection is made.
+//  It then offers its media (0x1c) with the SRTP keys of
 //  both directions and is sent video (HEVC, one stream for the whole picture)
 //  and sound (AAC-ELD) on UDP, which the other Mac's out carries as
 //  datagrams; the host's reports and this Mac's ask for key frames.
@@ -39,10 +31,7 @@ public final class ScreenClient: @unchecked Sendable {
     public struct Config {
         public var user: String
         public var password: String
-        /// A standard session: the Mac's display as it is, on the connection itself.
-        public var standard: Bool
-        /// A display of the session's own (High Performance): `width` by `height` points at `scale`.
-        public var ownDisplay: Bool
+        /// The session's own display: `width` by `height` points at `scale`.
         public var width: Int
         public var height: Int
         public var scale: Double
@@ -51,9 +40,9 @@ public final class ScreenClient: @unchecked Sendable {
         public var maxBitrate: Int
         public var log: ((String) -> Void)?
 
-        public init(user: String, password: String, standard: Bool, ownDisplay: Bool = false, width: Int = 1920, height: Int = 1080,
+        public init(user: String, password: String, width: Int = 1920, height: Int = 1080,
                     scale: Double = 1, audio: Bool = false, maxBitrate: Int = 0, log: ((String) -> Void)? = nil) {
-            self.user = user; self.password = password; self.standard = standard; self.ownDisplay = ownDisplay
+            self.user = user; self.password = password
             self.width = width; self.height = height; self.scale = scale; self.audio = audio; self.maxBitrate = maxBitrate; self.log = log
         }
     }
@@ -70,20 +59,12 @@ public final class ScreenClient: @unchecked Sendable {
         /// The display: in points (what the pointer's coordinates are in) and in pixels.
         public var layout: ((_ scaledW: Int, _ scaledH: Int, _ backingW: Int, _ backingH: Int) -> Void)?
         public var clipboard: ((_ text: String) -> Void)?
-        /// A standard session's picture: its size in pixels, a rectangle's pixels (BGRA rows) or the
-        /// Mac's codec for it, and the end of an update.
-        public var pictureSize: ((_ w: Int, _ h: Int) -> Void)?
-        public var picture: ((_ x: Int, _ y: Int, _ w: Int, _ h: Int, _ bgra: [UInt8]) -> Void)?
-        public var pictureCoded: ((_ x: Int, _ y: Int, _ w: Int, _ h: Int, _ body: ArraySlice<UInt8>) -> Void)?
-        /// The update is all handed over; the reader waits for this to return before it reads on.
-        public var pictureEnd: (() -> Void)?
         public init() {}
     }
 
     public struct Stats {
         public var videoPackets = 0, videoBad = 0
         public var frames = 0, keyframes = 0
-        public var pictures = 0
         public var framesLost = 0
         public var audioPackets = 0, audioBad = 0
         public var bytes: Int64 = 0
@@ -106,9 +87,6 @@ public final class ScreenClient: @unchecked Sendable {
 
     // Limits, as the Go client had them.
     static let streamPendMax = 8 << 20
-    static let picturePendMax = 160 << 20
-    static let picturePixelsMax = 48 << 20
-    static let pictureSideMax = 16384
     static let cursorSideMax = 512
     static let clipboardMax = 1 << 20
     static let keyAskEvery: TimeInterval = 1.5
@@ -126,7 +104,6 @@ public final class ScreenClient: @unchecked Sendable {
     private var leftover: [[UInt8]] = []
 
     public private(set) var serverW = 0, serverH = 0
-    private var pixels = ScreenRFB.PixelFormat()
 
     // High Performance media.
     private var keys = ScreenRFB.NegotiationKeys.random()
@@ -154,9 +131,6 @@ public final class ScreenClient: @unchecked Sendable {
     private var askWork: DispatchWorkItem?
     private var cursorZ: ScreenInflater?
     private var clipZ: ScreenInflater?
-    private var picW = 0, picH = 0
-    private var picZ: ScreenInflater?
-    private var picError: String?
     private var handler = Handler()
     private var feedback: DispatchSourceTimer?
 
@@ -176,10 +150,8 @@ public final class ScreenClient: @unchecked Sendable {
     /// Screen Sharing's own client first connects once, says hello and hangs up (the warmup), then
     /// connects for the session; `reconnect` hangs the road's TCP connection up and makes another.
     public func connect(reconnect: () throws -> Void) throws {
-        if !config.standard {
-            link.onDatagram = { [weak self] channel, bytes in
-                self?.media.async { self?.datagram(channel, bytes) }
-            }
+        link.onDatagram = { [weak self] channel, bytes in
+            self?.media.async { self?.datagram(channel, bytes) }
         }
         // The warmup: hello, the host's security types, and gone.
         do {
@@ -189,18 +161,14 @@ public final class ScreenClient: @unchecked Sendable {
         try reconnect()
         // UDP: a byte from each port to the host's every 100 ms until the session is made, so the
         // host knows where to send.
-        var punching: DispatchSourceTimer?
-        if !config.standard {
-            let timer = DispatchSource.makeTimerSource(queue: media)
-            timer.schedule(deadline: .now(), repeating: .milliseconds(100))
-            timer.setEventHandler { [weak self] in
-                self?.link.sendDatagram(0, [0])
-                self?.link.sendDatagram(1, [0])
-            }
-            timer.resume()
-            punching = timer
+        let punching = DispatchSource.makeTimerSource(queue: media)
+        punching.schedule(deadline: .now(), repeating: .milliseconds(100))
+        punching.setEventHandler { [weak self] in
+            self?.link.sendDatagram(0, [0])
+            self?.link.sendDatagram(1, [0])
         }
-        defer { punching?.cancel() }
+        punching.resume()
+        defer { punching.cancel() }
 
         let ecbKey = try signIn(reconnect: reconnect)
         // ClientInit (shared), ServerInit.
@@ -210,7 +178,6 @@ public final class ScreenClient: @unchecked Sendable {
         guard nameLength <= 65536 else { throw Failure.protocolError("ServerInit name too long (\(nameLength))") }
         if nameLength > 0 { _ = try link.readFull(nameLength) }
         serverW = Int(head.get16(0)); serverH = Int(head.get16(2))
-        pixels = ScreenRFB.PixelFormat(head[4..<20])
         log("ServerInit \(serverW)x\(serverH)")
         // A Mac with someone at it may ask whether to share that session: it is shared.
         if let peek = try link.peek(4, timeout: 1.5), peek == ScreenRFB.sessionSelectMagic {
@@ -222,11 +189,9 @@ public final class ScreenClient: @unchecked Sendable {
         // The prelude, in the clear.
         try link.write(ScreenRFB.viewerInfo() + ScreenRFB.setEncryptionFollowup)
         Thread.sleep(forTimeInterval: 0.1)
-        if config.ownDisplay {
-            form = Self.formLock.withLock { Self.hostForm }
-            try link.write(ScreenRFB.displayConfig(width: config.width, height: config.height, scale: config.scale, hdr: false, form: form))
-        }
-        let encodings = config.standard ? ScreenRFB.codedEncodings : ScreenRFB.highPerformanceEncodings
+        form = Self.formLock.withLock { Self.hostForm }
+        try link.write(ScreenRFB.displayConfig(width: config.width, height: config.height, scale: config.scale, hdr: false, form: form))
+        let encodings = ScreenRFB.highPerformanceEncodings
         try link.write(ScreenRFB.setEncodings(encodings))
         try readUntilRekey(ecbKey: ecbKey)
         try link.write(ScreenRFB.postEncryptionToggle)
@@ -234,13 +199,6 @@ public final class ScreenClient: @unchecked Sendable {
         try drain(quiet: 0.35)
         log("encrypted")
         try sendEncrypted(ScreenRFB.setEncodings(encodings))
-        if config.standard {
-            if !pixels.usable {
-                pixels = .bgrx
-                try sendEncrypted(ScreenRFB.setPixelFormat(pixels))
-            }
-            return
-        }
         // The media offer, and its answer: the size the host's encoder draws at.
         let offer = try ScreenOffer.createOffers(ScreenOfferOptions(codec: "hevc", tilesPerFrame: 1, audioEnabled: config.audio, ltrp: false, maxBitrate: config.maxBitrate))
         videoSSRC = offer.videoSSRC; audioSSRC = offer.audioSSRC
@@ -458,7 +416,7 @@ public final class ScreenClient: @unchecked Sendable {
     /// Asks the host to make the session's display w by h points at `scale`. Only a request: the size
     /// it settles on comes back as a layout.
     public func resize(width w: Int, height h: Int, scale: Double) {
-        guard config.ownDisplay, w >= 320, h >= 200, w <= 7680, h <= 4320 else { return }
+        guard w >= 320, h >= 200, w <= 7680, h <= 4320 else { return }
         lock.lock()
         config.width = w; config.height = h; config.scale = scale
         resizeAsked = true
@@ -504,7 +462,7 @@ public final class ScreenClient: @unchecked Sendable {
 
     /// Offers the media again under another bandwidth ceiling: the host starts its encoder anew.
     public func setMaxBitrate(_ bps: Int) {
-        guard !config.standard, bps >= 0 else { return }
+        guard bps >= 0 else { return }
         lock.lock()
         let same = config.maxBitrate == bps
         config.maxBitrate = bps
@@ -523,10 +481,8 @@ public final class ScreenClient: @unchecked Sendable {
         try? sendEncrypted(ScreenRFB.mediaOffer(audio: offer.audio, video: offer.video, keys: keys, noCursor: true, altSession: false))
     }
 
-    /// A picture that needs no other: a High Performance session asks at its next report; a
-    /// standard one asks for the whole display again.
+    /// A picture that needs no other: asked for at the next report.
     public func requestKeyframe() {
-        if config.standard { arm(); return }
         lock.lock()
         awaitKey = true
         lastKeyAsk = .distantPast
@@ -549,20 +505,14 @@ public final class ScreenClient: @unchecked Sendable {
         return stats
     }
 
-    /// Keeps the host's cursor, layout and (standard) picture coming: auto update and one request
-    /// for the whole display. A standard session has the host push what changes back to back, as
-    /// the system's viewer does (every 0 ms), and names the display's own size (asked for 65535 by
-    /// 65535 a Mac answers with two pixels of black). A High Performance one has it off.
+    /// Keeps the host's cursor and layout coming: auto update off (the picture is the media's) and
+    /// one request for the whole display.
     private func arm() {
-        var w = 0xffff, h = 0xffff
-        if config.standard {
-            let (sw, sh, _, _) = layout()
-            if sw > 0 && sh > 0 { w = sw; h = sh }
-        }
+        let w = 0xffff, h = 0xffff
         var m = [UInt8](repeating: 0, count: 16)
         m[0] = 0x09
         m.set16(2, 1)
-        m.set32(4, config.standard ? 0 : 0xffff_ffff)
+        m.set32(4, 0xffff_ffff)
         m.set16(12, UInt16(w)); m.set16(14, UInt16(h))
         try? sendEncrypted(m)
         try? sendEncrypted(ScreenRFB.framebufferRequest(incremental: false, w: UInt16(w), h: UInt16(h)))
@@ -575,25 +525,16 @@ public final class ScreenClient: @unchecked Sendable {
         lock.lock()
         self.handler = handler
         running = true
-        awaitKey = !config.standard
+        awaitKey = true
         scaledW = serverW; scaledH = serverH
-        if config.standard { picW = serverW; picH = serverH }
-        if config.ownDisplay { askW = config.width; askH = config.height; askLeft = Self.formsAfter(form, scale: config.scale) }
+        askW = config.width; askH = config.height; askLeft = Self.formsAfter(form, scale: config.scale)
         lock.unlock()
-        if config.standard, picW > 0, picH > 0 { handler.pictureSize?(picW, picH) }
         arm()
         try? sendEncrypted([ScreenRFB.clientAutoPasteboard, 0, 0, 1, 0, 0, 0, 0])
         let timer = DispatchSource.makeTimerSource(queue: media)
-        var ticks = 0
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            ticks += 1
-            if self.config.standard {
-                // No picture yet: asked for again every other second.
-                if self.currentStats().pictures == 0 && ticks % 2 == 0 { self.arm() }
-                return
-            }
             self.lock.lock()
             var fir: UInt32?
             if self.awaitKey && self.primarySSRC != 0 && Date().timeIntervalSince(self.lastKeyAsk) >= Self.keyAskEvery {
@@ -625,20 +566,18 @@ public final class ScreenClient: @unchecked Sendable {
 
     private func readControl() throws {
         guard let cipher else { throw Failure.closed }
-        let pendMax = config.standard ? Self.picturePendMax : Self.streamPendMax
-        var lostPlace = false
+        let pendMax = Self.streamPendMax
         func feed(_ body: [UInt8]) {
             pend += body
             var at = 0
             while at < pend.count {
                 let (n, status) = parseServer(pend, from: at)
                 if status == .more {
-                    if pend.count - at > pendMax { pend = []; at = 0; if config.standard { lostPlace = true } }
+                    if pend.count - at > pendMax { pend = []; at = 0 }
                     break
                 }
                 if status == .lost || n <= 0 {
                     pend = []; at = 0
-                    if config.standard { lostPlace = true }
                     break
                 }
                 at += n
@@ -653,11 +592,6 @@ public final class ScreenClient: @unchecked Sendable {
             let (messages, used) = cipher.decryptStream(enc)
             enc.removeFirst(used)
             for m in messages { feed(m) }
-            lock.lock()
-            let failed = picError
-            lock.unlock()
-            if let failed { throw Failure.protocolError(failed) }
-            if lostPlace { throw Failure.protocolError("the standard session's stream cannot be followed") }
             if enc.count >= 2 {
                 let n = Int(enc.get16(0))
                 if n == 0 || n % 16 != 0 { throw Failure.protocolError("the control stream is out of step") }
@@ -724,18 +658,8 @@ public final class ScreenClient: @unchecked Sendable {
         let rects = Int(b.get16(start + 2))
         var pos = start + 4
         var events: [() -> Void] = []
-        var pictures = false, wire = 0
         func done(_ status: ParseStatus) -> (Int, ParseStatus) {
-            if status != .more {
-                for e in events { e() }
-                if pictures {
-                    lock.lock()
-                    stats.frames += 1
-                    stats.bytes += Int64(wire)
-                    lock.unlock()
-                    handler.pictureEnd?()
-                }
-            }
+            if status != .more { for e in events { e() } }
             return (pos - start, status)
         }
         for _ in 0..<rects {
@@ -743,58 +667,6 @@ public final class ScreenClient: @unchecked Sendable {
             let x = Int(b.get16(pos)), y = Int(b.get16(pos + 2)), w = Int(b.get16(pos + 4)), h = Int(b.get16(pos + 6))
             let enc = Int32(bitPattern: b.get32(pos + 8))
             let p = pos + 12
-            if config.standard {
-                var taken = true
-                switch enc {
-                case ScreenRFB.encRaw:
-                    guard w * h <= Self.picturePixelsMax else { return done(.lost) }
-                    let n = w * h * pixels.bytes
-                    guard p + n <= b.count else { return (0, .more) }
-                    if n > 0 {
-                        let raw = b[p..<(p + n)]
-                        events.append { [unowned self] in self.onPixels(x, y, w, h, raw) }
-                        pictures = true; wire += n
-                    }
-                    pos = p + n
-                case ScreenRFB.encZlib:
-                    guard p + 4 <= b.count else { return (0, .more) }
-                    let zn = Int(b.get32(p))
-                    guard zn <= Self.picturePendMax, w * h <= Self.picturePixelsMax else { return done(.lost) }
-                    guard p + 4 + zn <= b.count else { return (0, .more) }
-                    let z = b[(p + 4)..<(p + 4 + zn)]
-                    events.append { [unowned self] in
-                        let inflater = self.picZ ?? ScreenInflater(most: Self.picturePixelsMax * 4, strict: true)
-                        self.picZ = inflater
-                        if w == 0 || h == 0 { inflater.feed(z); return }
-                        guard let raw = inflater.inflate(z, want: w * h * self.pixels.bytes) else {
-                            self.lock.lock()
-                            if self.picError == nil { self.picError = "a picture rectangle \(w)x\(h) at \(x),\(y) (\(zn) bytes deflated) could not be inflated" }
-                            self.lock.unlock()
-                            return
-                        }
-                        self.onPixels(x, y, w, h, raw[...])
-                    }
-                    pictures = true; wire += zn
-                    pos = p + 4 + zn
-                case ScreenRFB.encAppleMVS:
-                    guard p + 4 <= b.count else { return (0, .more) }
-                    let zn = Int(b.get32(p))
-                    guard zn <= Self.picturePendMax else { return done(.lost) }
-                    guard p + 4 + zn <= b.count else { return (0, .more) }
-                    let coded = b[(p + 4)..<(p + 4 + zn)]
-                    events.append { [unowned self] in self.onCoded(x, y, w, h, coded) }
-                    pictures = true; wire += zn
-                    pos = p + 4 + zn
-                case ScreenRFB.encApplePointer, ScreenRFB.encAppleSelector:
-                    pos = p
-                case ScreenRFB.encDesktopSize:
-                    events.append { [unowned self] in self.onPictureSize(w, h) }
-                    pos = p
-                default:
-                    taken = false
-                }
-                if taken { continue }
-            }
             switch enc {
             case ScreenRFB.encAppleCursor:
                 guard p + 8 <= b.count else { return (0, .more) }
@@ -853,60 +725,17 @@ public final class ScreenClient: @unchecked Sendable {
                 // A second key for the stream: how its counters carry over is not known.
                 return done(.lost)
             default:
-                if config.standard { log("a rectangle of encoding \(enc) (\(w)x\(h) at \(x),\(y)) is not read") }
                 return done(.lost)
             }
         }
         return done(.ok)
     }
 
-    private func onPictureSize(_ w: Int, _ h: Int) {
-        guard w > 0, h > 0 else { return }
-        lock.lock()
-        guard w <= Self.pictureSideMax, h <= Self.pictureSideMax, w * h <= Self.picturePixelsMax else {
-            if picError == nil { picError = "a picture of \(w)x\(h) is more than is shown" }
-            lock.unlock()
-            return
-        }
-        let same = picW == w && picH == h
-        picW = w; picH = h
-        lock.unlock()
-        if !same { handler.pictureSize?(w, h) }
-    }
-
-    /// Makes the picture as large as a rectangle that lies past its edge (the host said its size in
-    /// points and draws in pixels); whether the rectangle fits it.
-    private func grow(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Bool {
-        lock.lock()
-        var pw = max(picW, x + w), ph = max(picH, y + h)
-        if pw > picW || ph > picH { pw = max(pw, backingW); ph = max(ph, backingH) }
-        lock.unlock()
-        onPictureSize(pw, ph)
-        lock.lock()
-        let fits = picError == nil && x + w <= picW && y + h <= picH
-        if fits { stats.pictures += 1 }
-        lock.unlock()
-        return fits
-    }
-
-    private func onPixels(_ x: Int, _ y: Int, _ w: Int, _ h: Int, _ raw: ArraySlice<UInt8>) {
-        guard grow(x, y, w, h) else { return }
-        handler.picture?(x, y, w, h, pixels.bgra(raw, count: w * h))
-    }
-
-    private func onCoded(_ x: Int, _ y: Int, _ w: Int, _ h: Int, _ body: ArraySlice<UInt8>) {
-        if w > 0 && h > 0 {
-            guard grow(x, y, w, h) else { return }
-        } else {
-            lock.lock(); stats.pictures += 1; lock.unlock()
-        }
-        handler.pictureCoded?(x, y, w, h, body)
-    }
 
     private func onLayout(_ sw: Int, _ sh: Int, _ bw: Int, _ bh: Int) {
         guard sw > 0, sh > 0 else { return }
         lock.lock()
-        let changed = !config.standard && (resizeAsked || (layouts > 0 && (bw != backingW || bh != backingH)))
+        let changed = resizeAsked || (layouts > 0 && (bw != backingW || bh != backingH))
         resizeAsked = false
         layouts += 1
         scaledW = sw; scaledH = sh; backingW = bw; backingH = bh

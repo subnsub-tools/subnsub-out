@@ -8,8 +8,8 @@ import QingyanCore
 /// as the viewing window runs it, over a local socket in place of the helpers' road. Signs in,
 /// watches for ten seconds, takes a screenshot as the window's toolbar does, ends, and writes what
 /// the viewer counted:
-/// `Qingyan --screen-selftest <account> <report.json> [standard|hp]`, the password in
-/// OUT_SCREEN_PASSWORD.
+/// `Qingyan --screen-selftest <account> <report.json>`, the password in OUT_SCREEN_PASSWORD. A
+/// session is High Performance alone, so this Mac needs Apple silicon.
 enum ScreenShareSelfTest {
     @MainActor private final class Seen {
         var statuses: [String] = []
@@ -20,7 +20,7 @@ enum ScreenShareSelfTest {
         var shotDone = false
     }
 
-    @MainActor static func run(account: String, report: String, highPerformance: Bool) async throws -> Bool {
+    @MainActor static func run(account: String, report: String) async throws -> Bool {
         let password = ProcessInfo.processInfo.environment["OUT_SCREEN_PASSWORD"] ?? ""
         let seen = Seen()
         let path = NSTemporaryDirectory() + "out-share-\(getpid()).sock"
@@ -60,9 +60,8 @@ enum ScreenShareSelfTest {
         }
         link.onHello = { _, codecs in
             seen.statuses.append("hello")
-            var open: [String: Any] = ["t": "open", "codecs": codecs, "audio": true, "kbps": ScreenWire.kbpsDefault,
+            let open: [String: Any] = ["t": "open", "codecs": codecs, "audio": true, "kbps": ScreenWire.kbpsDefault,
                                        "user": account, "password": password]
-            if !highPerformance { open["standard"] = true; open["jpeg"] = true; open["scaled"] = true; open["mvs"] = true }
             link.send(ScreenWire.control(open))
         }
         link.onEnd = { why in seen.ended = why }

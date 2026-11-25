@@ -13,27 +13,21 @@ import VideoToolbox
 
 /// Another Mac's screen in a window of out's own (user 2026-11-21: a screen button after each Mac
 /// in Multiple Macs opens it; the Macs there can be worked from each other's out without a switch).
-/// What it shows is that Mac's own Screen Sharing, which the Monitor helper there signs in to with
-/// the account given here (ScreenHost, helper/go/screenhp.go): the picture, the pointer's shape,
-/// the clipboard both ways, and the pointer, the keys and the wheel sent back. The account is asked
-/// for once and kept in this Mac's keychain. One window a Mac.
+/// What it shows is that Mac's own Screen Sharing, which out's own client here signs in to with the
+/// account given here, out on that Mac carrying its bytes (ScreenSession, ScreenHost): the picture,
+/// the pointer's shape, the clipboard both ways, and the pointer, the keys and the wheel sent back.
+/// The account is asked for once and kept in this Mac's keychain. One window a Mac.
 ///
-/// A session is of one of Screen Sharing's two kinds, as the system's own window has them (user
-/// 2026-11-23: as the system does; High Performance always with Dynamic Resolution, and no choice
-/// of quality in either). Standard, unless High Performance is chosen: that Mac's display as it is,
-/// with no sound, sent as pixels where it changes, so that nothing is sent, decoded or drawn while
-/// it does not (the High Performance video kept this Mac hot). High Performance: video of a
-/// display of the session's own that follows the window, with that Mac's sound, at the most the
-/// helper lets Screen Sharing send. A Mac that makes no display for a session (an Intel Mac) is
-/// shown in the standard kind alone. One whose helper is older than the standard kind has video
-/// alone, and the button chooses what it chose before: a display of the session's own, or that
-/// Mac's display as it is.
+/// A session is Screen Sharing's High Performance mode alone (user 2026-11-25: the standard mode
+/// never came near the system's own Adaptive Quality, and is gone; High Performance, H.265 and
+/// Dynamic Resolution are all there is): HEVC video of a display of the session's own that follows
+/// the window, with that Mac's sound, at the most Screen Sharing sends. A Mac without Apple silicon
+/// makes no such display, and its screen is not shown here.
 ///
 /// The window has what Screen Sharing's own has (user 2026-11-22: and the features of macOS's own
 /// Screen Sharing go without saying): the shared clipboard always, and as buttons down its right
-/// side full screen, Scaling, High Performance, the sound with it, keys this Mac keeps for itself
-/// and Info; each kept
-/// for each Mac. Under the picture, always, what is known of the way there (ScreenInfo): the road,
+/// side full screen, Scaling, the sound, keys this Mac keeps for itself and Info; each kept for
+/// each Mac. Under the picture, always, what is known of the way there (ScreenInfo): the road,
 /// the path (direct, a peer relay or DERP) with a ping a second, the picture's size, codec, frame
 /// rate and bit rate; a click there, or Info, shows everything. The window is glass, as out's panel
 /// is (user 2026-11-22: the same glass design as out's own window): its title strip, the space around
@@ -51,9 +45,10 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     }
 
     /// The window comes only with that Mac's first picture (user 2026-11-25: no window without a
-    /// picture; one that cannot get in says so, and nothing is left open). Meanwhile the panel's
-    /// button for that Mac turns (DictationController.screenOpening), and an account is asked for in
-    /// a dialog of its own.
+    /// picture; one that cannot get in says so, and nothing is left open). Meanwhile that Mac's row
+    /// in the panel says that the window is being connected (DictationController.screenOpening; user
+    /// 2026-11-25: not a turning sign, a word in the row), and an account is asked for in a dialog of
+    /// its own.
     static func show(_ device: TrustedDevice, controller: DictationController) {
         NSApp.activate(ignoringOtherApps: true)
         if let viewer = open[device.key] {
@@ -116,23 +111,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     }
     private func keep(_ name: String, _ value: Bool) { UserDefaults.standard.set(value, forKey: "screen.\(name)." + device.key) }
 
-    /// High Performance chosen for that Mac: a display of the session's own, which takes the
-    /// window's size, and that Mac's own displays dark while it lasts. Kept under the name Dynamic
-    /// Resolution had: a Mac shown that way before is shown in High Performance now, and one shown
-    /// on its own display, in the standard kind.
-    private var highPerformance: Bool {
-        get { UserDefaults.standard.bool(forKey: "screenOwnDisplay." + device.key) }
-        set { UserDefaults.standard.set(newValue, forKey: "screenOwnDisplay." + device.key) }
-    }
-    /// What that Mac's hello said it has, for the session being opened: the standard kind (a helper
-    /// after 2026.11.23.1), and a display for a session (Apple silicon; a helper before the standard
-    /// kind does not say, and is asked for one when High Performance is chosen, as it was for
-    /// Dynamic Resolution). Neither, until a hello that asks for an account has said.
-    private var offersStandard = false
-    private var offersOwn = false
-    /// The session is, or will be, of the standard kind; or on a display of its own.
-    private var standard: Bool { offersStandard && !(highPerformance && offersOwn) }
-    private var ownDisplay: Bool { highPerformance && offersOwn }
     /// The picture scaled to fit the window; off, at its own size, the window scrolling over it.
     private var scaled: Bool { get { kept("scaled", true) } set { keep("scaled", newValue) } }
     /// Only watching by choice: never now, and with no button (user 2026-11-23: no Observe button; a
@@ -147,8 +125,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     /// (user 2026-11-23: in a window, a press drags the whole window, and only a double-click starts
     /// working that Mac, the pointer going through). In full screen, always.
     private var engaged = false
-    /// A High Performance session is sent at the most the helper lets Screen Sharing send (user
-    /// 2026-11-23: no choice of quality).
+    /// A session is sent at the most Screen Sharing sends (user 2026-11-23: no choice of quality).
     private static let fullKbps = 60_000
 
     private init(device: TrustedDevice, controller: DictationController) {
@@ -192,7 +169,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         }
         info.sound = sound
         info.observing = observing
-        info.own = highPerformance
         info.scaled = scaled
         info.clipboard = sharedClipboard
         watchPath()
@@ -213,12 +189,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         inputAllowed = true
         tallied = nil
         stopTally()
-        // What the Mac has is its hello's to say; an out that records its own screen says nothing.
-        offersStandard = false
-        offersOwn = false
-        info.kinds = false
-        info.standard = false
-        info.own = false
         view.reset()
         view.showsPicture = false
         container.banner = nil
@@ -252,10 +222,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             self.reshapeCame(picture: true)
             if self.live { self.reveal() }
         }
-        next.onPieces = { [weak self, weak next] words in
-            guard let self, let next, self.link === next else { return }
-            self.info.pieces = words
-        }
         next.onCodec = { [weak self, weak next] codec in
             guard let self, let next, self.link === next else { return }
             self.info.codec = codec
@@ -282,6 +248,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             do {
                 let (connection, host) = try await RemoteSender.openScreen(device, identity: identity, name: name, listening: listening)
                 guard let self, self.link === next, !self.ended else { connection.cancel(); return }
+                // What that Mac is: one without Apple silicon has no screen button from now on.
+                self.controller?.learnChip(device.key, appleSilicon: host.appleSilicon)
                 self.info.route = HelperLink.route(of: connection) ?? ""
                 next.start(ScreenTunnelLink(connection), host: host,
                            reopen: ScreenLink.reopen(device, identity: identity, name: name, listening: listening),
@@ -301,12 +269,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         case "connecting":
             container.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
         case "live":
-            // High Performance is a display of the session's own or nothing (user 2026-11-25: where
-            // the dynamic resolution cannot be had, the connection fails and the standard kind is used).
-            if ownDisplay, offersStandard, status["own"] as? Bool == false {
-                fallBack()
-                return
-            }
             live = true
             container.say(nil, again: false)
             inputAllowed = status["input"] as? Bool != false
@@ -321,8 +283,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             info.live = true
             info.viewOnly = !inputAllowed
             info.since = Date()
-            info.own = status["own"] as? Bool ?? ownDisplay
-            info.standard = status["standard"] as? Bool == true
             if info.codec.isEmpty, let codec = status["codec"] as? String { info.codec = codec }
             if observing { link?.send(ScreenWire.control(["t": "mode", "observe": true])) }
             if let signingIn {
@@ -340,7 +300,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             }
             startTally()
             publish()
-            // A standard session's first picture comes before the word that it is live.
+            // The first picture may have come before the word that the session is live.
             if view.pictureCame { reveal() }
         case "stats":
             var numbers: [String: Double] = [:]
@@ -349,7 +309,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             }
             info.helper = numbers
         case "note":
-            // What the helper on that Mac says of a standard session, the newest last.
+            // What out's client says of the session (its route, why one failed), the newest last.
             if let text = status["text"] as? String {
                 info.notes = Array((info.notes + [String(text.prefix(300))]).suffix(16))
             }
@@ -380,10 +340,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
 
     private func end(_ why: String) {
         guard !ended else { return }
-        if ownDisplay, offersStandard, ["no-hp", "no-media", "no-display"].contains(why) {
-            fallBack()
-            return
-        }
         ended = true
         live = false
         reshaped(animated: false)
@@ -417,37 +373,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         }
         signingIn = nil
         if revealed { container.say(words, again: true) } else { fail(words) }
-    }
-
-    /// High Performance could not have its display of its own: the session ends with a word that it
-    /// failed, and that Mac is connected again in the standard kind, which is kept for it.
-    private func fallBack() {
-        highPerformance = false
-        info.own = false
-        if let signingIn { typed = signingIn }
-        signingIn = nil
-        link?.close()
-        link = nil
-        ended = true
-        live = false
-        info.live = false
-        reshaped(animated: false)
-        stopClipboardWatch()
-        stopTally()
-        view.releaseAll()
-        view.showsPicture = false
-        publish()
-        let words = tr("%@’s High Performance connection failed. Connecting in standard mode.", device.label)
-        if revealed {
-            flash(words)
-        } else {
-            revealWork?.cancel()
-            let alert = NSAlert()
-            alert.messageText = words
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-        }
-        connect()
     }
 
     /// Ends the session here; Connect starts the next.
@@ -560,14 +485,17 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     /// an account: the one kept for it, else the one typed into the window.
     private func hello(_ hello: [String: Any], codecs: [String]) {
         self.codecs = codecs
-        offersStandard = hello["standard"] as? Bool == true
-        // High Performance only in HEVC, which that Mac's helper offers on Apple silicon from
-        // 2026.11.25.3 and this Mac decodes in hardware (user 2026-11-25: only H.265, no H.264).
-        offersOwn = (hello["own"] as? Bool ?? true) && codecs.contains("hevc")
-        // The button where there is something to choose: a display of the session's own or not.
-        info.kinds = offersOwn
-        info.own = ownDisplay
-        info.standard = standard
+        // High Performance in HEVC on a display of the session's own, or nothing (user 2026-11-25:
+        // only H.265, no H.264; no standard mode): that Mac makes such a display on Apple silicon
+        // alone, and this Mac decodes HEVC in its hardware or not at all.
+        guard hello["own"] as? Bool != false else {
+            refuse(tr("%@ is not a Mac with Apple silicon. out shows a Mac’s screen in High Performance mode only, which needs Apple silicon on that Mac.", device.label))
+            return
+        }
+        guard codecs.contains("hevc") else {
+            refuse(tr("This Mac cannot decode HEVC (H.265) video in its hardware, which High Performance mode needs."))
+            return
+        }
         if let typed {
             self.typed = nil
             open(typed.account, remember: typed.remember)
@@ -584,6 +512,15 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         container.askSignIn(device: device.label, account: user, error: nil)
     }
 
+    /// The session cannot be had at all: said, and the road let go.
+    private func refuse(_ words: String) {
+        ended = true
+        link?.close()
+        link = nil
+        publish()
+        if revealed { container.say(words, again: true) } else { fail(words) }
+    }
+
     private func signIn(_ account: ScreenSignIn, remember: Bool) {
         // Typed after the last session ended (a password that was not taken): a new one, with it.
         guard !ended, link != nil else { typed = (account, remember); connect(); return }
@@ -592,52 +529,27 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
 
     private func open(_ account: ScreenSignIn, remember: Bool) {
         signingIn = (account, remember)
-        var fields: [String: Any] = ["t": "open", "codecs": codecs, "audio": !standard,
-                                     "kbps": ownDisplay ? Self.fullKbps : ScreenWire.kbpsDefault,
-                                     "user": account.account, "password": account.password]
-        askedSize = nil
-        if standard {
-            fields["standard"] = true
-            // Adaptive: what changes may come as JPEGs, smaller than their place where the way is
-            // slow, and each update shown is said back.
-            fields["jpeg"] = true
-            fields["scaled"] = true
-            // And, from a helper that has it, that Mac's own Adaptive Quality picture as its Screen
-            // Sharing encodes it, decoded here, in place of the JPEGs.
-            fields["mvs"] = true
-        } else if ownDisplay {
-            let size = container.pictureSize
-            let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
-            fields["own"] = true
-            fields["w"] = asked.w
-            fields["h"] = asked.h
-            fields["scale"] = asked.scale
-            askedSize = asked
-        }
+        // The session's display at the window's size.
+        let size = container.pictureSize
+        let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
+        let fields: [String: Any] = ["t": "open", "codecs": codecs, "audio": true, "kbps": Self.fullKbps,
+                                     "user": account.account, "password": account.password,
+                                     "w": asked.w, "h": asked.h, "scale": asked.scale]
+        askedSize = asked
         container.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
         link?.send(ScreenWire.control(fields))
     }
 
-    /// The window in the proportions of that Mac's display, as large as fits most of this screen
-    /// the first time; later, while scaled, the window keeps them as it is resized.
+    /// The display's size, for Info. The window stays as it is: the session's own display takes the
+    /// window's size.
     private func fitWindow(to layout: ScreenWire.Layout) {
         info.layout = layout
         guard !sized else { return }
         sized = true
-        // A display of the session's own takes the window's size: the window stays as it is.
-        guard !window.styleMask.contains(.fullScreen), !info.own else { askSize(); return }
-        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
-        // The title row and the line under the picture.
-        let chrome = NSSize(width: window.frame.width - container.pictureSize.width, height: window.frame.height - container.pictureSize.height)
-        let room = CGRect(origin: .zero, size: CGSize(width: visible.width * 0.85 - chrome.width, height: max(visible.height * 0.85 - chrome.height, 200)))
-        let fitted = ScreenWire.fit((layout.width, layout.height), in: room)
-        let frame = NSSize(width: min(fitted.width, CGFloat(layout.width)).rounded() + chrome.width,
-                           height: min(fitted.height, CGFloat(layout.height)).rounded() + chrome.height)
-        window.setFrame(NSRect(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2, width: frame.width, height: frame.height), display: true)
         askSize()
     }
 
-    /// The window's room for the picture, for a display of the session's own (the other Mac's own
+    /// The window's room for the picture, for the session's own display (the other Mac's own
     /// displays stay as they are).
     private func askSize() {
         resizeWork?.cancel()
@@ -649,9 +561,9 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             if let asked = self.askedSize, asked == asking { return }
             self.askedSize = asking
             self.link?.send(ScreenWire.control(["t": "size", "w": asking.w, "h": asking.h, "scale": asking.scale]))
-            // A display of the session's own is made again at a new size (the helper takes 320 × 200
-            // to 7680 × 4320); the Mac's own display, or one already that size, is not.
-            if self.live, self.info.own, self.view.showsPicture, let shown = self.view.remoteLayout,
+            // The session's display is made again at a new size (Screen Sharing takes 320 × 200 to
+            // 7680 × 4320); one already that size is not.
+            if self.live, self.view.showsPicture, let shown = self.view.remoteLayout,
                shown.width != asking.w || shown.height != asking.h,
                (320...7680).contains(asking.w), (200...4320).contains(asking.h) {
                 self.reshape(awaitingLayout: true)
@@ -760,17 +672,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             scaled = on
             info.scaled = on
             container.scaled = on
-            if on { keepProportions() }
-        case .performance(let on):
-            highPerformance = on
-            info.own = ownDisplay
-            info.standard = standard
-            // A session's kind is chosen as it opens: it opens again. What was shown stays,
-            // blurred, until the new session's first picture.
-            if !ended || live {
-                if live, view.hold() { reshape(awaitingLayout: false) }
-                connect()
-            }
         case .clipboard(let on):
             sharedClipboard = on
             info.clipboard = on
@@ -908,28 +809,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         view.releaseAll()
         // And the window stops working that Mac until its picture is double-clicked again.
         if engaged { engaged = false; applyControl() }
-    }
-
-    /// While scaled, and the other Mac's display is its own size, the window keeps its proportions.
-    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        guard scaled, !info.own, let layout = view.remoteLayout, layout.width > 0, layout.height > 0,
-              !sender.styleMask.contains(.fullScreen) else { return frameSize }
-        // The title row and the line under the picture take the same height whatever the size.
-        let picture = container.pictureSize
-        let chrome = NSSize(width: sender.frame.width - picture.width, height: sender.frame.height - picture.height)
-        let width = frameSize.width - chrome.width
-        return NSSize(width: frameSize.width, height: (width * CGFloat(layout.height) / CGFloat(layout.width)).rounded() + chrome.height)
-    }
-
-    /// Scaling turned on: the window takes the display's proportions at its width.
-    private func keepProportions() {
-        guard !window.styleMask.contains(.fullScreen) else { return }
-        let size = windowWillResize(window, to: window.frame.size)
-        guard size != window.frame.size else { return }
-        var frame = window.frame
-        frame.origin.y += frame.height - size.height
-        frame.size = size
-        window.setFrame(frame, display: true, animate: true)
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { askSize() }
@@ -1075,7 +954,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         info.live = true
         info.layout = layout
         info.codec = "hevc"
-        info.kinds = true
         info.account = "hopo"
         info.since = Date().addingTimeInterval(-754)
         info.helper = ["fps": 59.8, "kbps": 8420, "audio": 100, "lost": 0, "keyframes": 3, "bad": 0, "dropped": 0, "asks": 1]
@@ -1095,8 +973,7 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
 }
 
 /// The connection of one session: frames in and out, the picture decoded into a display layer and
-/// the sound into a player. A standard session's picture comes as pixels (ScreenCanvas) and goes to
-/// the same layer. Frames are read on a queue of its own.
+/// the sound into a player. Frames are read on a queue of its own.
 final class ScreenLink: @unchecked Sendable {
     var onStatus: (@MainActor ([String: Any]) -> Void)?
     /// A hello that asks for an account, and the codecs both sides take.
@@ -1127,17 +1004,6 @@ final class ScreenLink: @unchecked Sendable {
     private var scale: CGFloat = 2
 
     private var format: CMVideoFormatDescription?
-    /// A standard session's picture, and the size the last layout said it is.
-    private var canvas: ScreenCanvas?
-    private var pictureSize: (width: Int, height: Int)?
-    /// What became of the picture's pieces, for Info: drawn, outside the picture, before any layout,
-    /// unreadable; and the last one's place.
-    var onPieces: (@MainActor (String) -> Void)?
-    private var pieces = (drawn: 0, outside: 0, early: 0, unreadable: 0)
-    private var lastPiece = ""
-    /// A piece came as a JPEG: the session is adaptive, and is named so.
-    private var adaptive = false
-    private var piecesTold = Date.distantPast
     private var awaitingKey = true
     /// No picture has gone to the display layer since the last decoder record.
     private var fresh = false
@@ -1224,8 +1090,6 @@ final class ScreenLink: @unchecked Sendable {
     /// The next whole picture as an image: asked for at once, and nil when none comes in five seconds.
     func capture(_ done: @escaping @MainActor (CGImage?) -> Void) {
         queue.async {
-            // A standard session has the picture whole already.
-            if !self.closed, let image = self.canvas?.image() { self.main { done(image) }; return }
             guard !self.closed, self.format != nil else { self.main { done(nil) }; return }
             self.dropShot()
             self.shots += 1
@@ -1288,7 +1152,6 @@ final class ScreenLink: @unchecked Sendable {
                     if !laidOut, let w = status["w"] as? Int, let h = status["h"] as? Int, let cw = status["cw"] as? Int, let ch = status["ch"] as? Int,
                        w > 0, h > 0, cw > 0, ch > 0 {
                         let layout = ScreenWire.Layout(width: w, height: h, pictureWidth: cw, pictureHeight: ch)
-                        pictureSize = (cw, ch)
                         let onLayout = onLayout
                         main { onLayout?(layout) }
                     }
@@ -1310,7 +1173,6 @@ final class ScreenLink: @unchecked Sendable {
                 if let layout = ScreenWire.layout(frame.body) {
                     count("layouts")
                     laidOut = true
-                    pictureSize = (layout.pictureWidth, layout.pictureHeight)
                     let onLayout = onLayout
                     main { onLayout?(layout) }
                 }
@@ -1330,8 +1192,6 @@ final class ScreenLink: @unchecked Sendable {
                     let onClipboard = onClipboard
                     main { onClipboard?(text) }
                 }
-            case .picture:
-                piece(frame.body)
             case .none:
                 break
             }
@@ -1468,78 +1328,6 @@ final class ScreenLink: @unchecked Sendable {
         }
         renderer.enqueue(sample)
         count("enqueued")
-        if fresh {
-            fresh = false
-            let onPicture = onPicture
-            main { onPicture?() }
-        }
-    }
-
-    // MARK: The picture of a standard session
-
-    /// One piece of the picture into the canvas; or, the pieces of an update all in, the picture to
-    /// the display layer.
-    private func piece(_ body: Data) {
-        guard let piece = ScreenWire.picturePiece(body) else { count("badPiece"); return }
-        bytesIn += body.count
-        if piece.whole {
-            show()
-            // An adaptive session's helper waits for this before it asks that Mac what changed next.
-            if piece.serial != 0 {
-                forward(ScreenWire.control(["t": "shown", "n": piece.serial]))
-            }
-            return
-        }
-        lastPiece = "\(piece.x),\(piece.y) \(piece.width)x\(piece.height) \(piece.deflated.count) B" + (piece.jpeg ? " JPEG" : piece.coded ? " coded" : "")
-        if piece.jpeg || piece.coded, !adaptive {
-            adaptive = true
-            let onCodec = onCodec
-            main { onCodec?("adaptive") }
-        }
-        guard let size = pictureSize else { count("pieceBeforeLayout"); pieces.early += 1; tellPieces(); return }
-        let canvas = self.canvas ?? ScreenCanvas()
-        self.canvas = canvas
-        if canvas.width != size.width || canvas.height != size.height {
-            guard canvas.resize(width: size.width, height: size.height) else { count("badCanvas"); return }
-            count("canvases")
-            fresh = true
-            let onCodec = onCodec, codec = adaptive ? "adaptive" : "pixels"
-            main { onCodec?(codec) }
-        }
-        // Not one that lies outside the picture the layout said: asking again would bring it again.
-        guard piece.x + piece.width <= canvas.width, piece.y + piece.height <= canvas.height else {
-            count("pieceOutside"); pieces.outside += 1; tellPieces(); return
-        }
-        // A piece that cannot be read leaves its place wrong: the whole picture is asked for again.
-        if canvas.draw(piece) { pieces.drawn += 1 } else { count("badPiece"); pieces.unreadable += 1; tellPieces(); askKey() }
-    }
-
-    private func tellPieces() {
-        piecesTold = Date()
-        let size = canvas.map { "\($0.width)x\($0.height)" } ?? "none"
-        let words = "drawn \(pieces.drawn), outside \(pieces.outside), early \(pieces.early), unreadable \(pieces.unreadable); "
-            + "last \(lastPiece); canvas \(size), lit \(canvas?.lit() ?? 0)/1000, shown \(framesIn)"
-        let onPieces = onPieces
-        main { onPieces?(words) }
-    }
-
-    private func show() {
-        guard let canvas, let sample = canvas.sample() else { return }
-        count("frames")
-        framesIn += 1
-        #if DEBUG
-        onSample?(sample)
-        #endif
-        let renderer = displayLayer.sampleBufferRenderer
-        if renderer.status == .failed {
-            count("rendererFailed")
-            renderer.flush()
-        }
-        renderer.enqueue(sample)
-        count("enqueued")
-        // Info reads it and nothing else does: once a second is enough, and a word for every
-        // picture had the window laid out again as often as pictures came.
-        if Date().timeIntervalSince(piecesTold) >= 1 { tellPieces() }
         if fresh {
             fresh = false
             let onPicture = onPicture

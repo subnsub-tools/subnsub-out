@@ -17,8 +17,8 @@
 //    3  a datagram of the UDP control port, each way
 //    4  a datagram of the UDP video port, each way
 //
-//  A standard session needs only the TCP connection. A High Performance one
-//  has its video, sound and their reports on UDP: Screen Sharing sends them
+//  A session (High Performance, the only kind) has its video, sound and
+//  their reports on UDP: Screen Sharing sends them
 //  to the address the session's TCP connection comes from, at the ports a
 //  client punches from (the server's own port and the next), so the other
 //  Mac connects from one of its own addresses (a route) and binds its UDP

@@ -84,9 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         #if DEBUG
         if let index = CommandLine.arguments.firstIndex(of: "--screen-selftest"), CommandLine.arguments.count > index + 2 {
             let arguments = CommandLine.arguments
-            let highPerformance = arguments.count > index + 3 && arguments[index + 3] == "hp"
             Task { @MainActor in
-                do { exit(try await ScreenShareSelfTest.run(account: arguments[index + 1], report: arguments[index + 2], highPerformance: highPerformance) ? 0 : 1) }
+                do { exit(try await ScreenShareSelfTest.run(account: arguments[index + 1], report: arguments[index + 2]) ? 0 : 1) }
                 catch { fputs("Screen self-test failed: \(error)\n", stderr); exit(1) }
             }
             return

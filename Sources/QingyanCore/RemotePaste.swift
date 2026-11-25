@@ -298,6 +298,9 @@ public enum RemoteSender {
         public let name: String
         /// Whether that Mac trusts this one.
         public let paired: Bool
+        /// Whether that Mac has Apple silicon, which showing its screen takes; nil from an out before
+        /// it said (0.1.94 and earlier).
+        public let appleSilicon: Bool?
     }
 
     /// A Mac that answered at an address: who it says it is, proven by its key.
@@ -377,7 +380,8 @@ public enum RemoteSender {
             try await channel.write(["ping": true])
             let reply = try await channel.readObject()
             return Reply(ok: reply["ok"] as? Bool == true, message: reply["message"] as? String ?? "",
-                         name: reply["name"] as? String ?? channel.peerName, paired: reply["paired"] as? Bool == true)
+                         name: reply["name"] as? String ?? channel.peerName, paired: reply["paired"] as? Bool == true,
+                         appleSilicon: reply["arm64"] as? Bool)
         } catch let error as VoiceError { throw error }
         catch { throw RemoteIO.unreachable(device.label, device.port) }
     }
@@ -1017,7 +1021,9 @@ public final class RemoteReceiver {
         if object["ping"] as? Bool == true {
             guard device != nil else { return (["ok": false, "message": tr("The other Mac has not added this Mac to its trusted list."), "name": name, "paired": false], .close) }
             let (ok, message) = probe?() ?? (false, tr("out on the other Mac is not ready."))
-            return (["ok": ok, "message": message, "name": name, "paired": true], .close)
+            // And whether this Mac has Apple silicon: a Mac without has no screen button on the other (user
+            // 2026-11-25: an Intel Mac cannot be shown in High Performance, so it has no remote button).
+            return (["ok": ok, "message": message, "name": name, "paired": true, "arm64": ScreenTunnel.appleSilicon], .close)
         }
         if object["pair"] as? Bool == true { return await pair(object, on: channel, known: device) }
         guard let device else {

@@ -969,7 +969,8 @@ struct MainView: View {
             : micOffline ? tr("Locked microphone not connected") : tr("Tap to start, tap again to stop")
         let subline: String = choosing ? (controller.shortcutNote.isEmpty ? tr("Fn, a Command key, an F key, or a key with Control or Option · Esc cancels") : controller.shortcutNote)
             : micOffline ? tr("“%@” offline, no input", controller.boundMicrophoneLabel)
-            : settings.sendsRemotely ? tr("Types at the cursor on the focused Mac") : tr("Types the result at the cursor")
+            // Short enough for one line in the strip, in either language (user 2026-11-25: the panel's details).
+            : settings.sendsRemotely ? tr("Types on the focused Mac") : tr("Types at the cursor")
         // Worked out one by one: as one expression the button's styling is too much for the type checker.
         let hovered = recordButtonHovered
         let symbol: String = recording ? "stop.fill" : (micOffline ? "mic.slash.fill" : "mic.fill")
@@ -1122,7 +1123,7 @@ struct MainView: View {
                     )
                     HStack {
                         if let latency = shownResult.latency {
-                            Text(String(format: "%.2f s", latency)).font(.system(size: 10.5, design: .monospaced))
+                            Text(String(format: "%.2f s", latency)).font(.system(size: 10.5)).monospacedDigit()
                                 .foregroundStyle(Palette.muted).help(tr("Time from the final key press until the text was typed"))
                         }
                         Spacer()
@@ -1329,26 +1330,25 @@ struct RemoteSection: View {
     private func row(_ device: TrustedDevice) -> some View {
         let called = controller.peerReachable[device.key], calledIn = shelf.linkedKeys.contains(device.key)
         let ok: Bool? = calledIn ? true : called
-        let status = controller.peerTesting.contains(device.key) ? tr("Checking…")
+        // Its screen on its way: the row says so where it says Online (user 2026-11-25: not a turning
+        // sign; the window still comes only once connected, with its first picture).
+        let opening = controller.screenOpening.contains(device.key)
+        let status = opening ? tr("Connecting to the remote window…")
+            : controller.peerTesting.contains(device.key) ? tr("Checking…")
             : ok == true ? tr("Online") : ok == false ? tr("Not connected") : tr("Not checked")
         return HStack(spacing: 6) {
             Circle().fill(ok == true ? Palette.accent : ok == false ? Color.orange : Palette.muted.opacity(0.5))
                 .frame(width: 6, height: 6)
             CopyableText(device.label, font: .system(size: 12))
                 .lineLimit(1)
-            // Its screen in a window of out's own (user 2026-11-21): a Mac reached through the helper.
-            if HelperLink.agent(of: device.host) != nil {
+            // Its screen in a window of out's own (user 2026-11-21): a Mac reached through the helper,
+            // and not one whose out has said it has no Apple silicon (user 2026-11-25: an Intel Mac
+            // cannot be shown in High Performance, so it has no button).
+            if HelperLink.agent(of: device.host) != nil, controller.peerAppleSilicon[device.key] != false {
                 Button { ScreenViewer.show(device, controller: controller) } label: {
-                    // Turning while its screen is on its way: the window comes with the picture.
-                    Group {
-                        if controller.screenOpening.contains(device.key) {
-                            ProgressView().controlSize(.mini).scaleEffect(0.7)
-                        } else {
-                            Image(systemName: "display")
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundStyle(Palette.ink.opacity(0.8))
-                        }
-                    }
+                    Image(systemName: "display")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(opening ? Palette.accent : Palette.ink.opacity(0.8))
                         .frame(width: 22, height: 18)
                         .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                         .contentShape(Rectangle())
@@ -1358,7 +1358,7 @@ struct RemoteSection: View {
                 .accessibilityLabel(tr("Show %@’s screen", device.label))
             }
             Spacer(minLength: 6)
-            Text(status).font(.system(size: 10.5)).foregroundStyle(ok == false ? Color.orange : Palette.muted).lineLimit(1).fixedSize()
+            Text(status).font(.system(size: 10.5)).foregroundStyle(opening ? Palette.accent : ok == false ? Color.orange : Palette.muted).lineLimit(1).fixedSize()
         }
         .padding(.horizontal, 6).padding(.vertical, 4.5)
         .help(controller.peerStatus[device.key] ?? "")

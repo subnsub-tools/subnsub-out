@@ -223,7 +223,7 @@ final class ShelfModel: ObservableObject {
         return nil
     }
 
-    /// Kept on the primary helper as it is put on the Shelf here, so that a click on any Mac copies
+    /// Kept on the primary helper as it is put on the Shelf here, so that Copy link on any Mac copies
     /// its link at once; nothing is copied now.
     private func keep(_ item: ShelfItem) {
         guard item.kind != .text, linkable else { return }
@@ -320,31 +320,30 @@ final class ShelfModel: ObservableObject {
 
     func cancelFetch(_ item: ShelfItem) { copyWhenHere.remove(item.id); revealWhenHere.remove(item.id); sync?.cancel(item.id) }
 
-    /// A click on a tile (user 2026-11-22): an image's or a file's link, kept on the primary helper;
-    /// text, the text itself. Without a primary helper to keep files on, the item itself, as before.
-    func click(_ item: ShelfItem) {
-        if item.kind == .text || !canLink(item) { copy(item) } else { link(item) }
-    }
-
-    /// Whether a click copies the item's link rather than the item.
-    func clickCopiesLink(_ item: ShelfItem) -> Bool { item.kind != .text && canLink(item) }
+    /// A click on a tile copies the item itself, an image, a file or text; one that is not on this Mac
+    /// is downloaded first and copied once it is here. Its link is Copy link in the right-click menu
+    /// (user 2026-11-25: a click copies the picture, a right-click the link; until then a click on an
+    /// item with a link copied the link, user 2026-11-22).
+    func click(_ item: ShelfItem) { copy(item) }
 
     /// What a tile says when the pointer rests on it: what it is, where from, what a click does, and
     /// the day it leaves the Shelf.
     func hint(_ item: ShelfItem, _ stage: Stage) -> String {
         let title = item.kind == .text ? snippet(item) : "\(item.name) · \(Self.size(item.size))"
         let leaves = tr("Removed from the Shelf on %@", item.expires.formatted(date: .abbreviated, time: .omitted))
+        // An item with a link has it in the right-click menu.
+        let linked = item.kind != .text && canLink(item)
         let line: String
         switch stage {
         case .fetching(let progress): line = tr("%@\nFetching %ld%% · Click to pause; what has arrived is kept", title, Int(progress * 100))
-        case .failed(let reason): line = clickCopiesLink(item) ? tr("%@\n%@ · Click to copy its link · Right-click to try the download again", title, reason)
-                                                                : tr("%@\n%@ · Click to try again", title, reason)
-        case .here: line = clickCopiesLink(item) ? tr("%@\nFrom %@ · Click to copy its link, or drag it out", title, item.origin)
-                                                 : tr("%@\nFrom %@ · Click to copy, or drag it out", title, item.origin)
-        case .elsewhere: line = clickCopiesLink(item) ? tr("%@\nFrom %@ · Click to copy its link · Right-click to download it to this Mac", title, item.origin)
-                                                      : tr("%@\nFrom %@ · Click to fetch it to this Mac", title, item.origin)
-        case .unreachable: line = clickCopiesLink(item) ? tr("%@\nFrom %@ · Click to copy its link · No Mac that holds this file is online to download it from", title, item.origin)
-                                                        : tr("%@\nFrom %@ · No Mac that holds this file is online", title, item.origin)
+        case .failed(let reason): line = linked ? tr("%@\n%@ · Click to download it again and copy it · Right-click to copy its link", title, reason)
+                                                : tr("%@\n%@ · Click to try again", title, reason)
+        case .here: line = linked ? tr("%@\nFrom %@ · Click to copy, or drag it out · Right-click to copy its link", title, item.origin)
+                                  : tr("%@\nFrom %@ · Click to copy, or drag it out", title, item.origin)
+        case .elsewhere: line = linked ? tr("%@\nFrom %@ · Click to download and copy it · Right-click to copy its link", title, item.origin)
+                                       : tr("%@\nFrom %@ · Click to download and copy it", title, item.origin)
+        case .unreachable: line = linked ? tr("%@\nFrom %@ · No Mac that holds this file is online · Click to download it from the primary helper and copy it · Right-click to copy its link", title, item.origin)
+                                         : tr("%@\nFrom %@ · No Mac that holds this file is online", title, item.origin)
         }
         return line + "\n" + leaves
     }
@@ -362,11 +361,13 @@ final class ShelfModel: ObservableObject {
         } else { revealWhenHere.remove(item.id) }
     }
 
-    /// The file as the primary helper keeps it, through its link, when no Mac that holds it is online.
-    private func fromHelper(_ item: ShelfItem) {
+    /// The file as the primary helper keeps it, through its link, when no Mac that holds it is online;
+    /// `copying`: for a click, which copies it once it is here, rather than Download to This Mac.
+    private func fromHelper(_ item: ShelfItem, copying: Bool = false) {
         guard let store, helperDownloads[item.id] == nil else { return }
         let id = item.id
-        say(tr("Downloading “%@” (%@) from the primary helper. It is shown in the Finder when it arrives.", item.name, Self.size(item.size)), for: 4)
+        say(copying ? tr("Downloading “%@” (%@) from the primary helper. It is copied when it arrives.", item.name, Self.size(item.size))
+                    : tr("Downloading “%@” (%@) from the primary helper. It is shown in the Finder when it arrives.", item.name, Self.size(item.size)), for: 4)
         helperDownloads[id] = Task { [weak self] in
             var failure: String?
             do {
@@ -393,6 +394,7 @@ final class ShelfModel: ObservableObject {
                 self.helperDownloads[id] = nil
                 if let failure {
                     self.revealWhenHere.remove(id)
+                    self.copyWhenHere.remove(id)
                     self.answerDrags(id, with: nil)
                     self.say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5)
                 } else { self.transferMoved() }
@@ -447,7 +449,9 @@ final class ShelfModel: ObservableObject {
         for id in copyWhenHere {
             guard let item = store.item(id) else { copyWhenHere.remove(id); continue }
             if store.isPresent(id) { copyWhenHere.remove(id); copy(item) }
-            else if sync.progress(id) == nil {
+            else if sync.progress(id) == nil, helperDownloads[id] == nil {
+                // The Mac it was coming from went away: the primary helper keeps it too.
+                if sync.failures[id] != nil, canLink(item) { fromHelper(item, copying: true); continue }
                 copyWhenHere.remove(id)
                 if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5) }
             }
@@ -472,6 +476,8 @@ final class ShelfModel: ObservableObject {
             copyWhenHere.insert(item.id)
             fetch(item)
             if case .fetching = stage(item) { say(tr("Fetching “%@” (%@). It is copied when it arrives.", item.name, Self.size(item.size)), for: 4) }
+            // No Mac that holds it is online: the primary helper keeps it.
+            else if item.kind != .text, canLink(item) { fromHelper(item, copying: true) }
             else { copyWhenHere.remove(item.id) }
             return
         }
@@ -810,7 +816,8 @@ struct ShelfBar: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(9)
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.muted.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
             } else {
-                FittedScroll(maxHeight: 128) {
+                // Two whole rows (60 + 6 + 60) and the room above them; more scroll.
+                FittedScroll(maxHeight: 130) {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
                         ForEach(shelf.items) { tile($0).transition(Motion.pop) }
                     }.padding(.top, 4)
@@ -868,13 +875,16 @@ struct ShelfBar: View {
             }
             .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
             if hovered == item.id {
+                // Inside the tile's corner: the Shelf scrolls, and what stood out past the tile was cut
+                // off at the Shelf's edge (user 2026-11-25).
                 Button { shelf.remove(item) } label: {
-                    Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold)).foregroundStyle(Palette.ink)
-                        .frame(width: 17, height: 17)
-                        .background(Color.primary.opacity(0.24), in: Circle())
+                    Image(systemName: "xmark").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
+                        .frame(width: 16, height: 16)
+                        .background(.regularMaterial, in: Circle())
+                        .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
-                }.buttonStyle(.plain).offset(x: 5, y: -5).help(tr("Remove from the Shelf")).accessibilityLabel(tr("Remove %@", item.name))
+                }.buttonStyle(.plain).help(tr("Remove from the Shelf")).accessibilityLabel(tr("Remove %@", item.name))
                     .transition(Motion.pop)
             }
         }
@@ -886,21 +896,26 @@ struct ShelfBar: View {
         .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, hint(item, stage)))
     }
 
-    /// At the tile's top left: the link button while the pointer is over the tile, how far the file
-    /// has got while its link is being made, and a small mark on an item that has a link.
+    /// In the tile's top left corner, inside it (user 2026-11-25: the mark stood out past the tile and
+    /// the Shelf's edge cut it off): how far the file has got while its link is being made, and a
+    /// small mark on an item that has a link.
     @ViewBuilder private func linkControl(_ item: ShelfItem) -> some View {
         if let progress = shelf.linking[item.id] {
             Button { shelf.cancelLink(item) } label: {
                 ZStack {
-                    Circle().fill(Color.primary.opacity(0.24))
+                    Circle().fill(.regularMaterial)
                     Circle().trim(from: 0, to: max(0.06, progress)).stroke(Palette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                         .rotationEffect(.degrees(-90)).padding(3)
                 }
-                .frame(width: 17, height: 17).frame(width: 22, height: 22).contentShape(Rectangle())
-            }.buttonStyle(.plain).offset(x: -5, y: -5).help(tr("Sending to the primary helper. Click to stop.")).accessibilityLabel(tr("Stop sending %@", item.name))
+                .frame(width: 16, height: 16).frame(width: 22, height: 22).contentShape(Rectangle())
+            }.buttonStyle(.plain).help(tr("Sending to the primary helper. Click to stop.")).accessibilityLabel(tr("Stop sending %@", item.name))
         } else if shelf.hasLink(item) {
             Image(systemName: "link").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
-                .frame(width: 13, height: 13).background(.regularMaterial, in: Circle()).offset(x: -3, y: -3)
+                .frame(width: 14, height: 14)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
+                .padding(4)
+                .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
     }
@@ -932,8 +947,9 @@ struct ShelfBar: View {
 }
 
 /// What a right-click on a tile offers, the same on the panel and on the bar kept on top (user
-/// 2026-11-22: a click copies the link; a right-click downloads it to this Mac, or shows it in the
-/// Finder when it is here already).
+/// 2026-11-22: a right-click downloads it to this Mac, or shows it in the Finder when it is here
+/// already; 2026-11-25: a click copies the item, downloading it first where it is not here, and its
+/// link is Copy link here, first).
 struct ShelfItemMenu: View {
     @ObservedObject var shelf: ShelfModel
     let item: ShelfItem

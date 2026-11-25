@@ -5,9 +5,9 @@
 //  the few it reads before a session's own parsing takes over. Screen Sharing
 //  speaks RFB (the VNC protocol) with Apple's extensions: after the sign-in
 //  (ScreenAuth.swift) the viewer says what it is (ViewerInfo, 0x21), asks for
-//  the record encryption (0x12), names the encodings it reads (0x02), and,
-//  for a High Performance session, offers its media (0x1c, with the SRTP keys
-//  of both directions) and may ask for a display of its own (0x1d).
+//  the record encryption (0x12), names the encodings it reads (0x02), offers
+//  its media (0x1c, with the SRTP keys of both directions) and asks for a
+//  display of its own (0x1d): a session is High Performance alone.
 //
 //  Every message here is written byte for byte as the Go client the helper
 //  ran until 2026-11-25 wrote it (helper/go/applehp/rfb.go), which matched
@@ -19,7 +19,6 @@ import CommonCrypto
 
 public enum ScreenRFB {
     // Messages the viewer sends.
-    public static let clientSetPixelFormat: UInt8 = 0x00
     public static let clientSetEncodings: UInt8 = 0x02
     public static let clientFramebufferRequest: UInt8 = 0x03
     public static let clientKeyEvent: UInt8 = 0x04
@@ -59,10 +58,6 @@ public enum ScreenRFB {
 
     /// What a High Performance session names, before and after the rekey.
     public static let highPerformanceEncodings: [Int32] = [1010, 1011, 1002, 6, 16, 1104, 1100, -223, 1101, 1105, 1107, 1109, 1110]
-    /// What a standard session names: the Mac's own picture codec first (what Screen Sharing sends
-    /// in Adaptive Quality), then pixels deflated for whatever it sends exact, and the host's own
-    /// rectangles (cursor, layout, keys).
-    public static let codedEncodings: [Int32] = [encAppleMVS, encZlib, 1104, 1100, -223, 1101, 1105, 1107, 1109, 1110]
 
     /// A stable macOS release, so hosts of every supported version take their usual path.
     public static let viewerOSVersion: (UInt32, UInt32, UInt32) = (15, 3, 0)
@@ -273,82 +268,6 @@ public enum ScreenRFB {
             i += 1
         }
         return rects.isEmpty ? nil : (bw, bh, rects)
-    }
-
-    /// RFB's PIXEL_FORMAT, as ServerInit gives it.
-    public struct PixelFormat: Equatable {
-        public var bitsPerPixel: UInt8 = 0, depth: UInt8 = 0
-        public var bigEndian = false, trueColor = false
-        public var redMax: UInt16 = 0, greenMax: UInt16 = 0, blueMax: UInt16 = 0
-        public var redShift: UInt8 = 0, greenShift: UInt8 = 0, blueShift: UInt8 = 0
-
-        public init() {}
-
-        /// Four bytes a pixel, blue first: what is asked for when the host's own is not read here.
-        public static let bgrx: PixelFormat = {
-            var f = PixelFormat()
-            f.bitsPerPixel = 32; f.depth = 24; f.trueColor = true
-            f.redMax = 255; f.greenMax = 255; f.blueMax = 255
-            f.redShift = 16; f.greenShift = 8
-            return f
-        }()
-
-        public init(_ b: ArraySlice<UInt8>) {
-            let b = Array(b)
-            guard b.count >= 13 else { return }
-            bitsPerPixel = b[0]; depth = b[1]; bigEndian = b[2] != 0; trueColor = b[3] != 0
-            redMax = b.get16(4); greenMax = b.get16(6); blueMax = b.get16(8)
-            redShift = b[10]; greenShift = b[11]; blueShift = b[12]
-        }
-
-        /// Whether pixels of this format are read here: colours of their own in one, two or four bytes.
-        public var usable: Bool {
-            guard trueColor, redMax != 0, greenMax != 0, blueMax != 0 else { return false }
-            guard bitsPerPixel == 8 || bitsPerPixel == 16 || bitsPerPixel == 32 else { return false }
-            return redShift < bitsPerPixel && greenShift < bitsPerPixel && blueShift < bitsPerPixel
-        }
-
-        public var bytes: Int { Int(bitsPerPixel) / 8 }
-
-        /// `n` pixels of this format as BGRA, nothing transparent.
-        public func bgra(_ raw: ArraySlice<UInt8>, count n: Int) -> [UInt8] {
-            if bitsPerPixel == 32 && !bigEndian && redShift == 16 && greenShift == 8 && blueShift == 0 &&
-                redMax == 255 && greenMax == 255 && blueMax == 255 {
-                var out = Array(raw.prefix(n * 4))
-                var i = 3
-                while i < out.count { out[i] = 0xff; i += 4 }
-                return out
-            }
-            var out = [UInt8](repeating: 0, count: n * 4)
-            let size = bytes, base = raw.startIndex
-            let rm = UInt32(redMax), gm = UInt32(greenMax), bm = UInt32(blueMax)
-            for i in 0..<n {
-                let p = base + i * size
-                var v: UInt32
-                switch (size, bigEndian) {
-                case (1, _): v = UInt32(raw[p])
-                case (2, true): v = UInt32(raw[p]) << 8 | UInt32(raw[p + 1])
-                case (2, false): v = UInt32(raw[p + 1]) << 8 | UInt32(raw[p])
-                case (_, true): v = UInt32(raw[p]) << 24 | UInt32(raw[p + 1]) << 16 | UInt32(raw[p + 2]) << 8 | UInt32(raw[p + 3])
-                default: v = UInt32(raw[p + 3]) << 24 | UInt32(raw[p + 2]) << 16 | UInt32(raw[p + 1]) << 8 | UInt32(raw[p])
-                }
-                out[i * 4] = UInt8(((v >> UInt32(blueShift)) & bm) * 255 / bm)
-                out[i * 4 + 1] = UInt8(((v >> UInt32(greenShift)) & gm) * 255 / gm)
-                out[i * 4 + 2] = UInt8(((v >> UInt32(redShift)) & rm) * 255 / rm)
-                out[i * 4 + 3] = 0xff
-            }
-            return out
-        }
-    }
-
-    public static func setPixelFormat(_ f: PixelFormat) -> [UInt8] {
-        var b = [UInt8](repeating: 0, count: 20)
-        b[0] = clientSetPixelFormat
-        b[4] = f.bitsPerPixel; b[5] = f.depth
-        b[6] = f.bigEndian ? 1 : 0; b[7] = f.trueColor ? 1 : 0
-        b.set16(8, f.redMax); b.set16(10, f.greenMax); b.set16(12, f.blueMax)
-        b[14] = f.redShift; b[15] = f.greenShift; b[16] = f.blueShift
-        return b
     }
 
     public static func randomBytes(_ n: Int) -> [UInt8] {
