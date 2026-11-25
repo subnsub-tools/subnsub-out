@@ -16,8 +16,32 @@ enum DictationPhase: Equatable {
 final class DictationController: ObservableObject {
     @Published var phase: DictationPhase = .idle
     @Published var partial = ""
-    @Published var result = ""
-    @Published var message = ""
+    /// The result and the message, while they are the ones `receive` set for text another Mac sent,
+    /// are left to the Received card: the result card does not show them again. Anything set later
+    /// is the result card's (a message alone shows there without the received text).
+    @Published var result = "" { didSet { resultIsReceived = false } }
+    @Published var message = "" { didSet { messageIsReceived = false } }
+    @Published private(set) var resultIsReceived = false
+    @Published private(set) var messageIsReceived = false
+    /// The text another Mac sent last, kept on the panel whether or not it went in here, until the
+    /// next one (user 2026-11-25: 即便它接收的时候没有成功复制到里面去，它也是接收到了那一段话的，那么就需要在主面板上面给出这一段话).
+    @Published var lastReceived: ReceivedText?
+    /// Counts texts as they arrive: one that arrived earlier and finished later does not replace the card.
+    private var receivedCount = 0
+
+    struct ReceivedText: Equatable {
+        let id = UUID()
+        /// Its place among the texts received (receivedCount when it arrived).
+        var order = 0
+        let text: String
+        /// The sending Mac's name.
+        let from: String
+        let date: Date
+        /// Typed here as far as out can tell.
+        let written: Bool
+        /// What became of it here, and whether it was copied to the clipboard, as it was then.
+        let status: String
+    }
     @Published var connected = false
     @Published var networkAvailable = true
     @Published var retryingID: UUID?
@@ -422,6 +446,16 @@ final class DictationController: ObservableObject {
             catch { settings.historyMessage = tr("Text from another Mac was received but could not be saved to History on this Mac. Check the disk space.") }
         }
         let id = UUID()
+        // New text, not a field rewritten or a deletion: the panel's Received card, and this Mac's
+        // clipboard whatever became of it (user 2026-11-25: 并且自动完成这个复制，在接受端这个机器上面).
+        let fresh = request.field == nil && !request.text.isEmpty
+        receivedCount += 1
+        let order = receivedCount, arrived = Date()
+        func show(written: Bool, status: [String]) {
+            guard fresh, order > lastReceived?.order ?? 0 else { return }
+            lastReceived = ReceivedText(order: order, text: request.text, from: request.from, date: arrived, written: written,
+                                        status: status.joined(separator: " · "))
+        }
         do {
             let outcome: WriteResult
             if let field = request.field {
@@ -429,11 +463,18 @@ final class DictationController: ObservableObject {
                 pasted = nil
             } else {
                 if let previous = request.replace {
-                    outcome = try TextTarget.replace(previous, with: request.text, untouched: cursorUntouched(after: previous))
+                    outcome = try TextTarget.replace(previous, with: request.text, untouched: cursorUntouched(after: previous), keep: fresh)
                 } else {
-                    outcome = try await TextTarget.insertAtFocus(request.text)
+                    outcome = try await TextTarget.insertAtFocus(request.text, keep: fresh)
                 }
                 if outcome.miss == nil, !outcome.unseen { notePasted(request.text) } else { pasted = nil }
+            }
+            // Typed in, the paste left the text on the clipboard in place of what it held (keep);
+            // not typed, it is there already, unless something newer was put there meanwhile.
+            if let miss = outcome.miss {
+                show(written: false, status: [Self.missTitle(miss, peer: nil), Self.missLine(miss, clipboard: nil)] + (outcome.onClipboard ? [tr("Copied to the clipboard")] : []))
+            } else {
+                show(written: true, status: [outcome.summary, tr("Copied to the clipboard")])
             }
             // A recording of this Mac's own, or one starting, keeps its capsule (and its session).
             guard !busy, !starting else { return DeliveryOutcome(message: outcome.summary, miss: outcome.miss, onClipboard: outcome.onClipboard) }
@@ -443,6 +484,7 @@ final class DictationController: ObservableObject {
             if let miss = outcome.miss { capsuleResult = .notWritten(Self.missTitle(miss, peer: nil), Self.missLine(miss, clipboard: outcome.onClipboard ? .here : nil)) }
             else { capsuleResult = outcome.onClipboard ? .onClipboard : .inserted }
             message = tr("From another Mac · %@ · Saved to History", outcome.summary)
+            resultIsReceived = fresh; messageIsReceived = fresh
             presentOverlay?()
             let linger: UInt64 = outcome.miss == nil ? 2_200_000_000 : 5_000_000_000
             Task { [weak self] in
@@ -453,15 +495,18 @@ final class DictationController: ObservableObject {
             return DeliveryOutcome(message: outcome.summary, miss: outcome.miss, onClipboard: outcome.onClipboard)
         } catch {
             let kept = keepOnClipboard(request.text)
+            let miss = (error as? TargetProblem)?.miss ?? .other
+            show(written: false, status: [Self.missTitle(miss, peer: nil), miss == .other ? error.localizedDescription : Self.missLine(miss, clipboard: nil)]
+                 + (kept ? [tr("Copied to the clipboard")] : []))
             if !busy, !starting {
                 sessionID = id
                 result = request.text; latency = nil
                 phase = .error
                 message = kept ? tr("Text from another Mac could not be written: %@ · Saved to the clipboard (⌘V)", error.localizedDescription)
                     : tr("Text from another Mac could not be written: %@", error.localizedDescription)
+                resultIsReceived = fresh; messageIsReceived = fresh
                 presentOverlay?()
             }
-            let miss = (error as? TargetProblem)?.miss ?? .other
             guard kept else { throw DeliveryProblem(miss: miss, message: error.localizedDescription, onClipboard: false) }
             throw DeliveryProblem(miss: miss, message: tr("%@ The text is on the other Mac’s clipboard.", error.localizedDescription), onClipboard: true)
         }

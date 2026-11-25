@@ -681,14 +681,16 @@ struct TextTarget {
 
     /// Resolve the destination only when the final text is ready. With no text field in sight, the
     /// app in front taking the text from the clipboard after ⌘V is what says it went in.
-    static func insertAtFocus(_ text: String) async throws -> WriteResult {
+    /// `keep`: the text stays on the clipboard after the paste too (text from another Mac), unless
+    /// something newer is put there meanwhile.
+    static func insertAtFocus(_ text: String, keep: Bool = false) async throws -> WriteResult {
         let current = try capture()
         let name = current.app.localizedName ?? tr("the target app")
         if current.editable {
-            try paste(text)
+            try paste(text, keep: keep)
             return WriteResult(summary: tr("Inserted into %@", name))
         }
-        switch try await pasteWatched(text) {
+        switch try await pasteWatched(text, keep: keep) {
         case .taken: return WriteResult(summary: tr("Inserted into %@", name), unseen: true)
         case .left: return WriteResult(summary: tr("Sent to %@ · No text field found; the text stays on the clipboard (⌘V)", name), onClipboard: true, miss: .noField)
         // A copy made meanwhile is on the clipboard: the text is in History alone.
@@ -697,13 +699,13 @@ struct TextTarget {
     }
 
     /// Pastes `text` and tells whether an app took it from the clipboard; not taken, it stays there.
-    private static func pasteWatched(_ text: String) async throws -> WatchedPaste {
+    private static func pasteWatched(_ text: String, keep: Bool) async throws -> WatchedPaste {
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else {
             throw TargetProblem(miss: .pasteFailed, message: tr("Could not send the paste keystroke. Click the text to copy it."))
         }
         down.flags = .maskCommand; up.flags = .maskCommand
-        return await PasteboardLease.general.supplyWatched(text) {
+        return await PasteboardLease.general.supplyWatched(text, keep: keep) {
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         }
     }
@@ -733,21 +735,21 @@ struct TextTarget {
     private static let terminals: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable",
         "com.mitchellh.ghostty", "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper"]
 
-    static func replace(_ previous: String, with text: String, untouched: Bool) throws -> WriteResult {
+    static func replace(_ previous: String, with text: String, untouched: Bool, keep: Bool = false) throws -> WriteResult {
         let current = try capture()
         let name = current.app.localizedName ?? tr("the target app")
         let done = WriteResult(summary: text.isEmpty ? tr("Deleted the previous text in %@", name) : tr("Replaced the previous text in %@", name))
         if untouched, previous.count <= 4000 {
             backspace(previous.count)
-            if !text.isEmpty { try paste(text, hold: 0.9 + Double(previous.count) * 0.004, keep: !current.editable) }
+            if !text.isEmpty { try paste(text, hold: 0.9 + Double(previous.count) * 0.004, keep: keep || !current.editable) }
             return done
         }
         if !terminals.contains(current.app.bundleIdentifier ?? ""), select(previous, in: current.app) {
-            if text.isEmpty { backspace(1) } else { try paste(text) }
+            if text.isEmpty { backspace(1) } else { try paste(text, keep: keep) }
             return done
         }
         guard !text.isEmpty else { throw TargetProblem(miss: .previousGone, message: tr("The cursor has moved and the previous text was not found. Nothing was deleted.")) }
-        try paste(text, keep: !current.editable)
+        try paste(text, keep: keep || !current.editable)
         if current.editable { return WriteResult(summary: tr("Previous text not found; new text added to %@", name)) }
         return WriteResult(summary: tr("Previous text not found; new text added to %@ · The text stays on the clipboard", name), onClipboard: true, miss: .previousGone)
     }

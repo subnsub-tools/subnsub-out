@@ -759,6 +759,8 @@ public final class RemoteReceiver {
         public let replace: String?
         /// The whole content of the focused field as the sender read it; `text` is its new content.
         public let field: String?
+        /// The sending Mac, by its name in the list of Macs (or the name it gives itself).
+        public var from = ""
     }
 
     /// Another Mac asks to be trusted. Shown to the user, who calls `answer` once.
@@ -1076,7 +1078,9 @@ public final class RemoteReceiver {
             return (["ok": false, "message": tr("The other Mac does not allow changing its text field."), "miss": MissReason.notAllowed.rawValue], .close)
         }
         let request = Request(text: text, mode: WritingMode(rawValue: object["mode"] as? String ?? "") ?? .dictate,
-                              seconds: object["seconds"] as? Double ?? 0, replace: replace, field: field)
+                              seconds: object["seconds"] as? Double ?? 0, replace: replace, field: field,
+                              // As the capsule names it (knocked).
+                              from: !device.name.isEmpty ? device.name : channel.peerName.isEmpty ? device.label : channel.peerName)
         do {
             let outcome = try await deliver?(request) ?? ""
             // Said either way, so that the sending Mac never has to guess from the words.

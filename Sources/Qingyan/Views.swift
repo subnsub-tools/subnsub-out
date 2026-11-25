@@ -820,10 +820,12 @@ struct MainView: View {
         var latency: Double?
         var failed: Bool
     }
+    /// Text another Mac sent has the Received card, not this one: a message set later shows here
+    /// without it.
     private var outcome: Outcome {
-        Outcome(message: controller.message, text: controller.result, latency: controller.latency, failed: controller.phase == .error)
+        Outcome(message: controller.message, text: controller.resultIsReceived ? "" : controller.result, latency: controller.latency, failed: controller.phase == .error)
     }
-    private var resultOpen: Bool { !controller.message.isEmpty && !recording }
+    private var resultOpen: Bool { !controller.message.isEmpty && !recording && !controller.messageIsReceived }
 
     /// The window is as tall as the column is now. While a moving `Reveal` is on its way (pending
     /// is how far it still has to go), that is a new height on every frame, sent as `live`: the
@@ -951,6 +953,9 @@ struct MainView: View {
             Reveal(open: !missing.isEmpty) { setupCard.padding(.top, 8) }
             Reveal(open: controller.learnedWord != nil) { learnedCard.padding(.top, 8) }
             Reveal(open: resultOpen) { resultCard.padding(.top, 8) }
+            Reveal(open: controller.lastReceived != nil) {
+                if let received = controller.lastReceived { receivedCard(received).padding(.top, 8) }
+            }
             remoteCard.padding(.top, 8)
         }
         // Right under the title row, which keeps the space above the first block.
@@ -1134,6 +1139,29 @@ struct MainView: View {
                 }
             }
         }
+    }
+
+    /// The text another Mac sent last: from which Mac and when, the text, and what became of it here
+    /// (user 2026-11-25). It stays until the next one; History keeps them all.
+    private func receivedCard(_ received: DictationController.ReceivedText) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: "tray.and.arrow.down").font(.system(size: 10.5)).accessibilityLabel(tr("Received"))
+                    // A long name gives way; the time stays whole.
+                    Text(tr("From %@", received.from)).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                    Text("· " + received.date.formatted(date: .omitted, time: .shortened)).font(.system(size: 11)).fixedSize()
+                    Spacer(minLength: 4)
+                    CopyActionButton(text: received.text)
+                }
+                .foregroundStyle(Palette.muted)
+                CopyableText(received.text, font: .system(size: 12.5), color: Palette.ink, lineSpacing: 3, lineLimit: 6, block: true)
+                Text(received.status).font(.system(size: 10.5))
+                    .foregroundStyle(received.written ? Palette.muted : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .id(received.id)
     }
 
     private func isFolded(_ section: PanelSection) -> Bool {

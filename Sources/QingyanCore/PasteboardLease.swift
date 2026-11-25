@@ -51,7 +51,9 @@ public final class PasteboardLease {
     /// Taken within `wait`: what the clipboard held comes back after `hold`, as after any paste.
     /// Not taken: the text stays on the clipboard for good, as `keep` leaves it, so ⌘V still has it.
     /// Something newer put on the clipboard before an app took the text is left there.
-    public func supplyWatched(_ text: String, hold: TimeInterval = 0.9, wait: TimeInterval = 1.0, paste: () -> Void) async -> WatchedPaste {
+    /// `keep`: taken, the text (not what the clipboard held) is there after `hold`, unless something
+    /// newer came meanwhile: a copy, or text given to `keep`.
+    public func supplyWatched(_ text: String, hold: TimeInterval = 0.9, wait: TimeInterval = 1.0, keep: Bool = false, paste: () -> Void) async -> WatchedPaste {
         restoration?.cancel(); restoration = nil
         if writtenCount != board.changeCount || snapshot == nil {
             snapshot = (board.pasteboardItems ?? []).map { item in
@@ -86,8 +88,9 @@ public final class PasteboardLease {
         // Something else was put on the clipboard meanwhile (another paste, a copy): it is left there.
         guard board.changeCount == count else { return promise.taken ? .taken : .superseded }
         if promise.taken {
-            // Text kept meanwhile comes back in place of what the clipboard held, as `keep` does.
-            if let kept { snapshot = [[(.string, Data(kept.utf8))]] }
+            // Text kept meanwhile comes back in place of what the clipboard held, as `keep` does;
+            // else, for a keeping paste, its own text.
+            if let kept { snapshot = [[(.string, Data(kept.utf8))]] } else if keep { snapshot = [[(.string, Data(text.utf8))]] }
             let left = max(0, hold - Date().timeIntervalSince(start))
             restoration = Task { [weak self] in
                 do { try await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000)) } catch { return }

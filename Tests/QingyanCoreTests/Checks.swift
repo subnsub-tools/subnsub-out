@@ -1707,6 +1707,24 @@ struct Checks {
         let untaken = await lease.supplyWatched("Not taken either", hold: 0.05, wait: 0.1) { lease.keep("Kept instead") }
         try check(untaken == .superseded && board.string(forType: .string) == "Kept instead",
                   "kept meanwhile and nothing took the paste: the kept text is there, the paste's is in History")
+        // A keeping paste (text from another Mac stays on the receiving Mac's clipboard either way):
+        // taken, its text is there after the paste in place of what the clipboard held...
+        board.clearContents(); board.setString("Held before", forType: .string)
+        let received = await lease.supplyWatched("Received and typed", hold: 0.05, wait: 0.5, keep: true) { _ = board.string(forType: .string) }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try check(received == .taken && board.string(forType: .string) == "Received and typed" && board.types?.contains(transient) != true,
+                  "a keeping paste, taken: its text stays, unmarked, in place of what the clipboard held")
+        // ...but not over a copy made after the app took it, nor over text kept meanwhile.
+        let copiedAfter = await lease.supplyWatched("Received again", hold: 0.1, wait: 0.5, keep: true) { _ = board.string(forType: .string) }
+        board.clearContents(); board.setString("Copied after the paste", forType: .string)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try check(copiedAfter == .taken && board.string(forType: .string) == "Copied after the paste", "a keeping paste leaves a newer copy alone")
+        let keptToo = await lease.supplyWatched("Received once more", hold: 0.05, wait: 0.5, keep: true) {
+            lease.keep("Kept while it waited")
+            _ = board.string(forType: .string)
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try check(keptToo == .taken && board.string(forType: .string) == "Kept while it waited", "a keeping paste: text kept meanwhile is newer and stays")
     }
 
     @MainActor static func archive() async throws {

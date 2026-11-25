@@ -1120,6 +1120,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             controller.peerReachable = reached; controller.shelf.linkedKeys = linked
         }
         settings.hasKey = true; settings.microphoneAllowed = true
+        // Text another Mac sent: its card, in place of the result card (receive leaves that to it).
+        let shownMessage = controller.message
+        controller.message = ""
+        controller.lastReceived = .init(text: "Preview: Send the draft to Office before noon, and keep a copy in the shared folder.", from: "Study", date: Date(),
+                                        written: false, status: [DictationController.missTitle(.noField, peer: nil), DictationController.missLine(.noField, clipboard: nil), tr("Copied to the clipboard")].joined(separator: " · "))
+        try await panel("panel-received")
+        try await panel("panel-received-dark", dark: true)
+        controller.lastReceived = .init(text: "Preview: Send the draft to Office before noon.", from: "Study", date: Date(),
+                                        written: true, status: [tr("Inserted into %@", "Notes"), tr("Copied to the clipboard")].joined(separator: " · "))
+        try await panel("panel-received-typed")
+        controller.lastReceived = nil
+        controller.message = shownMessage
         settings.preferences.linkEnabled = false; settings.preferences.devices = []
         controller.peerStatus = [:]; controller.peerReachable = [:]; controller.remoteListening = false; controller.remoteStatus = ""
         try await panel("connection", .connection)
