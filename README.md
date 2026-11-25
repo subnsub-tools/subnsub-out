@@ -61,6 +61,8 @@ Kept on top (with that pin, with Keep on Top in the menu bar menu, or with the f
 
 Drag the bar, or the capsule, by any part that is not a control. Where you leave either is the place of both, kept across restarts (the capsule still goes next to the text cursor when the field in front reports where it is); until you first drag one, the capsule finds its own spot below the menu bar and the bar starts at the top center of the screen. Opening the full panel from the bar stops keeping on top, and unchecking Keep on Top in the menu bar menu stops it and leaves the panel as it is; a click on Out! in the menu bar only brings the bar to the front. After a restart the bar comes back if the window was kept on top.
 
+So that the bar does not hide what is under it, it moves aside when the pointer leaves it, by half its height and away from the side the pointer left by: leave it upward and it moves down, downward and it moves up, to the right and it moves left, to the left and it moves right. It stays on its screen (against an edge it does not move that way), does not move while a mouse button is held, and goes back to its place once the pointer has been away from it for a moment. Dragging it while it stands aside makes where you leave it its place.
+
 ## Shelf: a clipboard shared by several Macs
 
 The Shelf is at the bottom of the panel. Drop files, images or text anywhere on the panel and they stay there; Paste puts what is on the system clipboard there.

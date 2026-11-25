@@ -60,6 +60,22 @@ final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// The bar's content view: says where on the screen the pointer was when it left the bar, whichever
+/// app is active (SwiftUI's hover follows only while out is), so the bar can step aside from it.
+final class PointerExitView: NSView {
+    var onExit: ((NSPoint) -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) {}
+    override func mouseExited(with event: NSEvent) {
+        guard let window else { return }
+        onExit?(window.convertPoint(toScreen: event.locationInWindow))
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var settings: SettingsStore!
@@ -78,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var statusItem: NSStatusItem?
     private var timer: Timer?
     private var observations: [NSObjectProtocol] = []
+    private var menuObservations: [NSObjectProtocol] = []
     private var languageSubscription: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -148,6 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         observations.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.relocateOverlayIfObstructed() }
         })
+        // The pointer leaving the bar for a menu of out's (a Shelf item's) is no reason to step aside.
+        menuObservations.append(NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuOpen = true }
+        })
+        menuObservations.append(NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuOpen = false; self?.menuClosedAt = ProcessInfo.processInfo.systemUptime }
+        })
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: "panelOpenBeforeUpdate")
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
@@ -179,6 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller?.suspend(); controller?.shortcut.stop(); controller?.screen.stop()
         PasteboardLease.general.restore()
         observations.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        menuObservations.forEach { NotificationCenter.default.removeObserver($0) }
+        compactReturn?.invalidate()
     }
 
     private func installStatusItem() {
@@ -510,6 +536,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 savedPlace = NSPoint(x: moved.frame.midX, y: moved.frame.maxY - Self.capsuleMargin)
             } else {
                 savedPlace = NSPoint(x: moved.frame.midX, y: moved.frame.maxY)
+                // Dragged while standing aside: where it is dropped is its place.
+                settleCompact()
             }
             return
         }
@@ -592,6 +620,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func leaveCompact() {
         UserDefaults.standard.set(false, forKey: "panelCompact")
         compactPanel?.orderOut(nil)
+        settleCompact()
         // The panel that keeping on top put out of sight stays so after a restart (showWindow, when it
         // is the way out, opens it again).
         if window?.isVisible != true { UserDefaults.standard.set(false, forKey: "panelOpen") }
@@ -610,6 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard let panel = compactPanel else { return }
         let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
         userMoving = nil
+        settleCompact()
         // At the height its content has now, whatever height it was left at.
         panel.setFrame(Self.frame(Self.compactSize, topCenter: savedPlace ?? here ?? NSPoint(x: visible.midX, y: visible.maxY - 8)), display: true)
         panel.orderFrontRegardless()
@@ -625,12 +655,135 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard let panel = compactPanel else { return }
         let size = CGSize(width: ceil(size.width), height: ceil(size.height))
         guard abs(panel.frame.height - size.height) > 0.5 || abs(panel.frame.width - size.width) > 0.5 else { return }
-        var frame = NSRect(x: round(panel.frame.midX - size.width / 2), y: panel.frame.maxY - size.height, width: size.width, height: size.height)
-        // Too near the bottom of its screen for the Shelf: the bar moves up rather than off it.
-        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame, frame.minY < visible.minY {
-            frame.origin.y = min(visible.minY, visible.maxY - size.height)
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame
+        // Standing aside, it stays where it is and the place it goes back to takes the new size too.
+        if let home = compactHome { compactHome = Self.resized(home, to: size, in: visible) }
+        panel.setFrame(Self.resized(panel.frame, to: size, in: visible), display: true)
+    }
+
+    /// `frame` at a new size, with the same top and center; too near the bottom of its screen for
+    /// the Shelf, it moves up rather than off it.
+    private static func resized(_ frame: NSRect, to size: CGSize, in visible: NSRect?) -> NSRect {
+        var next = NSRect(x: round(frame.midX - size.width / 2), y: frame.maxY - size.height, width: size.width, height: size.height)
+        if let visible, next.minY < visible.minY {
+            next.origin.y = min(visible.minY, visible.maxY - size.height)
         }
-        panel.setFrame(frame, display: true)
+        return next
+    }
+
+    // MARK: - The bar steps aside
+
+    /// Where the bar stands while it has stepped aside, to go back to; nil while it has not.
+    private var compactHome: NSRect?
+    /// How far it stands aside from there on each axis: half its height either way, or nothing.
+    private var compactAside = CGVector.zero
+    /// While it stands aside: brings it back once the pointer has been away for a moment.
+    private var compactReturn: Timer?
+    private var compactAwaySince: TimeInterval?
+    /// Where the bar is gliding to, while it does: what it moves from next is that, not a frame on the way.
+    private var compactGlide: NSRect?
+    private var menuOpen = false
+    private var menuClosedAt: TimeInterval = 0
+
+    /// The pointer left the bar at `point`: the bar moves half its height away from the side the
+    /// pointer left by, to show what it covers there (user 2026-11-25: it often covers something;
+    /// left above, it moves down a little; below, up; to its right, left; to its left, right; by half
+    /// the whole window's height). Each axis is one step from where it stood at most, so it never
+    /// wanders, and it stays inside its screen's visible part (at its edge, it does not move that way).
+    private func compactPointerLeft(_ window: NSWindow?, at point: NSPoint) {
+        // Not while a button is down (a drag into or out of the Shelf, a drag of the bar), nor for
+        // one of out's menus.
+        guard let panel = compactPanel, window === panel, panel.isVisible, NSEvent.pressedMouseButtons == 0,
+              !menuOpen, ProcessInfo.processInfo.systemUptime - menuClosedAt > 0.4 else { return }
+        let frame = panel.frame
+        // How far past each side the pointer is: it left by the side it is furthest past (still
+        // inside, it left for a window over the bar, and the bar stays).
+        let sides: [(past: CGFloat, dx: CGFloat, dy: CGFloat)] = [
+            (frame.minX - point.x, 1, 0),
+            (point.x - frame.maxX, -1, 0),
+            (frame.minY - point.y, 0, 1),
+            (point.y - frame.maxY, 0, -1),
+        ]
+        guard let side = sides.max(by: { $0.past < $1.past }), side.past >= -1 else { return }
+        // Gliding back when the pointer leaves again: from where it is going back to.
+        let home = compactHome ?? compactGlide ?? frame
+        let step = (home.height / 2).rounded()
+        var aside = compactAside
+        if side.dx != 0 { aside.dx = side.dx * step } else { aside.dy = side.dy * step }
+        guard aside != compactAside else { return }
+        compactHome = home
+        compactAside = aside
+        glideCompact(to: Self.steppedAside(home, by: aside))
+        watchCompactReturn()
+    }
+
+    /// `home` moved by `aside`, as far as its screen's visible part lets it, and never back past home
+    /// (a bar left partly outside that part does not move toward the pointer).
+    private static func steppedAside(_ home: NSRect, by aside: CGVector) -> NSRect {
+        let top = NSPoint(x: home.midX, y: home.maxY - 1)
+        guard let visible = (NSScreen.screens.first(where: { $0.frame.contains(top) }) ?? NSScreen.main)?.visibleFrame else {
+            return home.offsetBy(dx: aside.dx, dy: aside.dy)
+        }
+        func toward(_ start: CGFloat, _ delta: CGFloat, _ low: CGFloat, _ high: CGFloat) -> CGFloat {
+            if delta > 0 { return max(start, min(start + delta, high)) }
+            if delta < 0 { return min(start, max(start + delta, low)) }
+            return start
+        }
+        var frame = home
+        frame.origin.x = toward(home.minX, aside.dx, visible.minX, visible.maxX - home.width)
+        frame.origin.y = toward(home.minY, aside.dy, visible.minY, visible.maxY - home.height)
+        return frame
+    }
+
+    private func glideCompact(to goal: NSRect) {
+        guard let panel = compactPanel else { return }
+        // out's own move, not the user's place (windowDidMove).
+        if userMoving === panel { userMoving = nil }
+        guard !Motion.reduced, panel.isVisible else { compactGlide = nil; panel.setFrame(goal, display: true); return }
+        compactGlide = goal
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(controlPoints: Float(Motion.curve.0), Float(Motion.curve.1), Float(Motion.curve.2), Float(Motion.curve.3))
+            panel.animator().setFrame(goal, display: true)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                if self?.compactGlide == goal { self?.compactGlide = nil }
+            }
+        })
+    }
+
+    private func watchCompactReturn() {
+        compactAwaySince = nil
+        guard compactReturn == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkCompactReturn() }
+        }
+        timer.tolerance = 0.05
+        compactReturn = timer
+    }
+
+    /// Back where it stood once the pointer has been 0.6 s away from both where it stands and where
+    /// it stood (by more than half its height); not while a button is down.
+    private func checkCompactReturn() {
+        guard let panel = compactPanel, panel.isVisible, let home = compactHome else { settleCompact(); return }
+        let reach = max((home.height / 2).rounded(), 20)
+        let near = home.union(compactGlide ?? panel.frame).insetBy(dx: -reach, dy: -reach).contains(NSEvent.mouseLocation)
+        guard !near, NSEvent.pressedMouseButtons == 0 else { compactAwaySince = nil; return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let since = compactAwaySince else { compactAwaySince = now; return }
+        guard now - since >= 0.6 else { return }
+        settleCompact()
+        glideCompact(to: home)
+    }
+
+    /// No longer standing aside: where the bar is (or is going) is its place.
+    private func settleCompact() {
+        compactReturn?.invalidate()
+        compactReturn = nil
+        compactHome = nil
+        compactAside = .zero
+        compactAwaySince = nil
+        compactGlide = nil
     }
 
     /// A glass bar above every window on every Space, full-screen apps included, that never takes
@@ -646,8 +799,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         })
         host.sizingOptions = []
         let size = Self.compactSize
+        let content = PointerExitView(frame: NSRect(origin: .zero, size: size))
+        host.frame = content.bounds
+        host.autoresizingMask = [.width, .height]
+        content.addSubview(host)
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
                                   backing: .buffered, defer: false)
+        content.onExit = { [weak self, weak panel] point in self?.compactPointerLeft(panel, at: point) }
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -657,7 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
-        panel.contentView = host
+        panel.contentView = content
         panel.delegate = self
         return panel
     }
