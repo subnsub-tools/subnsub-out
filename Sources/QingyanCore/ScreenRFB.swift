@@ -110,7 +110,10 @@ public enum ScreenRFB {
 
     /// SetDisplayConfiguration (0x1d): a display of the session's own (a virtual display), of
     /// `width` by `height` as the modes are written (see `displayConfig`), following the window.
-    public static func virtualDisplay(width: Int, height: Int, scale: Double, hdr: Bool, name: String) -> [UInt8] {
+    /// `maxWidth` by `maxHeight` is the largest picture in pixels the display may be made at: the
+    /// host makes none larger, and answers a bigger one with another size.
+    public static func virtualDisplay(width: Int, height: Int, scale: Double, hdr: Bool, name: String,
+                                      maxWidth: Int = 3840, maxHeight: Int = 2160) -> [UInt8] {
         let width = width <= 0 ? 1920 : width, height = height <= 0 ? 1080 : height
         let scale = scale <= 0 ? 1 : scale
         let name = name.isEmpty ? "subnsub Virtual Display" : name
@@ -124,8 +127,8 @@ public enum ScreenRFB {
         di.set32(0x7e, 4) // a virtual display
         di.set32(0x82, Float32(369.45456).bitPattern)
         di.set32(0x86, Float32(207.81818).bitPattern)
-        di.set32(0x8a, 3840)
-        di.set32(0x8e, 2160)
+        di.set32(0x8a, UInt32(max(1, maxWidth)))
+        di.set32(0x8e, UInt32(max(1, maxHeight)))
         di.set16(0x92, 0)
         di.set16(0x94, 0)
         di.set32(0x96, 7)
@@ -159,14 +162,22 @@ public enum ScreenRFB {
 
     public static func displayConfig(width w: Int, height h: Int, scale: Double, hdr: Bool, form: DisplayForm) -> [UInt8] {
         let name = "subnsub Virtual Display"
+        // Room for the whole picture asked for, w by h points at `scale`, however the host reads
+        // the modes. A window in full screen on a Retina screen needs more than 3840 × 2160 pixels
+        // (1800 × 1130 points: 3600 × 2260), and a host bound to that made it a pixel a point, the
+        // picture enlarged twice and blurred; 3840 × 2160 stays the least, as before.
+        let room = max(scale, 1)
+        let maxW = max(3840, (Int((Double(w) * room).rounded(.up)) + 1) & ~1)
+        let maxH = max(2160, (Int((Double(h) * room).rounded(.up)) + 1) & ~1)
         if form == .plain || scale <= 1 {
             // An even number of pixels each way: an odd one was made and never sent.
-            return virtualDisplay(width: w & ~1, height: h & ~1, scale: 1, hdr: hdr, name: name)
+            return virtualDisplay(width: w & ~1, height: h & ~1, scale: 1, hdr: hdr, name: name, maxWidth: maxW, maxHeight: maxH)
         }
         if form == .pixelsFirst {
-            return virtualDisplay(width: Int(Double(w) * scale + 0.5), height: Int(Double(h) * scale + 0.5), scale: scale, hdr: hdr, name: name)
+            return virtualDisplay(width: Int(Double(w) * scale + 0.5), height: Int(Double(h) * scale + 0.5), scale: scale, hdr: hdr, name: name,
+                                  maxWidth: maxW, maxHeight: maxH)
         }
-        return virtualDisplay(width: w, height: h, scale: scale, hdr: hdr, name: name)
+        return virtualDisplay(width: w, height: h, scale: scale, hdr: hdr, name: name, maxWidth: maxW, maxHeight: maxH)
     }
 
     /// The four SRTP master key and salt blobs a media offer carries: audio and video, the
