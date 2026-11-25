@@ -24,7 +24,8 @@ final class DictationController: ObservableObject {
     @Published private(set) var resultIsReceived = false
     @Published private(set) var messageIsReceived = false
     /// The text another Mac sent last, kept on the panel whether or not it went in here, until the
-    /// next one (user 2026-11-25: 即便它接收的时候没有成功复制到里面去，它也是接收到了那一段话的，那么就需要在主面板上面给出这一段话).
+    /// next one (user 2026-11-25: even when it did not get pasted in, the text was received, so the
+    /// main panel has to show it).
     @Published var lastReceived: ReceivedText?
     /// Counts texts as they arrive: one that arrived earlier and finished later does not replace the card.
     private var receivedCount = 0
@@ -447,7 +448,7 @@ final class DictationController: ObservableObject {
         }
         let id = UUID()
         // New text, not a field rewritten or a deletion: the panel's Received card, and this Mac's
-        // clipboard whatever became of it (user 2026-11-25: 并且自动完成这个复制，在接受端这个机器上面).
+        // clipboard whatever became of it (user 2026-11-25: and copied automatically, on the receiving Mac).
         let fresh = request.field == nil && !request.text.isEmpty
         receivedCount += 1
         let order = receivedCount, arrived = Date()
