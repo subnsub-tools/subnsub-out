@@ -160,15 +160,21 @@ public enum ScreenRFB {
     /// same by both, is what is left.
     public enum DisplayForm: Int { case pointsFirst, pixelsFirst, plain }
 
-    public static func displayConfig(width w: Int, height h: Int, scale: Double, hdr: Bool, form: DisplayForm) -> [UInt8] {
+    /// `room` is the largest display the session may be asked for later, in pixels: the host reads
+    /// the display's bounds only when it makes the display (ScreensharingAgent's initVirtualDisplay,
+    /// read 2026-11-26); a later config is applied within them. So the first config of a session
+    /// must already allow the largest screen its window may go full screen on.
+    public static func displayConfig(width w: Int, height h: Int, scale: Double, hdr: Bool, form: DisplayForm,
+                                     room: (width: Int, height: Int) = (0, 0)) -> [UInt8] {
         let name = "subnsub Virtual Display"
         // Room for the whole picture asked for, w by h points at `scale`, however the host reads
-        // the modes. A window in full screen on a Retina screen needs more than 3840 × 2160 pixels
-        // (1800 × 1130 points: 3600 × 2260), and a host bound to that made it a pixel a point, the
-        // picture enlarged twice and blurred; 3840 × 2160 stays the least, as before.
-        let room = max(scale, 1)
-        let maxW = max(3840, (Int((Double(w) * room).rounded(.up)) + 1) & ~1)
-        let maxH = max(2160, (Int((Double(h) * room).rounded(.up)) + 1) & ~1)
+        // the modes, and for the room given. A window in full screen on a Retina screen needs more
+        // than 3840 × 2160 pixels (1800 × 1130 points: 3600 × 2260), and a host bound to that made
+        // it a pixel a point, the picture enlarged twice and blurred; 3840 × 2160 stays the least.
+        let even = { (n: Int) -> Int in (n + 1) & ~1 }
+        let k = max(scale, 1)
+        let maxW = max(3840, even(Int((Double(w) * k).rounded(.up))), even(min(max(room.width, 0), 7680)))
+        let maxH = max(2160, even(Int((Double(h) * k).rounded(.up))), even(min(max(room.height, 0), 4320)))
         if form == .plain || scale <= 1 {
             // An even number of pixels each way: an odd one was made and never sent.
             return virtualDisplay(width: w & ~1, height: h & ~1, scale: 1, hdr: hdr, name: name, maxWidth: maxW, maxHeight: maxH)

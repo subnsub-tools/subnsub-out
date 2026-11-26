@@ -1641,17 +1641,18 @@ private struct CapsuleSurface: View {
     /// glass's own tint, the edge and shadow are the glass's, and only a state keeps its coloured
     /// edge and, while speaking, its green glow. Before it, and for still images, as it was.
     @ViewBuilder private func surface(tint: Color?, strength: Double, level: Double) -> some View {
+        let shade: Color? = tint?.opacity(strength)
+        let width: CGFloat = phase == .recording ? 1 : 0.8
+        let glow: Color = phase == .recording ? CapsuleTint.green.opacity(0.30 + level * 0.30) : Color.clear
+        let radius: CGFloat = 5 + CGFloat(level) * 2.0
         if glass {
             if #available(macOS 26, *) {
                 Color.clear
-                    .glassEffect(.regular.tint(tint?.opacity(strength)), in: Capsule(style: .continuous))
+                    .glassEffect(.regular.tint(shade), in: Capsule(style: .continuous))
                     .overlay {
-                        if let tint {
-                            Capsule(style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: phase == .recording ? 1 : 0.8)
-                        }
+                        if let tint { Capsule(style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: width) }
                     }
-                    .shadow(color: phase == .recording ? CapsuleTint.green.opacity(0.30 + level * 0.30) : .clear,
-                            radius: 5 + CGFloat(level) * 2.0, x: 0, y: 1.5)
+                    .shadow(color: glow, radius: radius, x: 0, y: 1.5)
             } else {
                 frosted(Glass(), tint: tint, strength: strength, level: level)
             }
@@ -1660,22 +1661,19 @@ private struct CapsuleSurface: View {
         }
     }
 
-    private func frosted(_ base: some View, tint: Color?, strength: Double, level: Double) -> some View {
-        ZStack {
+    private func frosted<Base: View>(_ base: Base, tint: Color?, strength: Double, level: Double) -> some View {
+        let edge: Color = (tint ?? Color.primary).opacity(tint == nil ? 0.12 : 0.45)
+        let width: CGFloat = phase == .recording ? 1 : 0.8
+        let glow: Color = phase == .recording ? CapsuleTint.green.opacity(0.30 + level * 0.30) : Color.black.opacity(0.18)
+        let radius: CGFloat = phase == .recording ? 5 + CGFloat(level) * 2.0 : 4
+        let shade: Color? = tint?.opacity(strength)
+        return ZStack {
             base
-            if let tint { tint.opacity(strength) }
+            if let shade { shade }
         }
         .clipShape(Capsule(style: .continuous))
-        .overlay(
-            Capsule(style: .continuous)
-                .strokeBorder((tint ?? Color.primary).opacity(tint == nil ? 0.12 : 0.45), lineWidth: phase == .recording ? 1 : 0.8)
-        )
-        .shadow(
-            color: phase == .recording ? CapsuleTint.green.opacity(0.30 + level * 0.30) : Color.black.opacity(0.18),
-            radius: phase == .recording ? 5 + CGFloat(level) * 2.0 : 4,
-            x: 0,
-            y: 1.5
-        )
+        .overlay(Capsule(style: .continuous).strokeBorder(edge, lineWidth: width))
+        .shadow(color: glow, radius: radius, x: 0, y: 1.5)
     }
 }
 

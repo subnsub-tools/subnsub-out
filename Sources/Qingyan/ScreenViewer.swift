@@ -532,9 +532,16 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         // The session's display at the window's size.
         let size = container.pictureSize
         let asked = (w: max(Int(size.width), 640), h: max(Int(size.height), 400), scale: Double(window.backingScaleFactor))
+        // The largest screen here, in pixels: the window may go full screen on it, and that Mac
+        // takes the display's bounds from the first size asked for only.
+        var room = (w: 0, h: 0)
+        for screen in NSScreen.screens {
+            let k = screen.backingScaleFactor
+            room = (max(room.w, Int((screen.frame.width * k).rounded())), max(room.h, Int((screen.frame.height * k).rounded())))
+        }
         let fields: [String: Any] = ["t": "open", "codecs": codecs, "audio": true, "kbps": Self.fullKbps,
                                      "user": account.account, "password": account.password,
-                                     "w": asked.w, "h": asked.h, "scale": asked.scale]
+                                     "w": asked.w, "h": asked.h, "scale": asked.scale, "roomW": room.w, "roomH": room.h]
         askedSize = asked
         container.say(tr("Signing in to %@’s Screen Sharing…", device.label), again: false)
         link?.send(ScreenWire.control(fields))

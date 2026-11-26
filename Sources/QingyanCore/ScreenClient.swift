@@ -38,6 +38,11 @@ public final class ScreenClient: @unchecked Sendable {
         public var audio: Bool
         /// The bandwidth ceiling the media offer declares, bits a second; 0 leaves the protocol's own.
         public var maxBitrate: Int
+        /// The largest display the session may be asked for later, in pixels: the viewing Mac's
+        /// largest screen, where its window may go full screen. The host takes the display's bounds
+        /// from the first config only (ScreenRFB.displayConfig).
+        public var roomWidth = 0
+        public var roomHeight = 0
         public var log: ((String) -> Void)?
 
         public init(user: String, password: String, width: Int = 1920, height: Int = 1080,
@@ -190,7 +195,8 @@ public final class ScreenClient: @unchecked Sendable {
         try link.write(ScreenRFB.viewerInfo() + ScreenRFB.setEncryptionFollowup)
         Thread.sleep(forTimeInterval: 0.1)
         form = Self.formLock.withLock { Self.hostForm }
-        try link.write(ScreenRFB.displayConfig(width: config.width, height: config.height, scale: config.scale, hdr: false, form: form))
+        try link.write(ScreenRFB.displayConfig(width: config.width, height: config.height, scale: config.scale, hdr: false, form: form,
+                                               room: (config.roomWidth, config.roomHeight)))
         let encodings = ScreenRFB.highPerformanceEncodings
         try link.write(ScreenRFB.setEncodings(encodings))
         try readUntilRekey(ecbKey: ecbKey)
@@ -420,12 +426,16 @@ public final class ScreenClient: @unchecked Sendable {
         lock.lock()
         config.width = w; config.height = h; config.scale = scale
         resizeAsked = true
-        askW = w; askH = h; askLeft = Self.formsAfter(form, scale: scale)
+        // At a Retina scale, from the form the host last made such a display in, not from a pixel a
+        // point a smaller room once left the session in: that stayed for the rest of the session.
+        if scale > 1 { self.form = Self.formLock.withLock { Self.hostForm } }
+        askW = w; askH = h; askLeft = Self.formsAfter(self.form, scale: scale)
         askGen += 1
         askWork?.cancel()
         let form = self.form
+        let room = (config.roomWidth, config.roomHeight)
         lock.unlock()
-        try? sendEncrypted(ScreenRFB.displayConfig(width: w, height: h, scale: scale, hdr: false, form: form))
+        try? sendEncrypted(ScreenRFB.displayConfig(width: w, height: h, scale: scale, hdr: false, form: form, room: room))
     }
 
     static func formsAfter(_ form: ScreenRFB.DisplayForm, scale: Double) -> [ScreenRFB.DisplayForm] {
@@ -442,10 +452,16 @@ public final class ScreenClient: @unchecked Sendable {
     private func askedDisplay(_ gen: Int) {
         lock.lock()
         guard gen == askGen else { lock.unlock(); return }
-        let (w, h, sw, sh) = (askW, askH, scaledW, scaledH)
+        let (w, h, sw, sh, bw, bh) = (askW, askH, scaledW, scaledH, backingW, backingH)
+        let scale = config.scale
         func near(_ a: Int, _ b: Int) -> Bool { abs(a - b) <= 2 }
-        if w <= 0 || h <= 0 || (near(sw, w) && near(sh, h)) || askLeft.isEmpty {
-            let done = w > 0 && h > 0 && near(sw, w) && near(sh, h)
+        // The size asked for, and at the scale asked for: a display of those points made a pixel a
+        // point is not it (it counted as made, and the session stayed blurred).
+        let sharp = scale <= 1 || self.form == .plain
+            || (near(bw, Int(Double(w) * scale + 0.5)) && near(bh, Int(Double(h) * scale + 0.5)))
+        let made = near(sw, w) && near(sh, h) && sharp
+        if w <= 0 || h <= 0 || made || askLeft.isEmpty {
+            let done = w > 0 && h > 0 && made
             askLeft = []
             let form = self.form
             lock.unlock()
@@ -455,9 +471,9 @@ public final class ScreenClient: @unchecked Sendable {
         let next = askLeft.removeFirst()
         resizeAsked = true
         form = next
-        let scale = config.scale
+        let room = (config.roomWidth, config.roomHeight)
         lock.unlock()
-        try? sendEncrypted(ScreenRFB.displayConfig(width: w, height: h, scale: scale, hdr: false, form: next))
+        try? sendEncrypted(ScreenRFB.displayConfig(width: w, height: h, scale: scale, hdr: false, form: next, room: room))
     }
 
     /// Offers the media again under another bandwidth ceiling: the host starts its encoder anew.

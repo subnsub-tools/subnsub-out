@@ -224,6 +224,10 @@ public final class ScreenSession: @unchecked Sendable {
             config.width = w; config.height = h
             if let sc = (o["scale"] as? NSNumber)?.doubleValue, sc >= 1, sc <= 3 { config.scale = sc }
         }
+        // The viewing Mac's largest screen, in pixels, for the display's bounds (Config.roomWidth).
+        if let rw = (o["roomW"] as? NSNumber)?.intValue, let rh = (o["roomH"] as? NSNumber)?.intValue, rw > 0, rh > 0 {
+            config.roomWidth = min(rw, 7680); config.roomHeight = min(rh, 4320)
+        }
         lock.lock()
         if let want { config.width = want.w; config.height = want.h; config.scale = want.scale }
         lock.unlock()
