@@ -168,9 +168,10 @@ struct CompactBar: View {
     @ViewBuilder private var middle: some View {
         if !live {
             HStack(spacing: 6) {
+                // Before the last result, which gives way first; never wider than the bar.
                 Text(state)
                     .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1).fixedSize()
+                    .lineLimit(1).layoutPriority(1)
                     .allowsHitTesting(false)
                 if !settings.receiverOnly {
                     Text(settings.shortcutLabel)

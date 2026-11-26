@@ -677,7 +677,6 @@
  "No tunnel to that Mac": "そのMacへのトンネルがありません",
  "Not on a tailnet with this Mac, or its address there is not known": "このMacと同じtailnetにないか、そこでのアドレスが分かりません",
  "Showing its screen": "画面を表示中",
- "Connecting to the remote window…": "リモートウインドウに接続中…",
  "%@ is not a Mac with Apple silicon. out shows a Mac’s screen in High Performance mode only, which needs Apple silicon on that Mac.": "%@はAppleシリコン搭載のMacではありません。outはMacの画面を高パフォーマンスモードでのみ表示し、そのMacにAppleシリコンが必要です。",
  "This Mac cannot decode HEVC (H.265) video in its hardware, which High Performance mode needs.": "このMacは、高パフォーマンスモードに必要なHEVC（H.265）ビデオをハードウェアでデコードできません。",
  "%@\n%@ · Click to download it again and copy it · Right-click to copy its link": "%@\n%@ · クリックでもう一度ダウンロードしてコピー · 右クリックでリンクをコピー",

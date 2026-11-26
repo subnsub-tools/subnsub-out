@@ -1371,14 +1371,17 @@ struct RemoteSection: View {
         // Its screen on its way: the row says so where it says Online (user 2026-11-25: not a turning
         // sign; the window still comes only once connected, with its first picture).
         let opening = controller.screenOpening.contains(device.key)
-        let status = opening ? tr("Connecting to the remote window…")
+        let status = opening ? tr("Connecting…")
             : controller.peerTesting.contains(device.key) ? tr("Checking…")
             : ok == true ? tr("Online") : ok == false ? tr("Not connected") : tr("Not checked")
         return HStack(spacing: 6) {
             Circle().fill(ok == true ? Palette.accent : ok == false ? Color.orange : Palette.muted.opacity(0.5))
                 .frame(width: 6, height: 6)
+            // The name keeps its room before the status does; neither may make the row wider than
+            // the panel (user 2026-11-26: a status held at its full width, "Connecting to the remote
+            // window…" in English, pushed the panel's content past both its edges).
             Text(device.label).font(.system(size: 12))
-                .lineLimit(1)
+                .lineLimit(1).layoutPriority(1)
             // Its screen in a window of out's own (user 2026-11-21): a Mac reached through the helper,
             // and not one whose out has said it has no Apple silicon (user 2026-11-25: an Intel Mac
             // cannot be shown in High Performance, so it has no button).
@@ -1396,7 +1399,8 @@ struct RemoteSection: View {
                 .accessibilityLabel(tr("Show %@’s screen", device.label))
             }
             Spacer(minLength: 6)
-            Text(status).font(.system(size: 10.5)).foregroundStyle(opening ? Palette.accent : ok == false ? Color.orange : Palette.muted).lineLimit(1).fixedSize()
+            Text(status).font(.system(size: 10.5)).foregroundStyle(opening ? Palette.accent : ok == false ? Color.orange : Palette.muted)
+                .lineLimit(1).truncationMode(.tail)
         }
         .padding(.horizontal, 6).padding(.vertical, 4.5)
         .help(controller.peerStatus[device.key] ?? "")

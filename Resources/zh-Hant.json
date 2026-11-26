@@ -677,7 +677,6 @@
  "No tunnel to that Mac": "沒有通往那台 Mac 的通道",
  "Not on a tailnet with this Mac, or its address there is not known": "與這台 Mac 不在同一個 tailnet，或尚不知道它在 tailnet 上的位址",
  "Showing its screen": "正在顯示螢幕",
- "Connecting to the remote window…": "正在連線遠端視窗…",
  "%@ is not a Mac with Apple silicon. out shows a Mac’s screen in High Performance mode only, which needs Apple silicon on that Mac.": "「%@」不是 Apple 晶片的 Mac。out 只用高效能模式顯示螢幕，這需要那台 Mac 使用 Apple 晶片。",
  "This Mac cannot decode HEVC (H.265) video in its hardware, which High Performance mode needs.": "這台 Mac 的硬體無法解碼 HEVC（H.265）影片，而高效能模式需要它。",
  "%@\n%@ · Click to download it again and copy it · Right-click to copy its link": "%@\n%@ · 點按以重新下載並複製 · 按右鍵可拷貝連結",

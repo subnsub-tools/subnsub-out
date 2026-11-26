@@ -677,7 +677,6 @@
  "No tunnel to that Mac": "उस Mac तक कोई टनल नहीं",
  "Not on a tailnet with this Mac, or its address there is not known": "इस Mac के साथ किसी tailnet पर नहीं है, या वहाँ उसका पता पता नहीं है",
  "Showing its screen": "अपनी स्क्रीन दिखा रहा है",
- "Connecting to the remote window…": "रिमोट विंडो से कनेक्ट हो रहा है…",
  "%@ is not a Mac with Apple silicon. out shows a Mac’s screen in High Performance mode only, which needs Apple silicon on that Mac.": "%@ Apple सिलिकॉन वाला Mac नहीं है। out किसी Mac की स्क्रीन सिर्फ़ हाई परफ़ॉर्मेंस मोड में दिखाता है, जिसके लिए उस Mac पर Apple सिलिकॉन ज़रूरी है।",
  "This Mac cannot decode HEVC (H.265) video in its hardware, which High Performance mode needs.": "यह Mac HEVC (H.265) वीडियो को हार्डवेयर में डिकोड नहीं कर सकता, जो हाई परफ़ॉर्मेंस मोड के लिए ज़रूरी है।",
  "%@\n%@ · Click to download it again and copy it · Right-click to copy its link": "%@\n%@ · फिर से डाउनलोड करके कॉपी करने के लिए क्लिक करें · लिंक कॉपी करने के लिए राइट-क्लिक करें",

@@ -677,7 +677,6 @@
  "No tunnel to that Mac": "Нет туннеля к тому Mac",
  "Not on a tailnet with this Mac, or its address there is not known": "Не в одном tailnet с этим Mac, или его адрес там неизвестен",
  "Showing its screen": "Показывает экран",
- "Connecting to the remote window…": "Подключение к удалённому окну…",
  "%@ is not a Mac with Apple silicon. out shows a Mac’s screen in High Performance mode only, which needs Apple silicon on that Mac.": "%@ — не Mac с Apple silicon. out показывает экран Mac только в режиме высокой производительности, а для него нужен Apple silicon на том Mac.",
  "This Mac cannot decode HEVC (H.265) video in its hardware, which High Performance mode needs.": "Этот Mac не может аппаратно декодировать видео HEVC (H.265), которое нужно для режима высокой производительности.",
  "%@\n%@ · Click to download it again and copy it · Right-click to copy its link": "%@\n%@ · Нажмите, чтобы снова загрузить и скопировать · Правый клик копирует ссылку",

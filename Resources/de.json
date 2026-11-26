@@ -677,7 +677,6 @@
  "No tunnel to that Mac": "Kein Tunnel zu diesem Mac",
  "Not on a tailnet with this Mac, or its address there is not known": "Nicht im selben tailnet wie dieser Mac, oder seine Adresse dort ist nicht bekannt",
  "Showing its screen": "Zeigt seinen Bildschirm",
- "Connecting to the remote window…": "Verbindung mit dem Remote-Fenster …",
  "%@ is not a Mac with Apple silicon. out shows a Mac’s screen in High Performance mode only, which needs Apple silicon on that Mac.": "%@ ist kein Mac mit Apple Silicon. out zeigt den Bildschirm eines Mac nur im Modus „Hohe Leistung“, der auf diesem Mac Apple Silicon benötigt.",
  "This Mac cannot decode HEVC (H.265) video in its hardware, which High Performance mode needs.": "Dieser Mac kann HEVC-Video (H.265) nicht in Hardware decodieren, was der Modus „Hohe Leistung“ benötigt.",
  "%@\n%@ · Click to download it again and copy it · Right-click to copy its link": "%@\n%@ · Klicken, um es erneut zu laden und zu kopieren · Rechtsklick kopiert den Link",
