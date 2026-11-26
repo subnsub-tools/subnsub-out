@@ -92,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var overlayScreenFrame: CGRect?
     private var overlayAnchorOrigin: CGPoint?
     private var overlayDraggedByUser = false
+    /// How the capsule arrives and goes in its window (VoiceBar).
+    private let capsuleStage = CapsuleStage(shown: false)
+    /// Brings the window down to the capsule's new size once its spring has settled (resizeOverlay).
+    private var overlaySettle: DispatchWorkItem?
     private var statusItem: NSStatusItem?
     private var timer: Timer?
     private var observations: [NSObjectProtocol] = []
@@ -635,7 +639,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         UserDefaults.standard.set(true, forKey: "panelCompact")
         overlayLeaving = false
+        overlaySettle?.cancel()
         overlay?.orderOut(nil)
+        resetCapsuleStage()
         showCompact(at: here)
         // Out of sight, not closed: the panel comes back as it was.
         window?.orderOut(nil)
@@ -857,7 +863,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // The capsule's own view keeps no size of its own (sizingOptions = [], so that it never
         // resizes the panel by itself), and so its fittingSize is zero: every capsule used to open
         // at the smallest size, cut off at both ends. A throwaway view of the same content is measured.
-        let probe = NSHostingView(rootView: host.rootView)
+        var measured = host.rootView
+        measured.fillWindow = false
+        let probe = NSHostingView(rootView: measured)
         probe.sizingOptions = .intrinsicContentSize
         let fitting = probe.fittingSize
         let width = min(max(ceil(fitting.width), 96), OverlayPlacement.maxSize.width)
@@ -889,6 +897,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 controller: controller,
                 meter: controller.meter,
                 settings: settings,
+                stage: capsuleStage,
+                fillWindow: true,
                 onSize: { [weak self] size in
                     DispatchQueue.main.async { self?.resizeOverlay(to: size) }
                 },
@@ -902,6 +912,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         guard let overlay else { return }
         let wasHidden = !overlay.isVisible || overlay.alphaValue < 0.05
+        // Shown again while going: it stops going and opens out again where it is.
+        if overlayLeaving { capsuleStage.leaving = false }
         overlayLeaving = false
         userMoving = nil
 
@@ -945,32 +957,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         let targetFrame = NSRect(origin: rest, size: size)
-        guard !Motion.reduced else {
+        capsuleStage.corner = overlayCorner
+        if wasHidden || Motion.reduced {
+            // The capsule arrives on its own (VoiceBar): it drops in from its corner's side, a little
+            // small, with a spring (user 2026-11-26, the chosen demo).
+            overlaySettle?.cancel()
             overlay.alphaValue = 1
             overlay.setFrame(targetFrame, display: true)
+            // What changed while it was away is laid out first, so that it arrives at its size
+            // rather than springing to it from the last showing.
+            overlayHost?.layoutSubtreeIfNeeded()
             overlay.orderFrontRegardless()
+            capsuleStage.shown = true
             return
         }
-        if wasHidden {
-            let dy: CGFloat = (overlayCorner == .topCenter || overlayCorner == .topTrailing || overlayCorner == .topLeading) ? 6 : -6
-            overlay.alphaValue = 0
-            overlay.setFrame(NSRect(x: targetFrame.minX, y: targetFrame.minY + dy, width: size.width, height: size.height), display: true)
-            overlay.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.16
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1)
-                overlay.animator().alphaValue = 1
-                overlay.animator().setFrame(targetFrame, display: true)
-            }, completionHandler: { [weak self] in
-                // A size SwiftUI reported while the frame was still gliding was undone by it.
-                MainActor.assumeIsolated { if let size = self?.overlayReportedSize { self?.resizeOverlay(to: size) } }
-            })
-        } else {
-            overlay.orderFrontRegardless()
-            overlay.alphaValue = 1
-            if !Self.same(overlay.frame, targetFrame) {
-                overlay.setFrame(targetFrame, display: true)
-            }
+        overlay.orderFrontRegardless()
+        overlay.alphaValue = 1
+        capsuleStage.shown = true
+        let visible = overlayScreenFrame ?? (overlay.screen ?? NSScreen.main)?.visibleFrame ?? overlay.frame
+        if Self.same(OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: overlayCorner, in: visible), targetFrame) {
+            // Only its size changes: it springs to it inside its window, as with any change of size.
+            resizeOverlay(to: size)
+        } else if !Self.same(overlay.frame, targetFrame) {
+            overlaySettle?.cancel()
+            overlay.setFrame(targetFrame, display: true)
         }
     }
 
@@ -982,10 +992,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             height: min(max(ceil(rawSize.height), 38), OverlayPlacement.maxSize.height)
         )
         let visible = overlayScreenFrame ?? (overlay.screen ?? NSScreen.main)?.visibleFrame ?? overlay.frame
-        let next = OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: overlayCorner, in: visible)
-        guard !Self.same(overlay.frame, next) else { return }
-        overlay.setFrame(next, display: true)
-        if !overlayDraggedByUser { overlayAnchorOrigin = next.origin }
+        guard !Motion.reduced else {
+            let next = OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: overlayCorner, in: visible)
+            guard !Self.same(overlay.frame, next) else { return }
+            overlay.setFrame(next, display: true)
+            if !overlayDraggedByUser { overlayAnchorOrigin = next.origin }
+            return
+        }
+        // The capsule springs to its new size inside its window, keeping to the window's corner
+        // (VoiceBar): the window takes in the old size and the new at once, so that nothing moves or
+        // is cut off, and comes down to the new size once the spring has settled (user 2026-11-26:
+        // the window used to jump to the new size before the capsule had moved).
+        let current = overlay.frame.size
+        let room = CGSize(width: max(current.width, size.width), height: max(current.height, size.height))
+        if room != current {
+            let roomy = OverlayPlacement.reanchor(frame: overlay.frame, newSize: room, corner: overlayCorner, in: visible)
+            overlay.setFrame(roomy, display: true)
+            if !overlayDraggedByUser { overlayAnchorOrigin = roomy.origin }
+        }
+        overlaySettle?.cancel()
+        let settle = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let overlay = self.overlay, overlay.isVisible, !self.overlayLeaving else { return }
+                let next = OverlayPlacement.reanchor(frame: overlay.frame, newSize: size, corner: self.overlayCorner, in: visible)
+                guard !Self.same(overlay.frame, next) else { return }
+                overlay.setFrame(next, display: true)
+                if !self.overlayDraggedByUser { self.overlayAnchorOrigin = next.origin }
+            }
+        }
+        overlaySettle = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: settle)
     }
 
     /// Re-checks whether a newly activated window, focused input field, or moved input panel now
@@ -1018,22 +1054,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     private var overlayLeaving = false
+    /// Which going the window waits for, so that an earlier one cannot close a later showing.
+    private var overlayLeave = UUID()
 
     private func hideOverlay() {
         controller.capsuleShown = false
         guard let overlay, overlay.isVisible else { return }
-        guard !Motion.reduced else { overlay.orderOut(nil); return }
+        overlaySettle?.cancel()
+        guard !Motion.reduced else { overlay.orderOut(nil); resetCapsuleStage(); return }
         overlayLeaving = true
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.15
-            overlay.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        // It goes on its own (VoiceBar): the words go, it gathers round its sign and shrinks away
+        // (user 2026-11-26, the chosen demo); then the window goes.
+        capsuleStage.leaving = true
+        let token = UUID()
+        overlayLeave = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.56) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.overlayLeaving else { return }
+                guard let self, self.overlayLeaving, self.overlayLeave == token else { return }
                 self.overlayLeaving = false
                 overlay.orderOut(nil)
+                self.resetCapsuleStage()
             }
-        })
+        }
+    }
+
+    /// Ready to arrive again: gone and not going, set with nothing animated (it is out of sight).
+    private func resetCapsuleStage() {
+        var quiet = Transaction()
+        quiet.disablesAnimations = true
+        withTransaction(quiet) {
+            capsuleStage.shown = false
+            capsuleStage.leaving = false
+        }
     }
 
     #if DEBUG
@@ -1231,6 +1283,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await bar("bar-done-pin", pin: true)
         controller.phase = .recording; controller.connected = false; controller.partial = ""
         try await bar("bar-offline")
+        // How the capsule moves from one state to the next (user 2026-11-26: the change to done was
+        // rough): a real window, a frame every 40 ms, four frames a row on grey (motion-capsule-<name>.png).
+        func motion(_ name: String, stage: CapsuleStage = CapsuleStage(), frames: Int = 24,
+                    from start: () -> Void, to change: (CapsuleStage) -> Void) async throws {
+            start()
+            let size = NSSize(width: 300, height: 64)
+            let host = NSHostingView(rootView: VoiceBar(controller: controller, meter: controller.meter, settings: settings,
+                                                        stage: stage, glass: false, fillWindow: true))
+            host.appearance = NSAppearance(named: .aqua)
+            let window = FloatingPanel(contentRect: NSRect(origin: NSPoint(x: -3000, y: 0), size: size),
+                                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.contentView = host
+            window.orderFrontRegardless()
+            try await Task.sleep(nanoseconds: 500_000_000)
+            change(stage)
+            var shots: [NSBitmapImageRep] = []
+            let began = Date()
+            for index in 0..<frames {
+                let wait = began.addingTimeInterval(Double(index) * 0.04).timeIntervalSinceNow
+                if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { continue }
+                host.cacheDisplay(in: host.bounds, to: rep)
+                shots.append(rep)
+            }
+            window.close()
+            let columns = 4, rows = (shots.count + columns - 1) / columns
+            let sheetSize = NSSize(width: size.width * CGFloat(columns), height: size.height * CGFloat(rows))
+            guard let sheet = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(sheetSize.width * 2), pixelsHigh: Int(sheetSize.height * 2),
+                                               bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { throw VoiceError("Could not make the motion sheet.") }
+            sheet.size = sheetSize
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
+            NSColor(white: 0.86, alpha: 1).setFill()
+            NSRect(origin: .zero, size: sheetSize).fill()
+            for (index, shot) in shots.enumerated() {
+                let cell = NSRect(x: CGFloat(index % columns) * size.width, y: sheetSize.height - CGFloat(index / columns + 1) * size.height,
+                                  width: size.width, height: size.height)
+                shot.draw(in: cell, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            try sheet.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(directory)/motion-capsule-\(name).png"))
+            print("Rendered motion-capsule-\(name).png · \(shots.count) frames, every 40 ms")
+            count += 1
+        }
+        let recording = {
+            controller.phase = .recording; controller.connected = true; controller.partial = ""; controller.level = 0.8
+            controller.capsuleResult = .inserted; controller.message = ""
+        }
+        let recognizing = { controller.phase = .processing; controller.capsuleStep = .recognizing; controller.capsuleResult = .inserted }
+        try await motion("arrive", stage: CapsuleStage(shown: false), from: recording) { $0.shown = true }
+        try await motion("stop", from: recording) { _ in recognizing() }
+        try await motion("done", from: recognizing) { _ in
+            controller.result = "Preview: Discuss the new plan at 3 p.m. tomorrow."
+            controller.phase = .done; controller.capsuleResult = .inserted
+        }
+        try await motion("not-typed", from: {
+            controller.phase = .processing; controller.capsuleStep = .sending; controller.sendingTo = "Office"
+        }) { _ in
+            controller.phase = .done
+            controller.capsuleResult = .notWritten(DictationController.missTitle(.noField, peer: "Office"), DictationController.missLine(.noField, clipboard: .there))
+        }
+        try await motion("error", from: recognizing) { _ in
+            controller.message = tr("The network is unavailable"); controller.phase = .error
+        }
+        try await motion("leave", from: { controller.phase = .done; controller.capsuleResult = .inserted }) { $0.leaving = true }
+        controller.capsuleStep = .recognizing; controller.message = ""
         // The compact floating bar, light and dark: Shelf items and a result; recording; empty.
         func compact(_ name: String) async throws {
             let make = { CompactBar(settings: settings, controller: controller, shelf: controller.shelf, meter: controller.meter, glass: false, onExpand: {}) }

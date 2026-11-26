@@ -1458,6 +1458,9 @@ struct CapsuleClock: View {
             .foregroundStyle(Palette.ink)
             .lineLimit(1)
             .fixedSize()
+            // Only the digits that change roll (user 2026-11-26, the chosen demo).
+            .contentTransition(.numericText())
+            .animation(Motion.reduced ? nil : .spring(response: 0.3, dampingFraction: 0.9), value: meter.elapsed)
     }
 }
 
@@ -1503,11 +1506,14 @@ enum CapsuleTint {
     static let green = pair(light: (0.11, 0.60, 0.29), dark: (0.30, 0.86, 0.47))
     static let amber = pair(light: (0.78, 0.47, 0.03), dark: (0.98, 0.70, 0.22))
     static let red = pair(light: (0.80, 0.23, 0.16), dark: (1.00, 0.46, 0.38))
+    /// The mark drawn on a filled sign, as the glass shows through a symbol's cut-out mark.
+    static let knockout = pair(light: (1, 1, 1), dark: (0.13, 0.13, 0.14))
 }
 
 /// The same glass as the panel, light or dark with the system (user 2026-11-20). The state is a
 /// tint over it: green that swells with the voice while speaking, green when done, amber when the
-/// text is not where it was meant to go, red on an error.
+/// text is not where it was meant to go, red on an error. A finished state's colour comes in as its
+/// sign fills, a moment after the ring has closed (user 2026-11-26, the chosen demo).
 private struct CapsuleSurface: View {
     let phase: DictationPhase
     @ObservedObject var meter: AudioMeter
@@ -1531,7 +1537,22 @@ private struct CapsuleSurface: View {
         }
         surface(tint: tint, strength: strength, level: level)
             .animation(.easeOut(duration: 0.09), value: meter.level)
-            .animation(Motion.standard, value: phase)
+            .animation(colourChange, value: colourKey)
+    }
+
+    /// The glass's colour, as one value.
+    private var colourKey: Int {
+        switch phase {
+        case .recording: 1
+        case .done: warning ? 3 : 2
+        case .error: 4
+        case .processing, .receiving, .idle: 0
+        }
+    }
+
+    private var colourChange: Animation {
+        if Motion.reduced { return .easeOut(duration: 0.18) }
+        return phase == .done || phase == .error ? .easeOut(duration: 0.32).delay(0.16) : .easeOut(duration: 0.24)
     }
 
     /// Liquid Glass on macOS 26 and later (user 2026-11-26, the demo at m2:8847): the state is the
@@ -1574,13 +1595,240 @@ private struct CapsuleSurface: View {
     }
 }
 
+/// The capsule's sign: one drawing through every state, so that each change is a movement rather
+/// than a swap (user 2026-11-26, the chosen demo). The waveform gathers into the ring; the
+/// ring slows, closes and takes the state's colour; the filled circle springs out of it and its mark
+/// draws itself. "Not typed" is an amber circle like the red one of an error, so that it comes the
+/// same way. With Reduce Motion each state's sign only dissolves into the next.
+struct CapsuleGlyph: View {
+    enum Kind: Equatable { case wave, ring, done, warning, error }
+    let kind: Kind
+    @ObservedObject var meter: AudioMeter
+    /// The side of the sign's square: 15 in the capsule. The waveform is as wide as 19 of that.
+    var side: CGFloat = 15
+
+    @State private var spinFrom = Date()
+    @State private var stoppedAt: Date?
+    @State private var settling = false
+
+    private var unit: CGFloat { side / 15 }
+    private var finished: Bool { kind == .done || kind == .warning || kind == .error }
+    private var tint: Color { kind == .warning ? CapsuleTint.amber : kind == .error ? CapsuleTint.red : CapsuleTint.green }
+
+    var body: some View {
+        Group {
+            if Motion.reduced {
+                ZStack { still.id(kind).transition(.opacity) }
+                    .animation(.easeOut(duration: 0.16), value: kind)
+            } else {
+                moving
+            }
+        }
+        .frame(width: (kind == .wave ? 19 : 15) * unit, height: side)
+        .onChange(of: kind) { old, new in
+            if new == .ring, old != .ring { spinFrom = Date(); stoppedAt = nil }
+            if old == .ring, new != .ring {
+                stoppedAt = Date()
+                settling = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    settling = false
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private var still: some View {
+        switch kind {
+        case .wave: GlyphWave(meter: meter, gathered: false, unit: unit)
+        case .ring: ring(to: 0.7, colour: Palette.ink.opacity(0.85))
+        case .done, .warning, .error: ZStack { disk; mark(check: kind == .done, drawn: true) }
+        }
+    }
+
+    private var moving: some View {
+        let gathered = kind != .wave
+        let arcEnd: CGFloat = kind == .wave ? 0 : (finished ? 1 : 0.7)
+        return ZStack {
+            GlyphWave(meter: meter, gathered: gathered, unit: unit)
+                .animation(.easeInOut(duration: 0.18), value: gathered)
+            ring(to: arcEnd, colour: finished ? tint : Palette.ink.opacity(0.85))
+                .animation(finished ? .easeOut(duration: 0.22) : .easeOut(duration: 0.3).delay(0.09), value: arcEnd)
+                .opacity(kind == .ring ? 1 : 0)
+                .animation(kind == .ring ? nil : .easeOut(duration: 0.12).delay(0.3), value: kind == .ring)
+            disk
+                .scaleEffect(finished ? 1 : 0.001)
+                .animation(finished ? .spring(response: 0.32, dampingFraction: 0.62).delay(0.14) : nil, value: finished)
+            mark(check: kind == .done, drawn: finished)
+        }
+    }
+
+    private var disk: some View {
+        Circle().fill(tint).frame(width: 12.4 * unit, height: 12.4 * unit)
+    }
+
+    /// The ring, turning at 260° a second; once stopped it slows to rest over 0.38 s.
+    private func ring(to end: CGFloat, colour: Color) -> some View {
+        TimelineView(.animation(minimumInterval: nil, paused: !(kind == .ring || settling))) { context in
+            Circle()
+                .trim(from: 0, to: end)
+                .stroke(colour, style: StrokeStyle(lineWidth: 1.7 * unit, lineCap: .round))
+                .frame(width: 11.2 * unit, height: 11.2 * unit)
+                .rotationEffect(.degrees(angle(at: context.date) - 90))
+        }
+    }
+
+    private func angle(at date: Date) -> Double {
+        let speed = 260.0, rest = 0.38
+        guard kind != .ring, let stop = stoppedAt else { return speed * date.timeIntervalSince(spinFrom) }
+        let p = min(1, max(0, date.timeIntervalSince(stop) / rest))
+        return speed * stop.timeIntervalSince(spinFrom) + speed * rest * (1 - pow(1 - p, 3)) / 3
+    }
+
+    private func mark(check: Bool, drawn: Bool) -> some View {
+        let ink = CapsuleTint.knockout
+        let line = StrokeStyle(lineWidth: 1.75 * unit, lineCap: .round, lineJoin: .round)
+        let tick = drawn && check, bang = drawn && !check
+        let moves = !Motion.reduced
+        return ZStack {
+            GlyphCheck().trim(from: 0, to: tick ? 1 : 0).stroke(ink, style: line)
+                .animation(tick && moves ? .easeOut(duration: 0.24).delay(0.23) : nil, value: tick)
+            GlyphBang().trim(from: 0, to: bang ? 1 : 0).stroke(ink, style: line)
+                .animation(bang && moves ? .easeOut(duration: 0.17).delay(0.23) : nil, value: bang)
+            GlyphDot().fill(ink)
+                .scaleEffect(bang ? 1 : 0.001, anchor: UnitPoint(x: 0.5, y: 11.25 / 16))
+                .animation(bang && moves ? .spring(response: 0.32, dampingFraction: 0.62).delay(0.33) : nil, value: bang)
+        }
+        .frame(width: 15 * unit, height: 15 * unit)
+    }
+}
+
+/// The waveform of the capsule's sign; gathered, its bars shrink to dots, meet in the middle and go.
+private struct GlyphWave: View {
+    @ObservedObject var meter: AudioMeter
+    let gathered: Bool
+    let unit: CGFloat
+    private static let weights: [CGFloat] = [7.5, 13, 9.5, 14, 8.5]
+
+    var body: some View {
+        HStack(spacing: 2 * unit) {
+            ForEach(0..<5, id: \.self) { index in
+                Capsule()
+                    .fill(CapsuleTint.green)
+                    .frame(width: 2.2 * unit,
+                           height: gathered ? 2.2 * unit : max(3.5, CGFloat(meter.level) * Self.weights[index]) * unit)
+                    .offset(x: gathered ? CGFloat(2 - index) * 4.2 * unit : 0)
+                    .opacity(gathered ? 0 : 1)
+            }
+        }
+        .frame(width: 19 * unit, height: 14 * unit)
+        .animation(.easeOut(duration: 0.08), value: meter.level)
+    }
+}
+
+/// The check, the stroke and the dot of the capsule's sign, drawn on a 16-unit square.
+private struct GlyphCheck: Shape {
+    func path(in rect: CGRect) -> Path {
+        let u = rect.width / 16
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + 5 * u, y: rect.minY + 8.3 * u))
+        path.addLine(to: CGPoint(x: rect.minX + 7.1 * u, y: rect.minY + 10.35 * u))
+        path.addLine(to: CGPoint(x: rect.minX + 11.05 * u, y: rect.minY + 5.9 * u))
+        return path
+    }
+}
+
+private struct GlyphBang: Shape {
+    func path(in rect: CGRect) -> Path {
+        let u = rect.width / 16
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + 8 * u, y: rect.minY + 4.5 * u))
+        path.addLine(to: CGPoint(x: rect.minX + 8 * u, y: rect.minY + 8.7 * u))
+        return path
+    }
+}
+
+private struct GlyphDot: Shape {
+    func path(in rect: CGRect) -> Path {
+        let u = rect.width / 16, r = 1.05 * u
+        return Path(ellipseIn: CGRect(x: rect.minX + 8 * u - r, y: rect.minY + 11.25 * u - r, width: 2 * r, height: 2 * r))
+    }
+}
+
+/// How the capsule's words change (user 2026-11-26, the chosen demo): the old words go up
+/// and the new ones come up from below, each a little blurred. With Reduce Motion they dissolve.
+extension AnyTransition {
+    @MainActor static var capsuleWords: AnyTransition {
+        guard !Motion.reduced else { return .opacity.animation(.easeOut(duration: 0.16)) }
+        return .asymmetric(
+            insertion: .modifier(active: WordsRoll(y: 7, blur: 2, opacity: 0), identity: WordsRoll(y: 0, blur: 0, opacity: 1))
+                .animation(.spring(response: 0.30, dampingFraction: 0.9).delay(0.07)),
+            removal: .modifier(active: WordsRoll(y: -7, blur: 2, opacity: 0), identity: WordsRoll(y: 0, blur: 0, opacity: 1))
+                .animation(.easeIn(duration: 0.16)))
+    }
+}
+
+private struct WordsRoll: ViewModifier {
+    let y: CGFloat
+    let blur: CGFloat
+    let opacity: Double
+    func body(content: Content) -> some View { content.offset(y: y).blur(radius: blur).opacity(opacity) }
+}
+
+/// How the status capsule comes and goes in its window (AppDelegate.showOverlay and hideOverlay).
+final class CapsuleStage: ObservableObject {
+    /// On screen and arrived; false before it arrives and once it has gone.
+    @Published var shown: Bool
+    /// Going: the words go, the capsule gathers round its sign, then shrinks away.
+    @Published var leaving = false
+    /// The corner of its window the capsule keeps to, as the window is placed (OverlayPlacement).
+    @Published var corner: OverlayPlacement.AnchorCorner = .topCenter
+    init(shown: Bool = true) { self.shown = shown }
+}
+
+/// The size of what is in the capsule, as it lays itself out.
+private struct CapsuleContentSize: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+    /// The view that measures is not the only one asked: the others say zero, which is not a size.
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.width > 0 && next.height > 0 { value = next }
+    }
+}
+
+/// A frame laid out afresh on every frame of its animation (a plain frame's content and clip take the
+/// new size at once and only its drawing moves). Zero leaves the content at its own size.
+private struct SpringFrame: ViewModifier, Animatable {
+    var size: CGSize
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(size.width, size.height) }
+        set { size = CGSize(width: newValue.first, height: newValue.second) }
+    }
+    func body(content: Content) -> some View {
+        content.frame(width: size.width > 0 ? size.width : nil, height: size.height > 0 ? size.height : nil, alignment: .leading)
+    }
+}
+
+private struct BloomState {
+    var scale: CGFloat = 0.6
+    var opacity: Double = 0
+}
+
 /// Miniature floating status capsule — glass like the panel, tinted green while speaking, and
-/// docks predictably right below the top menu bar without obstructing sight.
+/// docks predictably right below the top menu bar without obstructing sight. Every change of state
+/// moves (user 2026-11-26, "the change to done is rough"; the chosen demo): its size
+/// springs, its words roll, its sign turns from one state into the next, and it arrives and goes
+/// with a movement of its own.
 struct VoiceBar: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var meter: AudioMeter
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var stage: CapsuleStage
     var glass = true
+    /// In the overlay's window, which is larger than the capsule while the capsule changes size: the
+    /// capsule keeps to the window's anchor corner. Off for measuring and for still images.
+    var fillWindow = false
     var onSize: ((CGSize) -> Void)? = nil
     /// Keeps the window on top where it is (user 2026-11-21: the capsule and the bar kept on top are
     /// one window): a pin button that shows while the pointer is over the capsule.
@@ -1591,12 +1839,17 @@ struct VoiceBar: View {
     @State private var copyToken = UUID()
     @State private var pointerOver = false
     @State private var pointerLeft = UUID()
+    @State private var bloomCount = 0
+    /// The size the capsule shows, springing to the size of what is in it (follow).
+    @State private var drawn: CGSize = .zero
 
     init(
         controller: DictationController,
         meter: AudioMeter? = nil,
         settings: SettingsStore,
+        stage: CapsuleStage? = nil,
         glass: Bool = true,
+        fillWindow: Bool = false,
         onSize: ((CGSize) -> Void)? = nil,
         onPin: (() -> Void)? = nil,
         pinShownForPreview: Bool = false
@@ -1604,7 +1857,9 @@ struct VoiceBar: View {
         self.controller = controller
         self.meter = meter ?? controller.meter
         self.settings = settings
+        self.stage = stage ?? CapsuleStage()
         self.glass = glass
+        self.fillWindow = fillWindow
         self.onSize = onSize
         self.onPin = onPin
         self.pinShownForPreview = pinShownForPreview
@@ -1624,42 +1879,164 @@ struct VoiceBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            leadingIndicator
-            labelContent
-            trailingControls
+        let reduced = Motion.reduced
+        let arrived = stage.shown && !stage.leaving
+        let fromTop = stage.corner == .topCenter || stage.corner == .topLeading || stage.corner == .topTrailing
+        let away: CGFloat = stage.leaving ? 6 : 8
+        capsule
+            // Arriving, it drops in from its corner's side of the screen, a little small; going, once
+            // gathered round its sign, it shrinks away the same way.
+            .scaleEffect(arrived || reduced ? 1 : (stage.leaving ? 0.55 : 0.94))
+            .offset(y: arrived || reduced ? 0 : (fromTop ? -away : away))
+            .opacity(arrived ? 1 : 0)
+            .animation(reduced ? .easeOut(duration: 0.18)
+                       : arrived ? .spring(response: 0.38, dampingFraction: 0.82) : .easeIn(duration: 0.2).delay(0.3),
+                       value: arrived)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            // Without the pointer (VoiceOver), keeping on top is an action of the capsule.
+            .accessibilityAction(named: Text(tr("Keep on Top"))) { onPin?() }
+            // The pin stays a moment after the pointer leaves, so that it can be reached across the gap.
+            .background(HoverArea { inside in
+                let token = UUID()
+                pointerLeft = token
+                if inside { pointerOver = true; return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { if pointerLeft == token { pointerOver = false } }
+            })
+            // A change of language builds the words again everywhere below.
+            .id(settings.preferences.language)
+            .frame(maxWidth: fillWindow ? .infinity : nil, maxHeight: fillWindow ? .infinity : nil, alignment: anchor)
+    }
+
+    /// The capsule itself. Going (stage.leaving), only its sign stays, in a circle that fits it.
+    private var capsule: some View {
+        let leaving = stage.leaving && !Motion.reduced
+        return HStack(spacing: 7) {
+            CapsuleGlyph(kind: glyphKind, meter: meter)
+            if !leaving {
+                ZStack(alignment: .leading) {
+                    labelContent
+                        .id(wordsKey)
+                        .transition(.capsuleWords)
+                }
+                .transition(.capsuleWords)
+                trailingControls
+                    .transition(.opacity.animation(.easeIn(duration: 0.13)))
+            }
         }
-        .padding(.leading, 11)
-        .padding(.trailing, hasTrailingButtons ? 6 : 11)
+        .padding(.leading, leaving ? 6.5 : 11)
+        .padding(.trailing, leaving ? 6.5 : (hasTrailingButtons ? 6 : 11))
         .padding(.vertical, 5.5)
         .frame(minHeight: 28)
+        .animation(shapeAnimation(leaving: leaving), value: shapeKey)
+        .fixedSize()
+        // Its own size, which the capsule springs to: the frame is laid out afresh on every frame of
+        // the spring, so the words, the glass and the clip all follow it, and what does not fit yet is
+        // cut off at the capsule's edge.
+        .background(GeometryReader { proxy in
+            Color.clear.preference(key: CapsuleContentSize.self, value: proxy.size)
+        })
+        .onPreferenceChange(CapsuleContentSize.self) { size in follow(size) }
+        .modifier(SpringFrame(size: drawn))
+        .clipShape(Capsule(style: .continuous))
         .foregroundStyle(Palette.ink)
         .background {
             ZStack {
                 CapsuleSurface(phase: controller.phase, meter: meter, glass: glass, warning: notTyped)
+                bloom
                 WindowDragArea().clipShape(Capsule(style: .continuous))
             }
         }
-        .fixedSize()
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(GeometryReader { proxy in
-            Color.clear.preference(key: OverlaySizeKey.self, value: proxy.size)
-        })
-        .onPreferenceChange(OverlaySizeKey.self) { size in
-            if size.width > 0 && size.height > 0 { onSize?(size) }
+        .onChange(of: glyphKind) { old, new in
+            let finishing = new == .done || new == .warning || new == .error
+            if finishing, old == .ring || old == .wave, !Motion.reduced { bloomCount += 1 }
         }
-        // Without the pointer (VoiceOver), keeping on top is an action of the capsule.
-        .accessibilityAction(named: Text(tr("Keep on Top"))) { onPin?() }
-        // The pin stays a moment after the pointer leaves, so that it can be reached across the gap.
-        .background(HoverArea { inside in
-            let token = UUID()
-            pointerLeft = token
-            if inside { pointerOver = true; return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { if pointerLeft == token { pointerOver = false } }
-        })
-        // A change of language builds the words again everywhere below.
-        .id(settings.preferences.language)
+    }
+
+    /// The size of what is in the capsule changed: the window is told the size it is going to (with
+    /// room round it for its shadow and its arrival), and the capsule springs to it. Before it has
+    /// arrived, it takes the size at once.
+    private func follow(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        onSize?(CGSize(width: size.width + 20, height: size.height + 18))
+        guard size != drawn else { return }
+        // With Reduce Motion the window takes the new size at once, and so does the capsule.
+        guard drawn != .zero, stage.shown, !Motion.reduced else { drawn = size; return }
+        withAnimation(shapeAnimation(leaving: stage.leaving)) { drawn = size }
+    }
+
+    /// The state's colour spreading from the sign across the capsule as the sign fills, then giving
+    /// way to the glass's own lighter tint.
+    private var bloom: some View {
+        GeometryReader { proxy in
+            let reach = max(4, proxy.size.width * 2.2 / 16)
+            KeyframeAnimator(initialValue: BloomState(), trigger: bloomCount) { value in
+                Circle()
+                    .fill(glyphTint)
+                    .frame(width: 16, height: 16)
+                    .scaleEffect(value.scale)
+                    .opacity(value.opacity)
+                    .position(x: 11 + 7.5, y: proxy.size.height / 2)
+            } keyframes: { _ in
+                KeyframeTrack(\.opacity) {
+                    LinearKeyframe(0, duration: 0.15)
+                    MoveKeyframe(0.55)
+                    LinearKeyframe(0, duration: 0.52, timingCurve: .easeOut)
+                }
+                KeyframeTrack(\.scale) {
+                    LinearKeyframe(0.6, duration: 0.15)
+                    LinearKeyframe(reach, duration: 0.52, timingCurve: .easeOut)
+                }
+            }
+        }
+        .clipShape(Capsule(style: .continuous))
+        .allowsHitTesting(false)
+    }
+
+    private var glyphKind: CapsuleGlyph.Kind {
+        switch controller.phase {
+        case .recording: .wave
+        case .processing, .receiving: .ring
+        case .error: .error
+        case .done, .idle: notTyped ? .warning : .done
+        }
+    }
+
+    private var glyphTint: Color {
+        switch glyphKind {
+        case .warning: CapsuleTint.amber
+        case .error: CapsuleTint.red
+        default: CapsuleTint.green
+        }
+    }
+
+    /// What the words say, as one value: a new value rolls the words. Recording keeps one value, so
+    /// that only the clock's changed digits roll.
+    private var wordsKey: String {
+        if copied { return "copied" }
+        if controller.phase == .recording { return "recording" }
+        if controller.phase == .done, case let .notWritten(title, detail) = controller.capsuleResult { return "not-written \(title) \(detail)" }
+        return "\(controller.phase) \(controller.capsuleSummary)"
+    }
+
+    /// What decides the capsule's size, as one value: a new value springs it to its new size.
+    private var shapeKey: String {
+        "\(stage.leaving) \(hasTrailingButtons) \(pinShown) \(wordsKey)"
+    }
+
+    private func shapeAnimation(leaving: Bool) -> Animation {
+        if Motion.reduced { return .easeInOut(duration: 0.18) }
+        return leaving ? .spring(response: 0.30, dampingFraction: 0.9).delay(0.06) : .spring(response: 0.34, dampingFraction: 0.86)
+    }
+
+    private var anchor: Alignment {
+        switch stage.corner {
+        case .topCenter: .top
+        case .topLeading: .topLeading
+        case .topTrailing: .topTrailing
+        case .bottomLeading: .bottomLeading
+        case .bottomTrailing: .bottomTrailing
+        }
     }
 
     private var notTyped: Bool {
@@ -1673,29 +2050,6 @@ struct VoiceBar: View {
     }
 
     private var hasTrailingButtons: Bool { closable || pinShown }
-
-    @ViewBuilder private var leadingIndicator: some View {
-        switch controller.phase {
-        case .recording:
-            MicroWaveform(meter: meter)
-        case .processing, .receiving:
-            CapsuleSpinner()
-        case .error:
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 12.5))
-                .foregroundStyle(CapsuleTint.red)
-        case .done, .idle:
-            if notTyped {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(CapsuleTint.amber)
-            } else {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(CapsuleTint.green)
-            }
-        }
-    }
 
     @ViewBuilder private var labelContent: some View {
         if copied {
@@ -1782,6 +2136,7 @@ struct VoiceBar: View {
                 .buttonStyle(.plain)
                 .help(tr("Stop recording (%@)", settings.shortcutLabel))
                 .accessibilityLabel(tr("Stop recording"))
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
             if closable {
                 Button { controller.cancel() } label: {
@@ -1796,6 +2151,7 @@ struct VoiceBar: View {
                 .buttonStyle(.plain)
                 .help(controller.busy ? tr("Cancel (Esc)") : tr("Close"))
                 .accessibilityLabel(controller.busy ? tr("Cancel this recording") : tr("Dismiss"))
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
             if pinShown, let onPin {
                 Button(action: onPin) {

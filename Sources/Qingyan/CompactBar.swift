@@ -139,8 +139,7 @@ struct CompactBar: View {
         if !live {
             recordButton
         } else {
-            switch controller.phase {
-            case .recording:
+            if controller.phase == .recording {
                 Button { controller.finish() } label: {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 10, weight: .bold))
@@ -153,17 +152,23 @@ struct CompactBar: View {
                 .buttonStyle(.plain)
                 .help(tr("Stop recording (%@)", settings.shortcutLabel))
                 .accessibilityLabel(tr("Stop recording"))
-            case .processing, .receiving:
-                CapsuleSpinner()
-            case .error:
-                Image(systemName: "exclamationmark.circle.fill").font(.system(size: 15)).foregroundStyle(CapsuleTint.red)
-            case .done, .idle:
-                Image(systemName: notTyped ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .font(.system(size: 14.5))
-                    .foregroundStyle(notTyped ? CapsuleTint.amber : CapsuleTint.green)
+            } else {
+                // One sign from the wait to its end, as in the capsule (user 2026-11-26).
+                CapsuleGlyph(kind: glyph, meter: meter, side: 17)
             }
         }
     }
+
+    private var glyph: CapsuleGlyph.Kind {
+        switch controller.phase {
+        case .recording, .processing, .receiving: .ring
+        case .error: .error
+        case .done, .idle: notTyped ? .warning : .done
+        }
+    }
+
+    /// What the live row's words say, as one value: a new value rolls them, as in the capsule.
+    private var wordsKey: String { "\(controller.phase) \(controller.capsuleSummary) \(copied)" }
 
     @ViewBuilder private var middle: some View {
         if !live {
@@ -207,7 +212,17 @@ struct CompactBar: View {
                 }
                 Spacer(minLength: 0)
             }
-        } else if case let .notWritten(title, detail) = controller.capsuleResult, controller.phase == .done {
+        } else {
+            ZStack(alignment: .leading) {
+                words.id(wordsKey).transition(.capsuleWords)
+            }
+            .animation(Motion.reduced ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 0.86), value: wordsKey)
+        }
+    }
+
+    /// The live row's words after recording: why the text is not there, or the state.
+    @ViewBuilder private var words: some View {
+        if case let .notWritten(title, detail) = controller.capsuleResult, controller.phase == .done {
             Button { copy(controller.result) } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(copied ? tr("Copied") : title).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
