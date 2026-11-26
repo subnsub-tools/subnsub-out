@@ -591,13 +591,28 @@ func caption(_ text: String) -> some View {
     CopyableText(text, font: .system(size: 10.5), color: Palette.muted, lineSpacing: 2)
 }
 
-/// The long explanation stays one hover away instead of taking panel height.
+/// The long explanation, one click away instead of taking panel height: a click on the mark shows it
+/// at once, and a click anywhere else puts it away (user 2026-11-26: the mark could not be clicked,
+/// and its tooltip came only after a while on it). No tooltip as well: one place for the words.
 struct Info: View {
     let text: String
+    @State private var shown = false
+    @State private var hovered = false
     var body: some View {
-        Image(systemName: "info.circle").font(.system(size: 11.5)).foregroundStyle(Palette.muted)
-            .frame(width: 18, height: 18).contentShape(Rectangle())
-            .help(text).accessibilityLabel(text)
+        Button { shown.toggle() } label: {
+            Image(systemName: "info.circle").font(.system(size: 11.5))
+                .foregroundStyle(shown || hovered ? Palette.ink : Palette.muted)
+                .frame(width: 18, height: 18).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .accessibilityLabel(text)
+        .popover(isPresented: $shown) {
+            CopyableText(text, font: .system(size: 11.5))
+                .frame(width: 260, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(12)
+        }
     }
 }
 
