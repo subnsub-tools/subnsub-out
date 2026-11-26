@@ -1555,6 +1555,16 @@ enum SystemCursors {
 /// says why the screen is not shown, they stay too. Behind it all, glass as out's panel is, seen around the picture where its proportions leave room.
 final class ScreenContainer: NSView {
     static let barHeight: CGFloat = 24
+    /// Liquid Glass (macOS 26 and later): the picture runs under the title strip and the line, the
+    /// Mac's name and the line float on it as capsules of glass, and the buttons are glass too (user
+    /// 2026-11-26: as in the demo at m2:8847, floating the way Apple lays such controls out). Before
+    /// it, the strip and the line are solid.
+    static var floating: Bool { if #available(macOS 26, *) { return true } else { return false } }
+    /// The floating line: its height, and its distance from the window's left and bottom edges.
+    static let lineHeight: CGFloat = 28
+    static let lineInset: CGFloat = 12
+    /// What the line takes from the bottom of the window.
+    static var bottomRoom: CGFloat { floating ? lineHeight + lineInset : barHeight }
     /// The title strip: the window's own buttons and the Mac's name.
     static let rowHeight: CGFloat = 32
     /// The rail's distance from the window's right edge, and from the strip and the line.
@@ -1644,7 +1654,7 @@ final class ScreenContainer: NSView {
         }
     }
     private let titleRow: NSHostingView<ScreenTitleRow>
-    private let bar: NSHostingView<ScreenInfoBar>
+    private let bar: ScreenLineHost
     private let rail: ScreenRailHost
     private let hint: ScreenHintHost
     private(set) var chromeShown = true
@@ -1655,7 +1665,7 @@ final class ScreenContainer: NSView {
     init(frame: NSRect, info: ScreenInfo) {
         self.info = info
         titleRow = NSHostingView(rootView: ScreenTitleRow(info: info))
-        bar = NSHostingView(rootView: ScreenInfoBar(info: info))
+        bar = ScreenLineHost(rootView: ScreenInfoBar(info: info))
         rail = ScreenRailHost(rootView: ScreenRail(info: info))
         hint = ScreenHintHost(rootView: ScreenHint(info: info))
         super.init(frame: frame)
@@ -1665,7 +1675,12 @@ final class ScreenContainer: NSView {
         // Laid out here, not by their content; the title strip also ignores the title bar's safe area,
         // as the panel's does.
         titleRow.sizingOptions = []; titleRow.safeAreaRegions = []
-        bar.sizingOptions = []; bar.safeAreaRegions = []
+        // The floating line is as wide as what it says: its own width is read, and it is laid out
+        // again when that changes.
+        bar.sizingOptions = Self.floating ? [.intrinsicContentSize] : []; bar.safeAreaRegions = []
+        bar.onResize = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.needsLayout = true } }
+        }
         rail.sizingOptions = []; rail.safeAreaRegions = []
         hint.sizingOptions = []; hint.safeAreaRegions = []
         glass.material = .hudWindow
@@ -1678,10 +1693,11 @@ final class ScreenContainer: NSView {
         black.isHidden = true
         black.frame = bounds
         black.autoresizingMask = [.width, .height]
-        // Over the picture, on a solid fill, each kept to its own bar.
+        // Over the picture, on a solid fill, each kept to its own bar; floating, the glass's shadow
+        // may reach past its pane.
         for (pane, fill, content) in [(top, topBlur, titleRow as NSView), (bottom, bottomBlur, bar as NSView)] {
             pane.wantsLayer = true
-            pane.layer?.masksToBounds = true
+            pane.layer?.masksToBounds = !Self.floating
             fill.isHidden = true
             pane.addSubview(fill)
             pane.addSubview(content)
@@ -1722,13 +1738,21 @@ final class ScreenContainer: NSView {
         super.layout()
         top.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.rowHeight)
         titleRow.frame = top.bounds
-        bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
+        if Self.floating {
+            // At the bottom left, as wide as what it says and no wider than the window leaves it.
+            let width = min(ceil(max(bar.intrinsicContentSize.width, 0)), max(bounds.width - Self.lineInset * 2, 0))
+            bottom.frame = NSRect(x: Self.lineInset, y: bounds.height - Self.lineInset - Self.lineHeight, width: width, height: Self.lineHeight)
+        } else {
+            bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
+        }
         bar.frame = bottom.bounds
         topBlur.frame = top.bounds
         bottomBlur.frame = bottom.bounds
-        for blur in [topBlur, bottomBlur] where blur.isHidden == screen.showsPicture { blur.isHidden = !screen.showsPicture }
+        // Floating, nothing is under the name and the line but their glass.
+        let solid = screen.showsPicture && !Self.floating
+        for blur in [topBlur, bottomBlur] where blur.isHidden == solid { blur.isHidden = !solid }
         rail.frame = railRoom
-        hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - Self.barHeight, 0))
+        hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - Self.bottomRoom, 0))
         rail.buttons = railRegion
         overlay.top = chromeShown ? Self.rowHeight : 0
         // AppKit shows the window's buttons again as it lays its title bar out.
@@ -1750,7 +1774,7 @@ final class ScreenContainer: NSView {
     private var railRoom: NSRect {
         let top = Self.rowHeight + Self.railClear, least = ScreenRail.side * 2 + ScreenRail.gap
         return NSRect(x: 0, y: top, width: max(bounds.width - Self.railInset, ScreenRail.side),
-                      height: max(bounds.height - top - Self.barHeight - Self.railClear, least))
+                      height: max(bounds.height - top - Self.bottomRoom - Self.railClear, least))
     }
     /// Where the rail's buttons are now: Close, Full Screen and More, or all of them.
     private var railRegion: NSRect { ScreenRail.region(shown: chromeShown ? ScreenRail.most : ScreenRail.always, in: railRoom) }
@@ -1866,6 +1890,15 @@ final class ScreenContainer: NSView {
 /// The words at the picture's top left; a click there goes on to the picture.
 final class ScreenHintHost: NSHostingView<ScreenHint> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The line under the picture; floating, it tells when what it says needs another width.
+final class ScreenLineHost: NSHostingView<ScreenInfoBar> {
+    var onResize: (() -> Void)?
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onResize?()
+    }
 }
 
 /// The rail's buttons in the window. Its room is the whole of the window's right side, for a button's

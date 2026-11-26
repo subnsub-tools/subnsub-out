@@ -224,19 +224,33 @@ struct ScreenTitleRow: View {
     @ObservedObject var info: ScreenInfo
 
     var body: some View {
-        Text(info.device).font(.system(size: 13, weight: .bold)).lineLimit(1).truncationMode(.tail)
-            .help(info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…"))
-            .accessibilityLabel(info.device + " · " + (info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…")))
-            .frame(height: 22)
+        name
         // The window's close, minimize and zoom buttons sit at the start of the strip where macOS puts
         // them, and the name is level with them, kept as far from the other side so that it stays in
         // the middle; in full screen they are gone.
-        .padding(.top, ScreenContainer.lightsMiddle - 11)
         .padding(.horizontal, info.fullScreen ? 12 : 76)
         .frame(maxWidth: .infinity, minHeight: ScreenContainer.rowHeight, maxHeight: ScreenContainer.rowHeight, alignment: .top)
         .background(WindowDragArea())
         .foregroundStyle(Palette.ink).tint(Palette.accent)
         .ignoresSafeArea()
+    }
+
+    /// With Liquid Glass (macOS 26 and later) the name is on a capsule of glass floating over the
+    /// picture, which runs to the window's top (user 2026-11-26: as in the demo at m2:8847, floating
+    /// the way Apple lays such controls out); before it, on the strip's solid fill.
+    @ViewBuilder private var name: some View {
+        let text = Text(info.device).font(.system(size: 13, weight: .bold)).lineLimit(1).truncationMode(.tail)
+            .help(info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…"))
+            .accessibilityLabel(info.device + " · " + (info.live ? tr("Showing its screen") : info.ended ? tr("Not connected") : tr("Connecting…")))
+        if #available(macOS 26, *) {
+            text.padding(.horizontal, 14)
+                .frame(height: 28)
+                .glassEffect(.regular, in: Capsule())
+                .padding(.top, ScreenContainer.lightsMiddle - 14)
+        } else {
+            text.frame(height: 22)
+                .padding(.top, ScreenContainer.lightsMiddle - 11)
+        }
     }
 }
 
@@ -303,7 +317,7 @@ struct ScreenRail: View {
             let kinds = Self.kinds(controlling: info.controlling)
             let shown = info.railOpen ? kinds.count : Self.always
             let columns = (shown + rows - 1) / rows
-            HStack(alignment: .top, spacing: Self.gap) {
+            let stack = HStack(alignment: .top, spacing: Self.gap) {
                 ForEach(Array((0..<columns).reversed()), id: \.self) { column in
                     VStack(spacing: Self.gap) {
                         ForEach(Array(kinds[(column * rows)..<min((column + 1) * rows, shown)]), id: \.self) { kind in
@@ -313,6 +327,13 @@ struct ScreenRail: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing)
+            if #available(macOS 26, *) {
+                // Liquid Glass: the buttons' glass runs together into one piece down the side, as in
+                // the demo (user 2026-11-26), and flows out to the rest as More brings them.
+                GlassEffectContainer(spacing: Self.gap + 8) { stack }
+            } else {
+                stack
+            }
         }
     }
 
@@ -374,15 +395,11 @@ private struct ScreenRailButton: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(black ? Color.white : Color(white: 0.07))
                 .frame(width: ScreenRail.side, height: ScreenRail.side)
-                .background {
-                    ZStack {
-                        RailGlass(dark: black)
-                        black ? Color.black.opacity(0.32) : Color.white.opacity(0.38)
-                        if hovered { (black ? Color.white : Color.black).opacity(0.12) }
-                    }
-                    .clipShape(Circle())
-                }
-                .overlay(Circle().strokeBorder(black ? Color.white.opacity(0.22) : Color.black.opacity(0.15), lineWidth: 0.8))
+                .background { if hovered { Circle().fill((black ? Color.white : Color.black).opacity(0.12)) } }
+                .modifier(ScreenGlass(shape: Circle(), dark: black,
+                                      tint: black ? Color.black.opacity(0.32) : Color.white.opacity(0.38),
+                                      stroke: black ? Color.white.opacity(0.22) : Color.black.opacity(0.15),
+                                      interactive: true))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -395,8 +412,7 @@ private struct ScreenRailButton: View {
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background { RailGlass().clipShape(Capsule()) }
-                    .overlay(Capsule().strokeBorder(Palette.strong, lineWidth: 0.8))
+                    .modifier(ScreenGlass(shape: Capsule(), stroke: Palette.strong))
                     .fixedSize()
                     .offset(x: -(ScreenRail.side + 8))
                     .allowsHitTesting(false)
@@ -424,8 +440,7 @@ struct ScreenHint: View {
                     .lineLimit(1)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 10)
-                    .background { RailGlass().clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous)) }
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.strong, lineWidth: 0.8))
+                    .modifier(ScreenGlass(shape: RoundedRectangle(cornerRadius: 14, style: .continuous), stroke: Palette.strong))
                     .fixedSize()
                     .padding(14)
                     .transition(.opacity)
@@ -434,6 +449,37 @@ struct ScreenHint: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(Motion.reduced ? nil : .easeOut(duration: 0.18), value: info.controlling)
         .accessibilityHidden(true)
+    }
+}
+
+/// What the window's buttons, their names and the words over the picture are on: Liquid Glass on
+/// macOS 26 and later (user 2026-11-26, the demo at m2:8847), with the glass's own edge and the
+/// button's light or dark kept as its tint; before it, the frosted glass, tint and edge they had.
+private struct ScreenGlass<S: InsettableShape>: ViewModifier {
+    let shape: S
+    /// Light or dark whatever the window's appearance, as a rail button is; nil follows the window.
+    var dark: Bool? = nil
+    var tint: Color? = nil
+    /// The edge drawn on the frosted glass; Liquid Glass has its own.
+    var stroke: Color = .clear
+    /// Answers the pointer as a control does (Liquid Glass only).
+    var interactive = false
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            let glass = content.glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
+            if let dark { glass.environment(\.colorScheme, dark ? .dark : .light) } else { glass }
+        } else {
+            content
+                .background {
+                    ZStack {
+                        RailGlass(dark: dark)
+                        if let tint { tint }
+                    }
+                    .clipShape(shape)
+                }
+                .overlay(shape.strokeBorder(stroke, lineWidth: 0.8))
+        }
     }
 }
 
@@ -473,11 +519,14 @@ struct ScreenInfoBar: View {
             .help(tr("Everything known of the connection and the stream"))
     }
 
-    private var line: some View {
-        HStack(spacing: 6) {
+    /// With Liquid Glass (macOS 26 and later) a capsule of glass floating at the picture's bottom left,
+    /// as wide as what it says (the window sizes it, ScreenContainer); before it, a strip across the
+    /// window's bottom.
+    @ViewBuilder private var line: some View {
+        let words = HStack(spacing: 6) {
             Circle().fill(dot).frame(width: 7, height: 7)
             Text(info.summary).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 8)
+            if !ScreenContainer.floating { Spacer(minLength: 8) }
             if let note = info.pathNote {
                 Text(note).lineLimit(1).truncationMode(.tail).foregroundStyle(.orange)
             }
@@ -485,11 +534,20 @@ struct ScreenInfoBar: View {
         }
         .font(.system(size: 11).monospacedDigit())
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
-        // On the window's glass, as the panel's rows are.
-        .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: 1) }
-        .contentShape(Rectangle())
+        if #available(macOS 26, *) {
+            words
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: ScreenContainer.lineHeight, maxHeight: ScreenContainer.lineHeight, alignment: .leading)
+                .contentShape(Capsule())
+                .glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            words
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+                // On the window's glass, as the panel's rows are.
+                .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: 1) }
+                .contentShape(Rectangle())
+        }
     }
 
     private var dot: Color {

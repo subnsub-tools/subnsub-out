@@ -1632,8 +1632,37 @@ private struct CapsuleSurface: View {
         case .done, .error: 0.18
         case .processing, .receiving, .idle: 0
         }
+        surface(tint: tint, strength: strength, level: level)
+            .animation(.easeOut(duration: 0.09), value: meter.level)
+            .animation(Motion.standard, value: phase)
+    }
+
+    /// Liquid Glass on macOS 26 and later (user 2026-11-26, the demo at m2:8847): the state is the
+    /// glass's own tint, the edge and shadow are the glass's, and only a state keeps its coloured
+    /// edge and, while speaking, its green glow. Before it, and for still images, as it was.
+    @ViewBuilder private func surface(tint: Color?, strength: Double, level: Double) -> some View {
+        if glass {
+            if #available(macOS 26, *) {
+                Color.clear
+                    .glassEffect(.regular.tint(tint?.opacity(strength)), in: Capsule(style: .continuous))
+                    .overlay {
+                        if let tint {
+                            Capsule(style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: phase == .recording ? 1 : 0.8)
+                        }
+                    }
+                    .shadow(color: phase == .recording ? CapsuleTint.green.opacity(0.30 + level * 0.30) : .clear,
+                            radius: 5 + CGFloat(level) * 2.0, x: 0, y: 1.5)
+            } else {
+                frosted(Glass(), tint: tint, strength: strength, level: level)
+            }
+        } else {
+            frosted(Color(nsColor: .windowBackgroundColor).opacity(0.94), tint: tint, strength: strength, level: level)
+        }
+    }
+
+    private func frosted(_ base: some View, tint: Color?, strength: Double, level: Double) -> some View {
         ZStack {
-            if glass { Glass() } else { Color(nsColor: .windowBackgroundColor).opacity(0.94) }
+            base
             if let tint { tint.opacity(strength) }
         }
         .clipShape(Capsule(style: .continuous))
@@ -1647,8 +1676,6 @@ private struct CapsuleSurface: View {
             x: 0,
             y: 1.5
         )
-        .animation(.easeOut(duration: 0.09), value: meter.level)
-        .animation(Motion.standard, value: phase)
     }
 }
 
