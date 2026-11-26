@@ -37,6 +37,8 @@ final class ShelfModel: ObservableObject {
     private(set) var store: ShelfStore?
     private(set) var sync: ShelfSync?
     private var thumbnails: [UUID: NSImage] = [:]
+    /// Tiles being made off the main thread.
+    private var makingTiles: Set<UUID> = []
     private var snippets: [UUID: String] = [:]
     private var noticeID = UUID()
     private var copiedToken = UUID()
@@ -269,21 +271,57 @@ final class ShelfModel: ObservableObject {
         store?.text(item) ?? snippet(item)
     }
 
+    /// A tile's picture: 128 points square, the picture filling it. From the cache, or nil while it
+    /// is made off the main thread (the Shelf is drawn again once it is there). It used to be the
+    /// whole picture decoded on the main thread, tile after tile: 1.3 to 1.8 s for 14 screenshots,
+    /// and the bar kept on top, which shows every tile, took seconds to come the first time after a
+    /// start (user 2026-11-26). ImageIO makes the 14 at their size in about 0.25 s, off the main thread.
     func thumbnail(_ item: ShelfItem) -> NSImage? {
         if let known = thumbnails[item.id] { return known }
-        guard let store else { return nil }
-        let source = store.thumbnail(item).flatMap(NSImage.init(data:))
-            ?? (item.kind == .image && store.isPresent(item.id) ? NSImage(contentsOf: store.url(item)) : nil)
-        guard let image = source, image.size.width > 0, image.size.height > 0 else { return nil }
-        let side: CGFloat = 128
-        let scale = max(side / image.size.width, side / image.size.height)
-        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-        let small = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            image.draw(in: NSRect(x: (side - size.width) / 2, y: (side - size.height) / 2, width: size.width, height: size.height))
-            return true
+        guard let store, !makingTiles.contains(item.id) else { return nil }
+        let card = store.thumbnail(item)
+        let file: URL? = item.kind == .image && store.isPresent(item.id) ? store.url(item) : nil
+        guard card != nil || file != nil else { return nil }
+        makingTiles.insert(item.id)
+        let id = item.id
+        Task.detached(priority: .userInitiated) {
+            let tile = Self.tile(card: card, file: file)
+            await MainActor.run {
+                self.makingTiles.remove(id)
+                guard let tile else { return }
+                self.objectWillChange.send()
+                self.thumbnails[id] = tile
+            }
         }
-        thumbnails[item.id] = small
-        return small
+        return nil
+    }
+
+    /// 256 pixels square (128 points), the picture filling it about its middle: from the card's
+    /// thumbnail where there is one, else from the file, decoded by ImageIO no larger than needed.
+    nonisolated private static func tile(card: Data?, file: URL?) -> NSImage? {
+        let side = 256
+        guard let source = card.flatMap({ CGImageSourceCreateWithData($0 as CFData, nil) })
+                ?? file.flatMap({ CGImageSourceCreateWithURL($0 as CFURL, nil) }) else { return nil }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = (properties?[kCGImagePropertyPixelWidth] as? Int) ?? side
+        let height = (properties?[kCGImagePropertyPixelHeight] as? Int) ?? side
+        // The short side at the tile's size at least, so that the picture fills it.
+        let longest = Double(side) * Double(max(width, height)) / Double(max(min(width, height), 1))
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: min(Int(longest.rounded(.up)), 4096),
+                                        kCGImageSourceCreateThumbnailWithTransform: true]
+        guard let picture = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              picture.width > 0, picture.height > 0,
+              let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let scale = max(Double(side) / Double(picture.width), Double(side) / Double(picture.height))
+        let drawn = CGSize(width: Double(picture.width) * scale, height: Double(picture.height) * scale)
+        context.interpolationQuality = .high
+        context.draw(picture, in: CGRect(x: (Double(side) - drawn.width) / 2, y: (Double(side) - drawn.height) / 2,
+                                         width: drawn.width, height: drawn.height))
+        guard let made = context.makeImage() else { return nil }
+        return NSImage(cgImage: made, size: NSSize(width: 128, height: 128))
     }
 
     // MARK: Large items

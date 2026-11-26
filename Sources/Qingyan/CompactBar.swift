@@ -316,8 +316,10 @@ struct CompactBar: View {
                         .strokeBorder(Palette.muted.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                     .allowsHitTesting(false)
             } else {
+                // Lazy, as the panel's grid is: only the tiles in sight are made (all of them at once
+                // held up the bar's first showing).
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
+                    LazyHStack(spacing: 6) {
                         ForEach(shelf.items) { tile($0).transition(Motion.pop) }
                     }
                 }
