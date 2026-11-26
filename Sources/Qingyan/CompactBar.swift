@@ -22,12 +22,12 @@ struct CompactBar: View {
     var onSize: ((CGSize) -> Void)? = nil
     @AppStorage(CompactBar.foldedKey) private var shelfFolded = false
     @State private var copied = false
-    @State private var hovered: UUID?
     @State private var recordHovered = false
 
     static let width: CGFloat = 340
     static let rowHeight: CGFloat = 44
-    static let shelfHeight: CGFloat = 54
+    /// A row of the panel's own tiles (60 pt) and the room around them.
+    static let shelfHeight: CGFloat = ShelfRows.cell + 14
     /// Where it is kept whether the Shelf is hidden.
     static let foldedKey = "compactShelfFolded"
     /// The bar's height: its first row, and under a line the Shelf unless it is hidden. Its window is
@@ -110,7 +110,6 @@ struct CompactBar: View {
         .background(GeometryReader { proxy in Color.clear.preference(key: CompactSizeKey.self, value: proxy.size) })
         .onPreferenceChange(CompactSizeKey.self) { size in if size.width > 0 && size.height > 0 { onSize?(size) } }
         .animation(Motion.quick, value: shelf.targeted)
-        .animation(Motion.quick, value: hovered)
         .animation(Motion.standard, value: controller.phase)
         .id(settings.preferences.language)
     }
@@ -326,18 +325,18 @@ struct CompactBar: View {
                 // Lazy, as the panel's grid is: only the tiles in sight are made (all of them at once
                 // held up the bar's first showing).
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 6) {
-                        ForEach(shelf.items) { tile($0).transition(Motion.pop) }
+                    LazyHStack(spacing: ShelfRows.gap) {
+                        ForEach(shelf.items) { item in ShelfTile(shelf: shelf, item: item, cells: shelf.cells(item)).transition(Motion.pop) }
                     }
                 }
                 // Only as wide as its items: what is left of the strip moves the bar.
-                .frame(maxWidth: CGFloat(shelf.items.count) * 49 - 6)
+                .frame(maxWidth: shelf.items.reduce(-ShelfRows.gap) { $0 + ShelfRows.width(shelf.cells($1)) + ShelfRows.gap })
                 Spacer(minLength: 0)
             }
             Button { shelf.addClipboard() } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 26, height: 40)
+                    .frame(width: 26, height: ShelfRows.cell)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Palette.line, lineWidth: 0.8))
                     .contentShape(Rectangle())
@@ -348,57 +347,8 @@ struct CompactBar: View {
         }
         .padding(.horizontal, 9).padding(.vertical, 7)
     }
-
-    private func tile(_ item: ShelfItem) -> some View {
-        let stage = shelf.stage(item)
-        return ZStack(alignment: .topTrailing) {
-            ZStack {
-                Group {
-                    if item.kind == .text {
-                        Text(shelf.snippet(item)).font(.system(size: 7.5)).lineLimit(4)
-                            .padding(3).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    } else if let image = shelf.thumbnail(item) {
-                        Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                    } else if item.kind == .image {
-                        Image(systemName: "photo").font(.system(size: 15)).foregroundStyle(Palette.muted)
-                    } else {
-                        Image(nsImage: shelf.icon(item)).resizable().frame(width: 26, height: 26)
-                    }
-                }.opacity(stage == .here ? 1 : 0.35)
-                if stage != .here {
-                    Image(systemName: "icloud.and.arrow.down").font(.system(size: 12)).foregroundStyle(Palette.muted)
-                }
-            }
-            .frame(width: 40, height: 40)
-            .background(Color.primary.opacity(hovered == item.id ? 0.11 : 0.07))
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Palette.line, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .onTapGesture {
-                if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
-            }
-            .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
-            .help(shelf.hint(item, stage))
-            .contextMenu { ShelfItemMenu(shelf: shelf, item: item) }
-            .background(ShelfPeekSource(item: item, shelf: shelf))
-            if hovered == item.id {
-                Button { shelf.remove(item) } label: {
-                    Image(systemName: "xmark").font(.system(size: 6.5, weight: .bold)).foregroundStyle(Palette.ink)
-                        .frame(width: 14, height: 14)
-                        .background(Color.primary.opacity(0.24), in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain).offset(x: 3, y: -3)
-                .help(tr("Remove from the Shelf")).accessibilityLabel(tr("Remove %@", item.name))
-                .transition(Motion.pop)
-            }
-        }
-        .padding(.top, 3).padding(.trailing, 3)
-        .onHover { inside in hovered = inside ? item.id : (hovered == item.id ? nil : hovered) }
-    }
 }
 
-/// A view that moves its window when dragged, for a borderless window whose controls cover the rest.
 struct WindowDragArea: NSViewRepresentable {
     final class Area: NSView {
         override func mouseDown(with event: NSEvent) {

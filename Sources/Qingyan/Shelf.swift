@@ -1053,14 +1053,7 @@ enum ShelfRows {
 /// click a tile to copy it, drag a tile out to use it. The same shelf shows on every paired Mac.
 struct ShelfBar: View {
     @ObservedObject var shelf: ShelfModel
-    @State private var hovered: UUID?
     @State private var confirm = false
-    /// While a tile's right edge is dragged: the tile, and how wide it was when the drag began.
-    @State private var sizing: UUID?
-    @State private var sizingFrom = 2
-    /// The edge that pushed the resize cursor, the only one that pops it; and the edge under the pointer.
-    @State private var cursorOwner: UUID?
-    @State private var edgeHovered: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -1093,7 +1086,7 @@ struct ShelfBar: View {
                     LazyVStack(alignment: .leading, spacing: ShelfRows.gap) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                             HStack(spacing: ShelfRows.gap) {
-                                ForEach(row, id: \.item.id) { place in tile(place.item, cells: place.cells).transition(Motion.pop) }
+                                ForEach(row, id: \.item.id) { place in ShelfTile(shelf: shelf, item: place.item, cells: place.cells).transition(Motion.pop) }
                             }
                         }
                     }
@@ -1108,7 +1101,6 @@ struct ShelfBar: View {
         .overlay(alignment: .bottom) { ShelfToast(shelf: shelf).padding(.horizontal, 14).padding(.bottom, 12) }
         .contentTransition(.identity)
         .animation(Motion.quick, value: shelf.targeted)
-        .animation(Motion.quick, value: hovered)
         .alert(tr("Clear everything on the Shelf? The Shelf on your other Macs will be cleared too."), isPresented: $confirm) {
             Button(tr("Cancel"), role: .cancel) {}
             Button(tr("Clear"), role: .destructive) { shelf.clear() }
@@ -1140,22 +1132,38 @@ struct ShelfBar: View {
         .help(title)
         .accessibilityLabel(title)
     }
+}
 
-    private func tile(_ item: ShelfItem, cells: Int) -> some View {
+/// One item on the Shelf, the same on the panel and on the bar kept on top (user 2026-11-27: the
+/// bar's tiles were its own, smaller ones, and cut off at their foot): one row high and one to three
+/// cells wide, as `ShelfModel.cells` says.
+struct ShelfTile: View {
+    @ObservedObject var shelf: ShelfModel
+    let item: ShelfItem
+    let cells: Int
+    @State private var hovered = false
+    /// While the right edge is dragged, and how wide the tile was when the drag began.
+    @State private var sizing = false
+    @State private var sizingFrom = 2
+    /// Whether this edge pushed the resize cursor (only it pops it), and whether the pointer is on it.
+    @State private var cursorPushed = false
+    @State private var edgeHovered = false
+
+    var body: some View {
         let stage = shelf.stage(item)
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         return ZStack(alignment: .topTrailing) {
-            face(item, stage: stage, cells: cells)
+            face(stage)
                 .frame(width: ShelfRows.width(cells), height: ShelfRows.cell)
-                .background(Color.primary.opacity(hovered == item.id ? 0.11 : 0.07))
+                .background(Color.primary.opacity(hovered ? 0.11 : 0.07))
                 .clipShape(shape)
-                .overlay(shape.stroke(sizing == item.id ? Palette.accent : Palette.line, lineWidth: sizing == item.id ? 1.5 : 1))
+                .overlay(shape.stroke(sizing ? Palette.accent : Palette.line, lineWidth: sizing ? 1.5 : 1))
                 .contentShape(shape)
                 .onTapGesture {
                     if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
                 }
                 .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
-            if hovered == item.id {
+            if hovered {
                 // Inside the tile's corner: the Shelf scrolls, and what stood out past the tile was cut
                 // off at the Shelf's edge (user 2026-11-25).
                 Button { shelf.remove(item) } label: {
@@ -1171,21 +1179,22 @@ struct ShelfBar: View {
         }
         .overlay(alignment: .trailing) {
             // Always there, seen only under the pointer: the pointer leaving it is what puts the cursor back.
-            if shelf.mostCells(item) > 1 { edge(item, cells: cells).opacity(hovered == item.id || sizing == item.id ? 1 : 0) }
+            if shelf.mostCells(item) > 1 { edge.opacity(hovered || sizing ? 1 : 0) }
         }
-        .overlay(alignment: .topLeading) { linkControl(item) }
+        .overlay(alignment: .topLeading) { linkControl }
         .background(ShelfPeekSource(item: item, shelf: shelf))
-        .onHover { inside in hovered = inside ? item.id : (hovered == item.id ? nil : hovered) }
-        .help(hint(item, stage))
+        .onHover { hovered = $0 }
+        .animation(Motion.quick, value: hovered)
+        .help(shelf.hint(item, stage))
         .contextMenu { ShelfItemMenu(shelf: shelf, item: item, sizable: true) }
-        .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, hint(item, stage)))
+        .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, shelf.hint(item, stage)))
     }
 
     /// One cell: the picture, or the icon with the name under it, or a few lines of text. Wider, a
     /// file is its icon, its name on one line, and two lines under it; text has more room.
-    @ViewBuilder private func face(_ item: ShelfItem, stage: ShelfModel.Stage, cells: Int) -> some View {
+    @ViewBuilder private func face(_ stage: ShelfModel.Stage) -> some View {
         if cells > 1 && item.kind == .file {
-            wideFile(item, stage: stage, cells: cells)
+            wideFile(stage)
         } else if cells > 1 && item.kind == .text {
             Text(shelf.snippet(item)).font(.system(size: 11)).lineSpacing(1.5).lineLimit(3).multilineTextAlignment(.leading)
                 .padding(.horizontal, 9).padding(.vertical, 7).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1213,7 +1222,7 @@ struct ShelfBar: View {
         }
     }
 
-    private func wideFile(_ item: ShelfItem, stage: ShelfModel.Stage, cells: Int) -> some View {
+    private func wideFile(_ stage: ShelfModel.Stage) -> some View {
         let failed: Bool
         if case .failed = stage { failed = true } else { failed = false }
         let detailTint: Color = failed ? Color.orange : Palette.muted
@@ -1258,35 +1267,31 @@ struct ShelfBar: View {
     }
 
     /// The right edge of a tile, dragged: one, two or three cells, as far as the item may go.
-    private func edge(_ item: ShelfItem, cells: Int) -> some View {
-        Capsule(style: .continuous).fill(Palette.muted.opacity(sizing == item.id ? 0.8 : 0.5)).frame(width: 3, height: 22)
+    private var edge: some View {
+        Capsule(style: .continuous).fill(Palette.muted.opacity(sizing ? 0.8 : 0.5)).frame(width: 3, height: 22)
             .frame(width: 10, height: 44)
             .contentShape(Rectangle())
             .onHover { inside in
-                if inside {
-                    edgeHovered = item.id
-                    if cursorOwner == nil { NSCursor.resizeLeftRight.push(); cursorOwner = item.id }
-                } else {
-                    if edgeHovered == item.id { edgeHovered = nil }
-                    if cursorOwner == item.id, sizing != item.id { NSCursor.pop(); cursorOwner = nil }
-                }
+                edgeHovered = inside
+                if inside, !cursorPushed { NSCursor.resizeLeftRight.push(); cursorPushed = true }
+                else if !inside, cursorPushed, !sizing { NSCursor.pop(); cursorPushed = false }
             }
             .onDisappear {
-                if edgeHovered == item.id { edgeHovered = nil }
-                if sizing == item.id { sizing = nil }
-                if cursorOwner == item.id { NSCursor.pop(); cursorOwner = nil }
+                edgeHovered = false
+                sizing = false
+                if cursorPushed { NSCursor.pop(); cursorPushed = false }
             }
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
-                    if sizing != item.id { sizing = item.id; sizingFrom = cells; ShelfPeek.shared.hide() }
+                    if !sizing { sizing = true; sizingFrom = cells; ShelfPeek.shared.hide() }
                     let wanted = ((ShelfRows.width(sizingFrom) + value.translation.width + ShelfRows.gap) / (ShelfRows.cell + ShelfRows.gap)).rounded()
                     let next = min(max(Int(wanted), 1), shelf.mostCells(item))
                     if next != shelf.cells(item) { withAnimation(Motion.standard) { shelf.setCells(item, next) } }
                 }
                 .onEnded { _ in
-                    sizing = nil
+                    sizing = false
                     // Still over its edge: the cursor stays until the pointer leaves it.
-                    if cursorOwner == item.id, edgeHovered != item.id { NSCursor.pop(); cursorOwner = nil }
+                    if cursorPushed, !edgeHovered { NSCursor.pop(); cursorPushed = false }
                 })
             .help(tr("Drag to change the width"))
             .accessibilityHidden(true)
@@ -1295,7 +1300,7 @@ struct ShelfBar: View {
     /// In the tile's top left corner, inside it (user 2026-11-25: the mark stood out past the tile and
     /// the Shelf's edge cut it off): how far the file has got while its link is being made, and a
     /// small mark on an item that has a link.
-    @ViewBuilder private func linkControl(_ item: ShelfItem) -> some View {
+    @ViewBuilder private var linkControl: some View {
         if let progress = shelf.linking[item.id] {
             Button { shelf.cancelLink(item) } label: {
                 ZStack {
@@ -1337,9 +1342,6 @@ struct ShelfBar: View {
         .padding(.horizontal, 3)
     }
 
-    private func hint(_ item: ShelfItem, _ stage: ShelfModel.Stage) -> String {
-        shelf.hint(item, stage)
-    }
 }
 
 /// What a right-click on a tile offers, the same on the panel and on the bar kept on top (user
