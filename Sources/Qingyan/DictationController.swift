@@ -374,7 +374,20 @@ final class DictationController: ObservableObject {
                 self.microphone.adopt(input)
             }
         }
-        receiver.microphoneRefusal = { MicrophoneLink.refusal() }
+        receiver.microphoneAnswer = { [weak self] key, asker, again in
+            await MainActor.run { () -> MicrophoneAnswer? in
+                guard let self else { return nil }
+                return self.microphone.answer(key: key, from: asker, again: again, here: self.deviceName)
+            } ?? .no(tr("out on the other Mac is not ready."))
+        }
+        // What lending this Mac's microphone needs, read at every attempt.
+        microphone.context = { [weak self] in
+            guard let self else { return nil }
+            let preferences = self.settings.preferences
+            return MicrophoneLink.Context(identity: self.identity, name: self.deviceName, listening: preferences.remotePort,
+                                          microphone: preferences.microphone,
+                                          device: { key in preferences.devices.first { $0.key == key } })
+        }
         microphone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &microphoneSubscriptions)
         microphones.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -455,7 +468,7 @@ final class DictationController: ObservableObject {
         // A microphone goes on only while the Mac at the other end is still trusted: this Mac's to a Mac
         // still in the list, and another Mac's here while that Mac may still type here.
         let linked = settings.preferences.linkEnabled ? settings.preferences.devices : []
-        microphone.keep(sendingTo: Set(linked.map(\.key)), receivingFrom: Set(linked.filter(\.canWrite).map(\.key)))
+        microphone.keep(linkOn: settings.preferences.linkEnabled, sendingTo: Set(linked.map(\.key)), receivingFrom: Set(linked.filter(\.canWrite).map(\.key)))
         shelf.sync?.listening = settings.preferences.remotePort
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
         refreshHelper()
@@ -652,8 +665,7 @@ final class DictationController: ObservableObject {
 
     /// This Mac's microphone to a trusted Mac as its out Mic, or back (user 2026-11-27).
     func toggleMicrophone(_ device: TrustedDevice) {
-        microphone.toggle(device, identity: identity, name: deviceName, listening: settings.preferences.remotePort,
-                          microphone: settings.preferences.microphone)
+        microphone.toggle(device)
     }
 
     func testRemote(_ key: String) {

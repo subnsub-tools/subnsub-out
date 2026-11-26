@@ -4,91 +4,254 @@ import Foundation
 import os
 import QingyanCore
 
-/// This Mac's microphone sent to another Mac, where it is the out Mic microphone; and another Mac's
-/// microphone coming in here (user 2026-11-27: a virtual microphone on the Mac worked from another
-/// one, for meetings). The out Mic driver, inside the app, is installed here once with the Mac's
-/// password; out plays what arrives into its hidden feed, and meeting apps pick out Mic.
+/// This Mac's microphone lent to another Mac, and another Mac's microphone lent to this one (user
+/// 2026-11-27: this Mac's microphone takes over the remote Mac's; any microphone clicked anywhere there
+/// turns this one on, and any app there can use it). Lent, the other Mac makes out Mic its input; when
+/// any app there starts recording it says so, and this Mac's microphone turns on and is heard there
+/// until the app stops. The out Mic driver, inside the app, is installed once on the Mac that takes
+/// the microphone, with that Mac's password; asked for there when it is first needed.
 @MainActor
 final class MicrophoneLink: ObservableObject {
-    /// The Mac this Mac's microphone goes to, and the one it is being opened to, by key.
-    @Published private(set) var sendingTo: String?
-    @Published private(set) var opening: String?
-    /// What went wrong the last time, by the Mac's key.
+    /// What lending needs from the rest of out, read at every attempt.
+    struct Context {
+        let identity: DeviceIdentity?
+        let name: String
+        let listening: Int
+        /// The microphone dictation uses: its UID, or empty for the system's.
+        let microphone: String
+        let device: (String) -> TrustedDevice?
+    }
+    var context: (() -> Context?)?
+
+    /// What the link waits on, said beside the Mac: being made, or out Mic being installed there.
+    struct Note: Equatable {
+        let text: String
+        let installing: Bool
+    }
+
+    /// The Mac this Mac's microphone is lent to, by key; kept across launches until taken back.
+    @Published private(set) var lentTo: String?
+    /// The link to it is up; and an app there records, so this Mac's microphone is on.
+    @Published private(set) var linked = false
+    @Published private(set) var live = false
+    @Published private(set) var notes: [String: Note] = [:]
+    /// What went wrong, by the Mac's key: lending stopped, or this Mac's microphone did not open.
     @Published private(set) var problems: [String: String] = [:]
-    /// The Mac whose microphone comes in here, by key.
+    /// The Mac whose microphone is lent here, by key; and whether an app here records from it now.
     @Published private(set) var receivingFrom: String?
+    @Published private(set) var heardHere = false
     @Published private(set) var driver = MicrophoneLink.driverState()
     @Published private(set) var installing = false
 
     private var out: MicrophoneOut?
+    private var connecting: Task<Void, Never>?
+    private var leaseCheck: Task<Void, Never>?
+    private var linkedAt = Date.distantPast
     private var capture: AVAudioEngine?
     private var drain: DispatchSourceTimer?
     private var inbound: MicrophoneIn?
     private var playback: AVAudioEngine?
+    private var jitter: MicJitter?
+    private var useListener: AudioObjectPropertyListenerBlock?
+    private var useDevice = AudioObjectID(0)
+    private var toldUse: Bool?
+    private var renewUse: Task<Void, Never>?
+    private var giveBackLater: Task<Void, Never>?
+    /// The lending Mac whose microphone took this Mac's input, by key: its link coming back does not
+    /// take the input again (it may have been changed by hand meanwhile).
+    private var inputTakenFor: String?
+    /// When an install asked for by another Mac's lending last did not happen: for a minute, no other
+    /// Mac's lending asks for the password here again.
+    private var installFailedAt: Date?
 
-    // MARK: Sending
+    private static let lentKey = "microphoneLentTo"
+    private static let previousInputKey = "microphonePreviousInput"
 
-    func toggle(_ device: TrustedDevice, identity: DeviceIdentity?, name: String, listening: Int, microphone: String) {
-        if sendingTo == device.key || opening == device.key { stop(); return }
-        stop()
-        guard let identity else { problems[device.key] = tr("This Mac has no device key yet. Pair the Macs first."); return }
+    init() {
+        lentTo = UserDefaults.standard.string(forKey: Self.lentKey)
+        // out ended while a Mac's microphone was lent here: the input it took goes back.
+        Self.giveBackInput()
+    }
+
+    // MARK: Lending
+
+    func toggle(_ device: TrustedDevice) {
+        if lentTo == device.key { takeBack(); return }
+        takeBack()
         problems[device.key] = nil
-        opening = device.key
-        Task { [weak self] in
-            do {
-                let out = try await MicrophoneOut.open(device, identity: identity, name: name, listening: listening)
-                guard let self, self.opening == device.key else { out.close(); return }
-                self.opening = nil
-                do { try self.startCapture(into: out, microphone: microphone) }
-                catch { out.close(); self.problems[device.key] = error.localizedDescription; return }
-                self.out = out
-                self.sendingTo = device.key
-                // Registered after the stream is set up; an end that came meanwhile is told at once.
-                out.whenEnded { [weak self] in
-                    Task { @MainActor in
-                        guard let self, self.out === out else { return }
-                        self.stop()
-                        self.problems[device.key] = tr("%@ stopped taking this Mac's microphone.", device.label)
+        lend(device.key, again: false)
+    }
+
+    func takeBack() {
+        if let key = lentTo { notes[key] = nil }
+        setLent(nil)
+        connecting?.cancel()
+        connecting = nil
+        unlink(takenBack: true)
+    }
+
+    /// out is quitting: the links end, and what is lent stays lent for the next launch.
+    func close() {
+        connecting?.cancel()
+        connecting = nil
+        unlink()
+        endReceiving()
+    }
+
+    /// Only what is still allowed goes on. Multiple Macs turned off takes a lent microphone back; a
+    /// Mac gone from the list (its helper away for a moment) holds the lending until it is back. A
+    /// Mac's microphone here goes on while that Mac may still type here (as another Mac's view of
+    /// this screen). A microphone lent and not linked (out just started) is linked again.
+    func keep(linkOn: Bool, sendingTo allowedOut: Set<String>, receivingFrom allowedIn: Set<String>) {
+        if let key = lentTo {
+            if !linkOn { takeBack() }
+            else if !allowedOut.contains(key) {
+                connecting?.cancel()
+                connecting = nil
+                unlink()
+            } else if out == nil, connecting == nil { lend(key, again: true) }
+        }
+        if let key = receivingFrom, !allowedIn.contains(key) { endReceiving() }
+    }
+
+    private func setLent(_ key: String?) {
+        lentTo = key
+        UserDefaults.standard.set(key, forKey: Self.lentKey)
+    }
+
+    /// `takenBack`: the other Mac is told, and gives its input back at once; else it keeps out Mic
+    /// as its input for a while, for the link to come back.
+    private func unlink(takenBack: Bool = false) {
+        stopCapture()
+        leaseCheck?.cancel()
+        leaseCheck = nil
+        out?.whenEnded(nil)
+        out?.whenWantChanges(nil)
+        if takenBack { out?.end() } else { out?.close() }
+        out = nil
+        linked = false
+    }
+
+    /// Makes the link, and makes it again for as long as the microphone stays lent: while the other
+    /// Mac is away, after a few seconds and then less often; while out Mic is installed there, every
+    /// two seconds until it is. A no from it ends the lending and says why.
+    private func lend(_ key: String, again: Bool, after delay: UInt64 = 0) {
+        setLent(key)
+        connecting?.cancel()
+        notes[key] = Note(text: tr("Connecting…"), installing: false)
+        connecting = Task { [weak self] in
+            var again = again
+            var pause: UInt64 = 2
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
+            while !Task.isCancelled {
+                guard let self, self.lentTo == key else { return }
+                // Not in the list now (its helper away for a moment): keep() links it again when it is back.
+                guard let context = self.context?(), let device = context.device(key) else { self.connecting = nil; return }
+                guard let identity = context.identity else {
+                    self.takeBack()
+                    self.problems[key] = tr("This Mac has no device key yet. Pair the Macs first.")
+                    return
+                }
+                if device.reachable {
+                    do {
+                        let out = try await MicrophoneOut.open(device, identity: identity, name: context.name, listening: context.listening, again: again)
+                        // Taken back meanwhile: the other Mac may have taken it already, and is told.
+                        guard !Task.isCancelled, self.lentTo == key else { out.end(); return }
+                        self.connecting = nil
+                        self.link(out, key: key)
+                        return
+                    } catch let refusal as MicrophoneRefusal {
+                        guard !Task.isCancelled, self.lentTo == key else { return }
+                        guard refusal.wait else {
+                            self.takeBack()
+                            self.problems[key] = refusal.message
+                            return
+                        }
+                        self.notes[key] = Note(text: refusal.message, installing: true)
+                        pause = 2
+                    } catch {
+                        guard !Task.isCancelled, self.lentTo == key else { return }
+                        self.notes[key] = Note(text: error.localizedDescription, installing: false)
                     }
                 }
-            } catch {
-                guard let self, self.opening == device.key else { return }
-                self.opening = nil
-                self.problems[device.key] = error.localizedDescription
+                again = true
+                try? await Task.sleep(nanoseconds: pause * 1_000_000_000)
+                if self.notes[key]?.installing != true { pause = min(pause * 2, 30) }
             }
         }
     }
 
-    func stop() {
-        opening = nil
+    private func link(_ out: MicrophoneOut, key: String) {
+        self.out = out
+        linked = true
+        linkedAt = Date()
+        notes[key] = nil
+        problems[key] = nil
+        out.whenWantChanges { [weak self] in
+            Task { @MainActor in self?.follow(out) }
+        }
+        // Registered after the link is up; an end that came meanwhile is told at once. A link that
+        // ends soon after it was made is made again only after a while, not at once and on and on.
+        out.whenEnded { [weak self] in
+            Task { @MainActor in
+                guard let self, self.out === out else { return }
+                let quick = Date().timeIntervalSince(self.linkedAt) < 10
+                self.unlink()
+                if self.lentTo == key { self.lend(key, again: true, after: quick ? 10 : 1) }
+            }
+        }
+        // The lease: the other Mac's word that an app records runs out unless it is said again.
+        leaseCheck = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                self?.follow(out)
+            }
+        }
+        follow(out)
+    }
+
+    /// An app on the other Mac starts or stops recording, or its word ran out: this Mac's microphone follows.
+    private func follow(_ out: MicrophoneOut) {
+        guard self.out === out, let key = lentTo else { return }
+        guard out.isWanted else { stopCapture(); return }
+        guard capture == nil else { return }
+        do {
+            try startCapture(into: out, microphone: context?()?.microphone ?? "")
+            live = true
+            problems[key] = nil
+        } catch {
+            problems[key] = error.localizedDescription
+        }
+    }
+
+    private func stopCapture() {
         drain?.cancel()
         drain = nil
         capture?.stop()
         capture = nil
-        out?.whenEnded(nil)
-        out?.close()
-        out = nil
-        sendingTo = nil
-    }
-
-    /// Only what is still allowed goes on: this Mac's microphone to a Mac still in the list, and a
-    /// Mac's microphone here while that Mac may still type here (as another Mac's view of this screen).
-    func keep(sendingTo allowedOut: Set<String>, receivingFrom allowedIn: Set<String>) {
-        if let key = sendingTo ?? opening, !allowedOut.contains(key) { stop() }
-        if let key = receivingFrom, !allowedIn.contains(key) { endReceiving() }
+        live = false
     }
 
     /// The microphone dictation uses (the locked one, or the system's), every hardware cycle (an
-    /// engine tap waits for 100 ms), at 48 kHz mono, 10 ms a frame. The audio thread only copies
-    /// into a ring made beforehand, and never waits; a timer off that thread converts and sends.
+    /// engine tap waits for 100 ms), at 48 kHz mono, 10 ms a frame. Always a device named here, never
+    /// left to the system's default, which could become out Mic meanwhile; and never out Mic itself,
+    /// another Mac's microphone: then this Mac's own one. The audio thread only copies into a ring
+    /// made beforehand, and never waits; a timer off that thread converts and sends.
     private func startCapture(into out: MicrophoneOut, microphone: String) throws {
         let engine = AVAudioEngine()
-        if !microphone.isEmpty {
-            guard let id = Self.device(uid: microphone), let unit = engine.inputNode.audioUnit else {
-                throw VoiceError(tr("Locked microphone not connected"))
+        var chosen = microphone.isEmpty ? (Microphone.systemDefault()?.uid ?? "") : microphone
+        if chosen.isEmpty || chosen == MicWire.micUID {
+            let own = Microphone.available().filter { $0.uid != MicWire.micUID }
+            guard let pick = own.first(where: { $0.uid.localizedCaseInsensitiveContains("BuiltIn") }) ?? own.first else {
+                throw VoiceError(tr("This Mac has no microphone of its own to lend."))
             }
-            try Self.use(id, on: unit)
+            chosen = pick.uid
         }
+        guard let id = Self.device(uid: chosen), let unit = engine.inputNode.audioUnit else {
+            throw VoiceError(tr("Locked microphone not connected"))
+        }
+        try Self.use(id, on: unit)
+        out.beginSession()
         // The device's own format: after a change of device the node's output format is still the old one's.
         let input = engine.inputNode.inputFormat(forBus: 0)
         guard input.sampleRate > 0,
@@ -136,17 +299,21 @@ final class MicrophoneLink: ObservableObject {
 
     // MARK: Receiving
 
-    /// Another Mac's microphone, played into out Mic's feed and nowhere else; a new one takes the
-    /// place of the last.
+    /// Another Mac's microphone, lent here: played into out Mic's feed and nowhere else, and out Mic
+    /// made this Mac's input, so that every app that records hears it. Whether an app records from
+    /// out Mic is told to the lending Mac as it changes, and again every two seconds. A link of the
+    /// same lending coming back takes the place of the last one, and leaves the input as it is.
     func adopt(_ input: MicrophoneIn) {
-        endReceiving()
+        giveBackLater?.cancel()
+        endReceiving(input: .keep)
         let jitter = MicJitter(milliseconds: 60)
         let engine = AVAudioEngine()
         guard let feed = Self.device(uid: MicWire.feedUID), let unit = engine.outputNode.audioUnit,
               let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: MicWire.rate, channels: 1, interleaved: false),
               (try? Self.use(feed, on: unit)) != nil else {
-            // Never the speakers: without the feed, nothing is played.
+            // Never the speakers: without the feed, nothing is played, and the input goes back.
             input.close()
+            Self.giveBackInput(); inputTakenFor = nil
             return
         }
         let source = AVAudioSourceNode(format: mono) { _, _, frames, list -> OSStatus in
@@ -156,25 +323,157 @@ final class MicrophoneLink: ObservableObject {
         }
         engine.attach(source)
         engine.connect(source, to: engine.mainMixerNode, format: mono)
-        do { try engine.start() } catch { input.close(); return }
+        guard (try? engine.start()) != nil else {
+            input.close()
+            Self.giveBackInput(); inputTakenFor = nil
+            return
+        }
         playback = engine
         inbound = input
+        self.jitter = jitter
         receivingFrom = input.key
+        // Without knowing when apps record, the other Mac's microphone would never turn on.
+        guard watchUse() else { endReceiving(); return }
+        if inputTakenFor != input.key {
+            Self.giveBackInput()
+            inputTakenFor = takeInput() ? input.key : nil
+        }
+        renewUse = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, self.inbound === input, let told = self.toldUse else { return }
+                input.want(told)
+            }
+        }
         Task.detached {
             while let frame = await input.next() { jitter.put(at: frame.at, samples: frame.samples) }
             await MainActor.run { [weak self] in
                 guard let self, self.inbound === input else { return }
-                self.endReceiving()
+                // Taken back: the input goes back now. The link lost: out Mic stays the input for
+                // half a minute, so that apps here do not switch back and forth while it comes back.
+                self.endReceiving(input: input.takenBack ? .giveBack : .giveBackLater)
             }
         }
     }
 
-    func endReceiving() {
+    enum Input { case giveBack, giveBackLater, keep }
+
+    func endReceiving(input afterwards: Input = .giveBack) {
+        unwatchUse()
+        renewUse?.cancel()
+        renewUse = nil
         inbound?.close()
         inbound = nil
         playback?.stop()
         playback = nil
+        jitter = nil
         receivingFrom = nil
+        heardHere = false
+        switch afterwards {
+        case .giveBack:
+            giveBackLater?.cancel()
+            Self.giveBackInput()
+            inputTakenFor = nil
+        case .giveBackLater:
+            giveBackLater?.cancel()
+            giveBackLater = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard !Task.isCancelled, let self, self.inbound == nil else { return }
+                Self.giveBackInput()
+                self.inputTakenFor = nil
+            }
+        case .keep: break
+        }
+    }
+
+    /// Another Mac would lend its microphone here. Another Mac's is lent here already: no, until it
+    /// is taken back there. out Mic not installed: its install is asked for here, with this Mac's
+    /// password, and the lending Mac waits and asks again; after a no to the password, not again by
+    /// that Mac's asking by itself, and by no Mac's for a minute.
+    func answer(key: String, from asker: String, again: Bool, here: String) -> MicrophoneAnswer {
+        if let current = inbound, current.key != key {
+            return .no(tr("%@’s microphone is lent to %@ already. Take it back there first.", current.name, here))
+        }
+        if Self.device(uid: MicWire.feedUID) != nil { return .yes }
+        let waiting = MicrophoneAnswer.wait(tr("out Mic is being installed on %@. Type its password in the window on its screen.", here))
+        if installing { return waiting }
+        if let failed = installFailedAt, again || Date().timeIntervalSince(failed) < 60 {
+            return .no(tr("out Mic was not installed on %@. Click the microphone button again in a minute to be asked for its password once more, or install it there in Settings, under Audio and shortcut.", here))
+        }
+        guard Self.bundledDriver != nil else { return .no(tr("out on the other Mac cannot take a microphone.")) }
+        install(for: asker)
+        return waiting
+    }
+
+    /// out Mic becomes this Mac's input; the input it was is kept, to go back to afterwards. Nothing
+    /// is switched when that input could not be kept. Already out Mic: nothing to keep or switch.
+    private func takeInput() -> Bool {
+        guard let mic = Self.device(uid: MicWire.micUID), let current = Self.defaultInput() else { return false }
+        if current == mic { return true }
+        guard let uid = Microphone.available().first(where: { $0.id == current })?.uid, uid != MicWire.micUID else { return false }
+        UserDefaults.standard.set(uid, forKey: Self.previousInputKey)
+        guard Self.setDefaultInput(mic) else {
+            UserDefaults.standard.removeObject(forKey: Self.previousInputKey)
+            return false
+        }
+        return true
+    }
+
+    /// The input out Mic took the place of comes back, if out Mic is still the input; that input
+    /// gone (unplugged meanwhile), this Mac's own one, so that out Mic is not left as the input.
+    private static func giveBackInput() {
+        guard let previous = UserDefaults.standard.string(forKey: previousInputKey) else { return }
+        guard let mic = device(uid: MicWire.micUID), defaultInput() == mic else {
+            UserDefaults.standard.removeObject(forKey: previousInputKey)
+            return
+        }
+        let own = Microphone.available().filter { $0.uid != MicWire.micUID }
+        let back = device(uid: previous)
+            ?? own.first(where: { $0.uid.localizedCaseInsensitiveContains("BuiltIn") }).flatMap { device(uid: $0.uid) }
+            ?? own.first.flatMap { device(uid: $0.uid) }
+        guard let back, setDefaultInput(back) else { return }
+        UserDefaults.standard.removeObject(forKey: previousInputKey)
+    }
+
+    private static let inUseAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+                                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+
+    /// Whether any app records from out Mic, now and as it changes; false when that cannot be watched.
+    private func watchUse() -> Bool {
+        guard let mic = Self.device(uid: MicWire.micUID) else { return false }
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.tellUse() }
+        }
+        var address = Self.inUseAddress
+        guard AudioObjectAddPropertyListenerBlock(mic, &address, DispatchQueue.main, block) == noErr else { return false }
+        useListener = block
+        useDevice = mic
+        toldUse = nil
+        tellUse()
+        return true
+    }
+
+    private func unwatchUse() {
+        guard let block = useListener else { return }
+        var address = Self.inUseAddress
+        AudioObjectRemovePropertyListenerBlock(useDevice, &address, DispatchQueue.main, block)
+        useListener = nil
+        toldUse = nil
+    }
+
+    /// Said to the lending Mac when it changes. A recording here that ended takes what is left of
+    /// it out of the way, so the next one starts with nothing of it.
+    private func tellUse() {
+        guard let inbound, useListener != nil else { return }
+        var address = Self.inUseAddress
+        var running = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let inUse = AudioObjectGetPropertyData(useDevice, &address, 0, nil, &size, &running) == noErr && running != 0
+        heardHere = inUse
+        guard toldUse != inUse else { return }
+        toldUse = inUse
+        if !inUse { jitter?.reset() }
+        inbound.want(inUse)
     }
 
     // MARK: The driver
@@ -193,11 +492,6 @@ final class MicrophoneLink: ObservableObject {
         guard FileManager.default.fileExists(atPath: installedDriver.path), device(uid: MicWire.feedUID) != nil else { return .absent }
         if let bundled = bundledDriver, version(installedDriver) < version(bundled) { return .older }
         return .current
-    }
-
-    /// Why this Mac cannot take another Mac's microphone now, or nil.
-    nonisolated static func refusal() -> String? {
-        device(uid: MicWire.feedUID) == nil ? tr("out Mic is not installed on the other Mac. Install it there in Settings, under Audio and shortcut.") : nil
     }
 
     func refreshDriver() { driver = Self.driverState() }
@@ -220,13 +514,16 @@ final class MicrophoneLink: ObservableObject {
     """
 
     /// Puts the driver in the system's folder (the Mac's password, asked by macOS), or takes it out
-    /// with `remove`, and starts Core Audio again: every app's sound stops for a moment.
-    func install(remove: Bool = false) {
+    /// with `remove`, and starts Core Audio again: every app's sound stops for a moment. `asker`:
+    /// the Mac whose lending asked for it, named in the window.
+    func install(remove: Bool = false, for asker: String? = nil) {
         let bundled = Self.bundledDriver
         guard !installing, remove || bundled != nil else { return }
         installing = true
         let source = remove ? "" : bundled!.path
-        let prompt = remove ? tr("out is removing out Mic.") : tr("out is installing out Mic, a microphone that another of your Macs speaks into.")
+        let prompt = remove ? tr("out is removing out Mic.")
+            : asker.map { tr("out is installing out Mic, so that apps here can use %@’s microphone.", $0) }
+            ?? tr("out is installing out Mic, so that apps here can use the microphone of another of your Macs.")
         let script = Self.installer
         Task.detached {
             let process = Process()
@@ -241,8 +538,10 @@ final class MicrophoneLink: ObservableObject {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
             await MainActor.run { [weak self] in
-                self?.installing = false
-                self?.refreshDriver()
+                guard let self else { return }
+                self.installing = false
+                self.refreshDriver()
+                if !remove, self.driver == .absent, asker != nil { self.installFailedAt = Date() }
             }
         }
     }
@@ -260,6 +559,22 @@ final class MicrophoneLink: ObservableObject {
             AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<CFString>.size), pointer, &size, &id)
         }
         return status == 0 && id != 0 ? id : nil
+    }
+
+    nonisolated private static func defaultInput() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        return AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &id) == noErr && id != 0 ? id : nil
+    }
+
+    /// The system's input, as System Settings > Sound > Input sets it; no permission is asked for.
+    nonisolated private static func setDefaultInput(_ device: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var id = device
+        return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &id) == noErr
     }
 
     /// Points an engine's unit at a device, and reads it back: a refused switch would leave the

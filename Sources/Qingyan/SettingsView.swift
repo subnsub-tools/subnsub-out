@@ -401,7 +401,7 @@ private struct OutMicRow: View {
     @ObservedObject var link: MicrophoneLink
 
     var body: some View {
-        Row(tr("out Mic"), info: tr("A microphone on this Mac that another of your Macs speaks into. On that Mac, the microphone button beside this Mac in Multiple Macs sends its microphone here, and meeting apps here pick out Mic as their microphone. Installing it asks for this Mac's password; the sound of every app stops for a moment.")) {
+        Row(tr("out Mic"), info: tr("Lets apps on this Mac use the microphone of another of your Macs. On that Mac, the microphone button beside this Mac in Multiple Macs lends it here: out Mic becomes this Mac's input, and whenever an app here records, that Mac's microphone turns on. When it is taken back, the input goes back to what it was. Installing asks for this Mac's password, also when that button is first clicked; the sound of every app stops for a moment.")) {
             HStack(spacing: 6) {
                 if link.installing {
                     ProgressView().controlSize(.mini)

@@ -1152,8 +1152,16 @@ struct Checks {
         try check(out.allSatisfy { abs($0 - 0.5) < 0.001 }, "then the stream, as it was sent")
         for _ in 0..<20 { out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) } }
         try check(jitter.waited > 0 && out.allSatisfy { $0 == 0 }, "run dry: it waits in silence")
+        // The microphone on again (an app there records once more): silent until the fixed time
+        // behind has come in again, then played, rather than on the edge of running dry.
+        jitter.put(at: UInt64(3 * MicWire.block), samples: ones)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        try check(out.allSatisfy { $0 == 0 }, "after running dry, it fills again before playing")
+        jitter.put(at: UInt64(4 * MicWire.block), samples: ones)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        try check(out.allSatisfy { abs($0 - 0.5) < 0.001 }, "and then plays from where it stopped")
         // A burst far ahead, then nothing more for two seconds: caught up once the depth stays.
-        var frame = UInt64(3 * MicWire.block)
+        var frame = UInt64(5 * MicWire.block)
         for _ in 0..<100 { jitter.put(at: frame, samples: ones); frame += UInt64(MicWire.block) }
         let deep = jitter.depth
         for _ in 0..<420 {
@@ -1161,6 +1169,19 @@ struct Checks {
             out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
         }
         try check(deep > 900 && jitter.skipped >= 1 && jitter.depth < 100, "a depth that stays is caught up (\(Int(deep)) ms, then \(Int(jitter.depth)) ms)")
+        // The recording here ended: a frame of it still on the way is not played to the next one,
+        // which starts a session further on and plays once it has filled.
+        jitter.reset()
+        jitter.put(at: frame, samples: ones)
+        jitter.put(at: frame + UInt64(MicWire.block), samples: ones)
+        jitter.put(at: frame + UInt64(2 * MicWire.block), samples: ones)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        try check(out.allSatisfy { $0 == 0 }, "after a recording ended, what was left of it is not played")
+        let next = frame + MicrophoneOut.sessionGap
+        jitter.put(at: next, samples: ones)
+        jitter.put(at: next + UInt64(MicWire.block), samples: ones)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        try check(out.allSatisfy { abs($0 - 0.5) < 0.001 }, "the next recording plays from its start")
     }
 
     /// Every corner out draws itself is continuous (user 2026-11-27), written so rather than left to

@@ -206,6 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         timer?.invalidate()
         settings?.flushPersistence()
         controller?.suspend(); controller?.shortcut.stop(); controller?.screen.stop()
+        // The input out Mic took goes back; a microphone lent stays lent for the next launch.
+        controller?.microphone.close()
         PasteboardLease.general.restore()
         observations.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         menuObservations.forEach { NotificationCenter.default.removeObserver($0) }

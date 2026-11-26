@@ -1429,40 +1429,51 @@ struct RemoteSection: View {
                 .help(tr("Show %@’s screen and work it from here", device.label))
                 .accessibilityLabel(tr("Show %@’s screen", device.label))
             }
-            // This Mac's microphone as that Mac's out Mic (user 2026-11-27: a virtual microphone there, for meetings).
+            // This Mac's microphone lent to that Mac (user 2026-11-27: this Mac's microphone takes over the other Mac's):
+            // there it is out Mic, the input of every app, and it turns on here whenever an app there records.
             let link = controller.microphone
-            let sending = link.sendingTo == device.key
-            let micOpening = link.opening == device.key
+            let lent = link.lentTo == device.key
+            let micLive = lent && link.live
+            let micNote = lent && !link.linked ? link.notes[device.key] : nil
             Button { controller.toggleMicrophone(device) } label: {
-                Image(systemName: sending ? "mic.fill" : "mic")
+                Image(systemName: lent ? "mic.fill" : "mic")
                     .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(sending || micOpening ? Palette.accent : Palette.ink.opacity(0.8))
+                    .foregroundStyle(lent ? Palette.accent : Palette.ink.opacity(0.8))
                     .frame(width: 22, height: 18)
-                    .background(sending ? Palette.accent.opacity(0.16) : Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .background(micLive ? Palette.accent.opacity(0.3) : lent ? Palette.accent.opacity(0.14) : Color.primary.opacity(0.07),
+                                in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!device.reachable)
-            .help(sending ? tr("Stop sending this Mac's microphone to %@", device.label)
-                          : tr("Send this Mac's microphone to %@, where meeting apps pick it as out Mic", device.label))
-            .accessibilityLabel(sending ? tr("Stop sending this Mac's microphone to %@", device.label) : tr("Send this Mac's microphone to %@", device.label))
-            // That Mac's microphone is coming in here: a mark, not a control.
+            .disabled(!device.reachable && !lent)
+            .help(lent ? tr("Take this Mac's microphone back from %@", device.label)
+                       : tr("Lend this Mac's microphone to %@: it becomes the microphone of every app there, and turns on here whenever one of them records", device.label))
+            .accessibilityLabel(lent ? tr("Take this Mac's microphone back from %@", device.label) : tr("Lend this Mac's microphone to %@", device.label))
+            // That Mac's microphone is lent here: a mark, not a control; full while an app here records from it.
             if link.receivingFrom == device.key {
+                let heard = link.heardHere
                 Image(systemName: "waveform")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Palette.accent)
-                    .help(tr("%@’s microphone comes in here as out Mic", device.label))
-                    .accessibilityLabel(tr("%@’s microphone comes in here as out Mic", device.label))
+                    .foregroundStyle(heard ? Palette.accent : Palette.muted)
+                    .help(heard ? tr("An app here is recording from %@’s microphone", device.label) : tr("%@’s microphone is this Mac's input, as out Mic", device.label))
+                    .accessibilityLabel(heard ? tr("An app here is recording from %@’s microphone", device.label) : tr("%@’s microphone is this Mac's input, as out Mic", device.label))
             }
             Spacer(minLength: 6)
             let micProblem = link.problems[device.key]
-            Text(micOpening ? tr("Connecting…") : micProblem != nil ? tr("Microphone not sent") : status)
+            let micStatus: String? = micLive ? tr("Microphone in use")
+                : lent && link.linked ? tr("Microphone lent")
+                : micNote?.installing == true ? tr("Installing out Mic there…")
+                : lent ? tr("Connecting…")
+                : micProblem != nil ? tr("Microphone not lent") : nil
+            Text(micStatus ?? status)
                 .font(.system(size: 10.5))
-                .foregroundStyle(opening || micOpening ? Palette.accent : micProblem != nil || ok == false ? Color.orange : Palette.muted)
+                .foregroundStyle(opening || micLive || micNote != nil ? Palette.accent : micProblem != nil || ok == false ? Color.orange : Palette.muted)
                 .lineLimit(1).truncationMode(.tail)
         }
         .padding(.horizontal, 6).padding(.vertical, 4.5)
-        .help(controller.microphone.problems[device.key] ?? controller.peerStatus[device.key] ?? "")
+        .help(controller.microphone.problems[device.key]
+              ?? (controller.microphone.lentTo == device.key && !controller.microphone.linked ? controller.microphone.notes[device.key]?.text : nil)
+              ?? controller.peerStatus[device.key] ?? "")
         .padding(.top, 6)
     }
 }

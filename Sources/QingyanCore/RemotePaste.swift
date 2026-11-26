@@ -950,11 +950,12 @@ public final class RemoteReceiver {
     /// type here, reached through the Monitor helper): the connection is the screen session's from
     /// here on (ScreenWire), with that Mac's key and name. Not set: no other Mac is shown this screen.
     public var onScreen: ((NWConnection, String, String) -> Void)?
-    /// A trusted Mac allowed to type here sends its microphone, to come out here as out Mic: the
+    /// A trusted Mac allowed to type here lends its microphone, to come out here as out Mic: the
     /// connection is the stream's from here on. Not set: this Mac takes no microphone.
     public var onMicrophone: ((MicrophoneIn) -> Void)?
-    /// Why this Mac cannot take a microphone now (out Mic not installed), or nil when it can.
-    public var microphoneRefusal: (() -> String?)?
+    /// Whether this Mac can take it now, given the lending Mac's name and whether it asks again by
+    /// itself: out Mic not installed, its install is asked for here and the other Mac waits.
+    public var microphoneAnswer: ((_ key: String, _ from: String, _ again: Bool) async -> MicrophoneAnswer)?
     /// The connections of the Macs whose text is on the way, the latest knock last.
     private var incoming: [(connection: NWConnection, from: String)] = []
 
@@ -1242,10 +1243,17 @@ public final class RemoteReceiver {
                      "arm64": ScreenTunnel.appleSilicon], .screen)
         }
         if object["mic"] as? String == "open" {
-            guard onMicrophone != nil else { return refuse(tr("out on the other Mac cannot take a microphone.")) }
-            if let refusal = microphoneRefusal?() { return refuse(refusal) }
+            guard onMicrophone != nil, let microphoneAnswer else { return refuse(tr("out on the other Mac cannot take a microphone.")) }
+            // An earlier out streams at once and only closes when it stops: it would hold this Mac's input.
+            guard (object["v"] as? Int ?? 1) >= 2 else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }
+            switch await microphoneAnswer(channel.peerKey, trusted(channel.peerKey)?.label ?? channel.peerName, object["again"] as? Bool == true) {
+            case .yes: break
+            case .wait(let message): return (["ok": false, "message": message, "wait": true], .close)
+            case .no(let message): return refuse(message)
+            }
             expire(channel.connection, after: nil)
-            return (["ok": true], .microphone)
+            // This Mac says when its apps record; the other Mac's microphone runs only then.
+            return (["ok": true, "demand": true], .microphone)
         }
         if let nonce = object["arm"] as? Int {
             guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }
