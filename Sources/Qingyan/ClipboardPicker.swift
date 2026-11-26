@@ -138,9 +138,13 @@ final class ClipboardPicker: NSObject, NSWindowDelegate {
     /// ⌘V to the app in front, once the panel has let go of the keys, while that app is still in
     /// front and the clipboard still holds the entry. Without Accessibility, or with out itself in
     /// front, the entry is left on the clipboard.
-    private static func pasteIntoFront() {
+    /// With a target and a count: the app the paste is for and the clipboard as it was put there;
+    /// no paste when another app is in front or the clipboard has changed since.
+    static func pasteIntoFront(expecting target: pid_t? = nil, count expected: Int? = nil) {
         guard AXIsProcessTrusted(), let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() else { return }
         let pid = front.processIdentifier, count = NSPasteboard.general.changeCount
+        if let target, pid != target { return }
+        if let expected, count != expected { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(80))
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, NSPasteboard.general.changeCount == count,

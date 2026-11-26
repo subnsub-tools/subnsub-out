@@ -80,6 +80,7 @@ final class PointerExitView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var settings: SettingsStore!
     private var controller: DictationController!
+    private var historyKeys: Any?
     private var window: NSWindow?
     private var overlay: NSPanel?
     /// The compact floating bar, shown in place of the panel when it is chosen (CompactBar).
@@ -338,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             window.delegate = self
             self.window = window
             followDrawer(of: window)
+            watchHistoryKeys()
         }
         UserDefaults.standard.set(true, forKey: "panelOpen")
         defer { relocateOverlayIfObstructed() }
@@ -388,6 +390,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         openSubscription = opened.filter { $0 }.sink { [weak self, weak window] _ in
             self?.wishedHeight = Self.unlimited
             DispatchQueue.main.async { if let self, let window { self.arrange(window, gliding: false) } }
+        }
+    }
+
+    /// History's keys, while it shows in the panel and the panel has the keyboard. Text being
+    /// composed in the search field (an input method's candidates) keeps its keys.
+    private func watchHistoryKeys() {
+        guard historyKeys == nil else { return }
+        historyKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let window = self.window, event.window === window, self.settings.historyOpen,
+                  self.settings.page != .settings else { return event }
+            if let editor = window.firstResponder as? NSTextView {
+                // The search field's own: not another field, not text being composed.
+                guard !editor.hasMarkedText(), self.controller.historyPage.searchFocused else { return event }
+            } else if NSApp.isFullKeyboardAccessEnabled {
+                // A control may have the keyboard: its Return and arrows stay its own.
+                return event
+            }
+            return self.controller.historyKey(event) ? nil : event
         }
     }
 

@@ -289,7 +289,7 @@ public final class ClipboardHistory: ObservableObject {
         guard let source = CGImageSourceCreateWithData(image as CFData, nil) else { return nil }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                         kCGImageSourceCreateThumbnailWithTransform: true,
-                                        kCGImageSourceThumbnailMaxPixelSize: 160]
+                                        kCGImageSourceThumbnailMaxPixelSize: 400]
         guard let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return NSBitmapImageRep(cgImage: small).representation(using: .jpeg, properties: [.compressionFactor: 0.7])
     }

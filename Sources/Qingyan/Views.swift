@@ -740,10 +740,9 @@ struct SideDrawer: View {
                 .font(.system(size: 11.5, weight: .semibold))
             Text(showingSettings ? tr("Settings") : tr("History"))
                 .font(.system(size: 13, weight: .bold))
-            if !showingSettings && !settings.history.isEmpty {
-                Text(settings.history.count == 1 ? tr("1 record") : tr("%ld records", settings.history.count)).font(.system(size: 11)).foregroundStyle(Palette.muted)
-            }
+            if !showingSettings { HistoryBarCount(clipboard: controller.clipboard, settings: settings) }
             Spacer()
+            if !showingSettings && settings.preferences.clipHistory { ClipboardPauseButton(clipboard: controller.clipboard) }
             HeaderIconButton(
                 symbol: "xmark",
                 active: false,
@@ -763,13 +762,23 @@ struct SideDrawer: View {
         ZStack(alignment: .topLeading) {
             Group {
                 if windowed {
-                    ScrollView {
-                        HistorySection(settings: settings, controller: controller, full: true, bare: true)
-                            .padding(.horizontal, 10).padding(.top, top).padding(.bottom, 10)
+                    // A row chosen with the keys is scrolled into view.
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            HistoryPage(model: controller.historyPage, settings: settings, controller: controller,
+                                        shelve: { controller.shelf.put($0, from: controller.clipboard) })
+                                .padding(.horizontal, 10).padding(.top, top).padding(.bottom, 10)
+                        }
+                        .scrollIndicators(.never)
+                        .onReceive(controller.historyPage.$reveal) { id in
+                            guard let id else { return }
+                            proxy.scrollTo(id)
+                            controller.historyPage.reveal = nil
+                        }
                     }
-                    .scrollIndicators(.never)
                 } else {
-                    HistorySection(settings: settings, controller: controller, full: true)
+                    HistoryPage(model: controller.historyPage, settings: settings, controller: controller,
+                                shelve: { controller.shelf.put($0, from: controller.clipboard) })
                         .padding(.horizontal, 10).padding(.bottom, 10)
                 }
             }
@@ -938,14 +947,6 @@ struct MainView: View {
             }
             .disabled(controller.busy)
             .padding(.leading, 3)
-            HeaderIconButton(
-                symbol: "list.clipboard",
-                active: false,
-                helpText: tr("Clipboard History (⌃⌥C)"),
-                accessibility: tr("Open the clipboard history")
-            ) {
-                controller.picker.show()
-            }
             .padding(.leading, 3)
             HeaderIconButton(
                 symbol: PanelSection.history.symbol,
@@ -1414,133 +1415,6 @@ struct RemoteSection: View {
         .padding(.horizontal, 6).padding(.vertical, 4.5)
         .help(controller.peerStatus[device.key] ?? "")
         .padding(.top, 6)
-    }
-}
-
-struct HistorySection: View {
-    @ObservedObject var settings: SettingsStore
-    @ObservedObject var controller: DictationController
-    var full: Bool
-    var fills = false
-    /// What holds it scrolls it whole (the drawer): the list is as tall as its rows.
-    var bare = false
-    @State private var query = ""
-    @State private var confirm = false
-    @State private var expanded: Set<HistoryEntry.ID> = []
-    private static let recent = 4
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return f
-    }()
-
-    private var entries: [HistoryEntry] {
-        guard full else { return Array(settings.history.prefix(Self.recent)) }
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return settings.history }
-        return settings.history.filter { $0.text.localizedCaseInsensitiveContains(trimmed) }
-    }
-
-    var body: some View {
-        let shown = entries
-        VStack(alignment: .leading, spacing: 7) {
-            if full {
-                HStack(spacing: 6) {
-                    TextField(tr("Search History…"), text: $query).glassField()
-                    Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton())
-                        .disabled(settings.history.isEmpty || controller.busy || controller.retryingID != nil)
-                }
-            }
-            if !controller.networkAvailable {
-                Label(tr("Offline · Recordings are kept on this Mac and transcribed once online"), systemImage: "wifi.slash")
-                    .font(.system(size: 10.5)).foregroundStyle(Palette.muted)
-            }
-            if !settings.historyMessage.isEmpty {
-                words(settings.historyMessage, color: .orange)
-            }
-            if settings.history.isEmpty {
-                caption(tr("No records yet. You can record at any time, even with no text field in focus; results and audio waiting to be transcribed are kept on this Mac."))
-            } else if shown.isEmpty {
-                caption(tr("No matching records."))
-            } else if bare {
-                lazyList(shown)
-            } else if fills {
-                ScrollView { lazyList(shown) }.scrollIndicators(.never).frame(maxHeight: .infinity)
-            } else if full {
-                FittedScroll(maxHeight: 380) { lazyList(shown) }
-            } else {
-                lazyList(shown)
-            }
-        }.alert(tr("Clear all History and audio waiting to be transcribed on this Mac?"), isPresented: $confirm) {
-            Button(tr("Cancel"), role: .cancel) {}
-            Button(tr("Clear"), role: .destructive) { settings.clearHistory() }
-        }
-    }
-
-    private func lazyList(_ shown: [HistoryEntry]) -> some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(shown.enumerated()), id: \.element.id) { index, entry in
-                if index > 0 { Divider() }
-                row(entry)
-            }
-        }
-    }
-
-    private func row(_ entry: HistoryEntry) -> some View {
-        let open = expanded.contains(entry.id)
-        let long = entry.text.count > 64 || entry.text.filter({ $0 == "\n" }).count > 2
-        let placeholder = entry.state == .recording ? tr("Recording. The audio is being saved on this Mac…") : tr("The audio is saved on this Mac, waiting to be transcribed.")
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: entry.mode.symbol)
-                Text(Self.dateFormatter.string(from: entry.date))
-                Text("\(max(1, Int(entry.seconds.rounded()))) s")
-                if entry.state != .completed { Text(entry.state.title).foregroundStyle(.orange) }
-                Spacer(minLength: 4)
-                if !full {
-                    if entry.canRetry {
-                        Button(tr("Retry")) { controller.retry(entry.id) }
-                            .buttonStyle(QuietButton())
-                            .disabled(controller.busy || controller.retryingID != nil || !(controller.retryRequest(entry).map { controller.canRun($0) } ?? false))
-                    }
-                    CopyActionButton(text: entry.text)
-                }
-            }.font(.system(size: 10.5)).foregroundStyle(Palette.muted)
-            CopyableText(
-                entry.text.isEmpty ? placeholder : entry.text,
-                copyValue: entry.text,
-                font: .system(size: 12),
-                color: entry.text.isEmpty ? Palette.muted : Palette.ink,
-                lineSpacing: 3,
-                lineLimit: full ? (open ? nil : 4) : 3,
-                block: !entry.text.isEmpty,
-                enabled: !entry.text.isEmpty
-            )
-            if let problem = entry.problem {
-                words(problem, size: 10.5, color: .orange.opacity(0.9), lineLimit: full ? nil : 2)
-            }
-            if full {
-                if entry.state != .completed && !entry.text.isEmpty {
-                    caption(tr("This is the text recognized so far. It is updated when a retry finishes."))
-                }
-                HStack(spacing: 6) {
-                    Spacer()
-                    if long {
-                        Button(open ? tr("Show less") : tr("Show more")) {
-                            if open { expanded.remove(entry.id) } else { expanded.insert(entry.id) }
-                        }.buttonStyle(QuietButton())
-                    }
-                    if entry.canRetry {
-                        Button(tr("Retry")) { controller.retry(entry.id) }.buttonStyle(SolidButton())
-                            .disabled(controller.busy || controller.retryingID != nil || !(controller.retryRequest(entry).map { controller.canRun($0) } ?? false))
-                    }
-                    CopyActionButton(text: entry.text)
-                    Button(tr("Delete")) { settings.removeHistory(id: entry.id) }.buttonStyle(QuietButton())
-                        .disabled(entry.state == .recording || entry.state == .processing)
-                }
-            }
-        }.padding(.vertical, 7)
     }
 }
 

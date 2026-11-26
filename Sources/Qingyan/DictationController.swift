@@ -139,6 +139,8 @@ final class DictationController: ObservableObject {
     /// What is copied on this Mac, and the window it is chosen from (Control + Option + C).
     let clipboard: ClipboardHistory
     let picker: ClipboardPicker
+    /// The History page of the panel's drawer.
+    let historyPage: HistoryPageModel
     /// This Mac's screen on the owner's Monitor page.
     let screen = ScreenHost()
     @Published var screenState = ScreenHost.State.off
@@ -283,6 +285,7 @@ final class DictationController: ObservableObject {
                 .appendingPathComponent("Qingyan", isDirectory: true) ?? FileManager.default.temporaryDirectory
         clipboard = ClipboardHistory(directory: support.appendingPathComponent("Clipboard", isDirectory: true))
         picker = ClipboardPicker(history: clipboard)
+        historyPage = HistoryPageModel(clipboard: clipboard)
         updater = Updater(settings: settings)
         // Macs paired before put went through the Monitor helper are not the owner's Macs as the
         // helper knows them: they go before anything dials them.
@@ -1617,6 +1620,83 @@ final class DictationController: ObservableObject {
     private var typingJob: Task<Void, Never>?
     private var lastOtherApp: NSRunningApplication?
     private var activationObserver: NSObjectProtocol?
+
+    /// Puts a copied item back and pastes it into the app in front, from History. Clicked there,
+    /// out is in front: the app that was in front before it gets the paste.
+    func pasteClip(_ entry: ClipEntry, plain: Bool) {
+        pasteBack { clipboard.put(entry, plain: plain) }
+    }
+
+    /// The same for a recording's text, from History.
+    func pasteText(_ text: String) {
+        // While a dictation's own paste holds the clipboard, the text waits: nothing is pasted then.
+        pasteBack {
+            ClipboardCopy.copy(text)
+            return NSPasteboard.general.string(forType: .string) == text
+        }
+    }
+
+    func pasteHistory(_ item: HistoryItem, plain: Bool) {
+        switch item {
+        case .copied(let entry): pasteClip(entry, plain: plain)
+        case .voice(let entry):
+            if entry.text.isEmpty { NSSound.beep() } else { pasteText(entry.text) }
+        }
+    }
+
+    /// Says the item chosen with the keys to VoiceOver, which the keys do not move.
+    private func announce(_ item: HistoryItem) {
+        let words: String
+        switch item {
+        case .copied(let entry): words = entry.kind == .image ? tr("Image") : String(entry.preview.prefix(160))
+        case .voice(let entry): words = entry.text.isEmpty ? entry.state.title : String(entry.text.prefix(160))
+        }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: words, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    /// Keys on History while it shows: Up and Down choose, Return pastes the chosen item (Shift +
+    /// Return as plain text), Command + 1 to 9 one of the first nine. False for a key it leaves alone.
+    func historyKey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+        let shown = historyPage.shown(voice: settings.history)
+        guard !shown.isEmpty else { return false }
+        let chosen = shown.firstIndex { $0.id == historyPage.selection }
+        switch event.keyCode {
+        case 125, 126:
+            guard flags.isEmpty else { return false }
+            let next = event.keyCode == 125 ? chosen.map { min($0 + 1, shown.count - 1) } ?? 0 : chosen.map { max($0 - 1, 0) } ?? 0
+            historyPage.selection = shown[next].id
+            historyPage.reveal = shown[next].id
+            announce(shown[next])
+            return true
+        case 36, 76:
+            guard flags.isEmpty || flags == .shift, let chosen else { return false }
+            pasteHistory(shown[chosen], plain: flags == .shift)
+            return true
+        default:
+            guard flags == .command, let typed = event.charactersIgnoringModifiers, let digit = Int(typed),
+                  (1...9).contains(digit), digit <= shown.count else { return false }
+            historyPage.selection = shown[digit - 1].id
+            pasteHistory(shown[digit - 1], plain: false)
+            return true
+        }
+    }
+
+    private func pasteBack(_ put: () -> Bool) {
+        guard put() else { NSSound.beep(); return }
+        guard NSApp.isActive, let other = lastOtherApp, !other.isTerminated else { ClipboardPicker.pasteIntoFront(); return }
+        // Only into that app, and only what was just put on the clipboard: an app that comes in
+        // front meanwhile, or a copy made meanwhile, gets no paste.
+        let pid = other.processIdentifier, count = NSPasteboard.general.changeCount
+        other.activate()
+        Task { @MainActor in
+            for _ in 0..<20 where NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            ClipboardPicker.pasteIntoFront(expecting: pid, count: count)
+        }
+    }
 
     /// Types the clipboard's text key by key into the field in front: for fields and screens that
     /// refuse a paste. Line breaks are typed as Return; a password field is typed into too (both the
