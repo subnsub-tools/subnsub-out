@@ -16,10 +16,15 @@ public struct Platform: Equatable, Identifiable, Sendable {
         case alibaba
         /// The system's speech model, on this Mac; it cannot polish text.
         case onDevice
+        /// A recognition service with protocols of its own (OwnWires.swift): a live socket while you
+        /// speak, or one request with the finished recording. Text, where it has models, goes
+        /// through `/chat/completions` at `base`.
+        case own
     }
 
     public let id: String
     /// The name in English: a brand, or what the service whose address the user types in is called.
+    /// Shown as it is in every language (user 2026-11-26: the services by their English names).
     public let englishName: String
     /// Empty for the platform whose address the user types in.
     public let base: String
@@ -30,17 +35,20 @@ public struct Platform: Equatable, Identifiable, Sendable {
     public let wire: Wire
     /// OpenAI itself: recognition streams over the realtime socket, text uses the Responses API.
     public var live: Bool { wire == .openAI }
-    /// Whether this platform can polish text — everything but this Mac's own speech model.
-    public var writes: Bool { wire != .onDevice }
+    /// Whether this platform can polish text: everything but this Mac's own speech model and the
+    /// recognition services that have no text models.
+    public var writes: Bool { wire != .onDevice && (wire != .own || !textModels.isEmpty) }
     /// Whether this platform needs an API key — everything but this Mac and the user's own endpoint.
     public var needsKey: Bool { wire != .onDevice && self != .custom }
     /// Whether the vocabulary may be sent along with the audio as a `prompt`.
     public let hints: Bool
     /// What a key looks like, or a note in English for a service that may need none.
     public let englishKeyHint: String
+    /// The `language` field sent with an upload to `/audio/transcriptions`; empty sends none.
+    public var uploadLanguage = ""
 
-    /// The name as the user reads it, in the language chosen in Settings.
-    public var name: String { tr(englishName) }
+    /// The name as the user reads it: the English one, in every language.
+    public var name: String { englishName }
     /// Shown in the empty key field, in the language chosen in Settings.
     public var keyHint: String { tr(englishKeyHint) }
 
@@ -51,7 +59,7 @@ public struct Platform: Equatable, Identifiable, Sendable {
     /// region or a workspace's own domain.
     public static let alibaba = Platform(id: "alibaba", englishName: "Alibaba Cloud Model Studio",
         base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        speechModels: ["qwen3-asr-flash-realtime"], textModels: ["qwen3.8-flash", "qwen-plus"],
+        speechModels: ["qwen3-asr-flash-realtime"] + FunASRWire.models, textModels: ["qwen3.8-flash", "qwen-plus"],
         wire: .alibaba, hints: true, englishKeyHint: "sk-…")
     /// The system's own speech model, on this Mac (macOS 26 and later): no key, nothing is sent
     /// anywhere, and the "model" is the spoken language, one per recording.
@@ -68,7 +76,54 @@ public struct Platform: Equatable, Identifiable, Sendable {
     public static let custom = Platform(id: "custom", englishName: "Custom", base: "", speechModels: [], textModels: [],
         wire: .generic, hints: true, englishKeyHint: "leave empty if none is needed")
 
-    public static let all = [openAI, alibaba, thisMac, groq, siliconFlow, custom]
+    // Recognition services with protocols of their own (OwnWires.swift): `base` is their API's
+    // host, and the address of `/chat/completions` for those that also polish text.
+    public static let assemblyAI = Platform(id: "assemblyai", englishName: "AssemblyAI", base: "https://streaming.assemblyai.com",
+        speechModels: AssemblyAIWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: AssemblyAIWire.keyFormat)
+    public static let azure = Platform(id: "azure", englishName: "Azure AI Speech", base: "https://api.cognitive.microsoft.com",
+        speechModels: AzureWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: AzureWire.keyFormat)
+    public static let baidu = Platform(id: "baidu", englishName: "Baidu AI Cloud", base: "https://aip.baidubce.com",
+        speechModels: BaiduWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: BaiduWire.keyFormat)
+    public static let cartesia = Platform(id: "cartesia", englishName: "Cartesia", base: "https://api.cartesia.ai",
+        speechModels: CartesiaWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: CartesiaWire.keyFormat)
+    public static let deepgram = Platform(id: "deepgram", englishName: "Deepgram", base: "https://api.deepgram.com",
+        speechModels: DeepgramWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: DeepgramWire.keyFormat)
+    public static let elevenLabs = Platform(id: "elevenlabs", englishName: "ElevenLabs", base: "https://api.elevenlabs.io",
+        speechModels: ElevenLabsWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: ElevenLabsWire.keyFormat)
+    /// Gemini: the live transcription model over its socket, the others sent the finished recording;
+    /// text through the OpenAI-compatible address.
+    public static let gemini = Platform(id: "gemini", englishName: "Google Gemini",
+        base: "https://generativelanguage.googleapis.com/v1beta/openai",
+        speechModels: GeminiLiveWire.models + GeminiWire.models, textModels: ["gemini-3.6-flash", "gemini-3.5-flash-lite"],
+        wire: .own, hints: false, englishKeyHint: GeminiWire.keyFormat)
+    public static let gladia = Platform(id: "gladia", englishName: "Gladia", base: "https://api.gladia.io",
+        speechModels: GladiaWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: GladiaWire.keyFormat)
+    public static let iFlytek = Platform(id: "iflytek", englishName: "iFlytek", base: "https://office-api-ast-dx.iflyaisol.com",
+        speechModels: IFlytekWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: IFlytekWire.keyFormat)
+    public static let mistral = Platform(id: "mistral", englishName: "Mistral AI", base: "https://api.mistral.ai/v1",
+        speechModels: MistralWire.models, textModels: ["mistral-small-latest", "ministral-8b-latest"],
+        wire: .own, hints: false, englishKeyHint: MistralWire.keyFormat)
+    public static let soniox = Platform(id: "soniox", englishName: "Soniox", base: "https://stt-rt.soniox.com",
+        speechModels: SonioxWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: SonioxWire.keyFormat)
+    public static let speechmatics = Platform(id: "speechmatics", englishName: "Speechmatics", base: "https://global.rt.speechmatics.com",
+        speechModels: SpeechmaticsWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: SpeechmaticsWire.keyFormat)
+    public static let tencent = Platform(id: "tencent", englishName: "Tencent Cloud", base: "https://asr.cloud.tencent.com",
+        speechModels: TencentWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: TencentWire.keyFormat)
+    public static let volcano = Platform(id: "volcengine", englishName: "Volcano Engine", base: "https://openspeech.bytedance.com",
+        speechModels: VolcengineWire.models, textModels: [], wire: .own, hints: false, englishKeyHint: VolcengineWire.keyFormat)
+    // More services with the common interface.
+    public static let deepInfra = Platform(id: "deepinfra", englishName: "DeepInfra", base: "https://api.deepinfra.com/v1/openai",
+        speechModels: ["Qwen/Qwen3-ASR-1.7B", "openai/whisper-large-v3-turbo", "openai/whisper-large-v3"],
+        textModels: ["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3-Flash", "Qwen/Qwen3.6-35B-A3B"],
+        wire: .generic, hints: true, englishKeyHint: "\u{2026}")
+    /// Together takes the recording as English unless told otherwise.
+    public static let together = Platform(id: "together", englishName: "Together AI", base: "https://api.together.ai/v1",
+        speechModels: ["openai/whisper-large-v3"], textModels: ["Qwen/Qwen3.8-Flash", "deepseek-ai/DeepSeek-V4.1-Flash"],
+        wire: .generic, hints: true, englishKeyHint: "\u{2026}", uploadLanguage: "auto")
+
+    public static let all = [openAI, alibaba, thisMac, assemblyAI, azure, baidu, cartesia, deepgram, deepInfra, elevenLabs,
+                             gemini, gladia, groq, iFlytek, mistral, siliconFlow, soniox, speechmatics, tencent, together,
+                             volcano, custom]
 
     /// The platforms that can recognize speech: this Mac's own model only when it is offered.
     public static func speechChoices(onDevice: Bool) -> [Platform] {
@@ -93,6 +148,7 @@ public struct Platform: Equatable, Identifiable, Sendable {
         case .openAI: return model != Platform.fileModel
         case .alibaba, .onDevice: return true
         case .generic: return false
+        case .own: return own(model: model) == .live
         }
     }
 
@@ -235,7 +291,7 @@ public final class UploadTranscriber: Transcriber {
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             let body = OpenAIWire.transcriptionForm(wav: wav, model: model, prompt: prompt,
                 languages: told ? OpenAIWire.spokenLanguages : [], keywords: told ? OpenAIWire.cleanDictionary(dictionary) : [],
-                boundary: boundary)
+                language: service.platform.uploadLanguage, boundary: boundary)
             let data: Data, response: URLResponse
             do { (data, response) = try await session.upload(for: request, from: body) }
             catch {
@@ -293,13 +349,14 @@ public extension OpenAIWire {
     static let spokenLanguages = ["zh", "en"]
 
     static func transcriptionForm(wav: Data, model: String, prompt: String, languages: [String] = [],
-                                  keywords: [String] = [], boundary: String) -> Data {
+                                  keywords: [String] = [], language: String = "", boundary: String) -> Data {
         var body = Data()
         func field(_ name: String, _ value: String) {
             body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8)
         }
         field("model", model)
         if !prompt.isEmpty { field("prompt", prompt) }
+        if !language.isEmpty { field("language", language) }
         for language in languages { field("languages[]", language) }
         for keyword in keywords { field("keywords[]", keyword) }
         body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8)

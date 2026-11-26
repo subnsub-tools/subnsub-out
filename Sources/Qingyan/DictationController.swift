@@ -1348,6 +1348,13 @@ final class DictationController: ObservableObject {
         }
         let service = try await settings.serviceAsync(request.speechPlatform)
         guard !request.speechModel.isEmpty else { throw VoiceError(tr("The recognition model name is empty. Enter it in Settings.")) }
+        // A service spoken to in its own way: its live socket, or the finished recording in its own request.
+        if let wire = service.platform.liveWire(model: request.speechModel, base: service.base) {
+            return LiveSocketTranscriber(wire: wire, key: service.key, name: service.platform.name)
+        }
+        if let wire = service.platform.fileWire(model: request.speechModel) {
+            return FileTranscriber(wire: wire, key: service.key, name: service.platform.name)
+        }
         if service.platform.wire == .alibaba {
             return QwenRealtimeTranscriber(key: service.key,
                 endpoint: Platform.realtimeURL(base: service.base, model: request.speechModel))

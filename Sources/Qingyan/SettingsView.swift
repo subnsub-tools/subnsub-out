@@ -263,9 +263,22 @@ private struct KeyGroup: View {
                 // With Raw nothing is polished, so the polishing model is not looked for in the list.
                 let speechHere = prefs.speechPlatform == id
                 let textHere = prefs.textPlatform == id && prefs.dictationStyle != .raw
+                // A service spoken to in its own way proves the key over its live socket; one that
+                // takes the finished recording is proven by a recording. Neither lists its speech models.
+                let own = speechHere ? platform.own(model: prefs.speechModel) : nil
+                if own == .live, let wire = platform.liveWire(model: prefs.speechModel, base: service.base) {
+                    try await LiveSocketTranscriber.probe(wire: wire, key: service.key, model: prefs.speechModel, name: platform.name)
+                }
+                if own != nil && !textHere {
+                    let proven: Bool = own == .live && (platform.liveWire(model: prefs.speechModel, base: service.base)?.provesKey(model: prefs.speechModel) ?? false)
+                    let valid: String = tr("The API key is valid, and the chosen models are available.")
+                    let untested: String = tr("This service does not list its models. Make a recording to test the connection.")
+                    settings.keyMessages[id] = proven ? valid : untested
+                    return
+                }
                 // Model Studio proves the key and the speech model over its realtime socket;
                 // the speech model's name is not looked up in the model list.
-                if platform.wire == .alibaba && speechHere {
+                if platform.wire == .alibaba && speechHere && own == nil {
                     try await QwenRealtimeTranscriber.probe(key: service.key,
                         endpoint: Platform.realtimeURL(base: service.base, model: prefs.speechModel))
                 }
@@ -278,7 +291,7 @@ private struct KeyGroup: View {
                     settings.keyMessages[id] = tr("This service does not list its models. Make a recording to test the connection."); return
                 }
                 var wanted: [String] = []
-                if speechHere && platform.wire != .alibaba { wanted.append(prefs.speechModel) }
+                if speechHere && platform.wire != .alibaba && own == nil { wanted.append(prefs.speechModel) }
                 if textHere { wanted.append(prefs.textModel) }
                 let missing = wanted.filter { !models.contains($0) }
                 let custom = id == Platform.custom.id

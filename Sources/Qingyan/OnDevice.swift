@@ -119,13 +119,13 @@ final class OnDeviceTranscriber: Transcriber {
             let text = try await resultsTask?.value ?? ""
             try await workTask?.value
             if timedOut {
-                throw VoiceError(tr("%@ did not respond in time. The recording is kept on this Mac.", tr("This Mac")), retryable: false)
+                throw VoiceError(tr("%@ did not respond in time. The recording is kept on this Mac.", Platform.thisMac.name), retryable: false)
             }
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             if Task.isCancelled { throw CancellationError() }
             if timedOut {
-                throw VoiceError(tr("%@ did not respond in time. The recording is kept on this Mac.", tr("This Mac")), retryable: false)
+                throw VoiceError(tr("%@ did not respond in time. The recording is kept on this Mac.", Platform.thisMac.name), retryable: false)
             }
             if let feedError, feedError is VoiceError || feedError is CancellationError { throw feedError }
             if error is VoiceError { throw error }

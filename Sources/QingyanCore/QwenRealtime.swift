@@ -244,7 +244,7 @@ public final class QwenRealtimeTranscriber {
                 throw VoiceError(tr("This account cannot use the selected recognition model. Choose another in Settings."))
             }
             if timedOut {
-                throw VoiceError(tr("%@ did not respond in time. The recording is kept on this Mac.", tr("Alibaba Cloud Model Studio")), retryable: true)
+                throw VoiceError(tr("%@ did not respond in time. The recording is kept on this Mac.", Platform.alibaba.name), retryable: true)
             }
             // The watchdog's own cancel can make the sender fail first, so this comes after timedOut.
             if let sendError { throw sendError }
@@ -277,7 +277,7 @@ public final class QwenRealtimeTranscriber {
                 throw VoiceError(tr("This account cannot use the selected recognition model. Choose another in Settings."))
             }
             if client.timedOut {
-                throw VoiceError(tr("%@ did not respond in time. Check the network and the address.", tr("Alibaba Cloud Model Studio")), retryable: true)
+                throw VoiceError(tr("%@ did not respond in time. Check the network and the address.", Platform.alibaba.name), retryable: true)
             }
             throw error
         }
