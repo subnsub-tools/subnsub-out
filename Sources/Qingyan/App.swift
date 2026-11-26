@@ -1144,6 +1144,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.shelf.previewFill()
         try await panel("panel-shelf")
         try await panel("panel-shelf-dark", dark: true)
+        controller.shelf.previewSay(tr("Copied “%@”, ready to paste.", "Report final.pdf"))
+        try await panel("panel-shelf-toast")
+        try await panel("panel-shelf-toast-dark", dark: true)
+        controller.shelf.previewSay(tr("Could not fetch “%@”: %@", "Backup.dmg", tr("Connection lost")), mark: .problem)
+        try await panel("panel-shelf-toast-problem")
+        controller.shelf.previewQuiet()
         controller.shelf.targeted = true
         try await panel("panel-shelf-drop")
         // The picture that floats out of a Shelf tile: a wide image, and a piece of text.
@@ -1369,6 +1375,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // The Shelf shown, whatever an earlier run left.
         UserDefaults.standard.removeObject(forKey: "compactShelfFolded")
         try await compact("compact-shelf")
+        controller.shelf.previewSay(tr("Copied “%@”, ready to paste.", "Report final.pdf"))
+        try await compact("compact-shelf-toast")
+        controller.shelf.previewSay(tr("Could not fetch “%@”: %@", "Backup.dmg", tr("Connection lost")), mark: .problem)
+        try await compact("compact-shelf-toast-problem")
+        controller.shelf.previewQuiet()
         controller.shelf.targeted = true
         try await compact("compact-drop")
         controller.shelf.targeted = false

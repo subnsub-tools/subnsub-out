@@ -13,9 +13,11 @@ final class ShelfModel: ObservableObject {
     @Published var linked = 0
     /// The Macs with a live connection to this one, whoever called whom.
     @Published var linkedKeys: Set<String> = []
-    @Published var notice = ""
+    /// What the Shelf has to say for a moment, shown over the panel rather than in it: nothing the
+    /// Shelf does moves the panel or the tiles (user 2026-11-27: no click on the Shelf may change the
+    /// panel; a toast may say what was copied).
+    @Published private(set) var notice: ShelfNotice?
     @Published var targeted = false
-    @Published var copiedID: UUID?
     /// The items this Mac was given a link for, and the link.
     @Published private(set) var links: [UUID: String] = [:]
     /// Links being made: how much of the file has gone to the primary helper.
@@ -40,8 +42,6 @@ final class ShelfModel: ObservableObject {
     /// Tiles being made off the main thread.
     private var makingTiles: Set<UUID> = []
     private var snippets: [UUID: String] = [:]
-    private var noticeID = UUID()
-    private var copiedToken = UUID()
     /// Items the user clicked before their bytes were here: copy them once they arrive.
     private var copyWhenHere: Set<UUID> = []
     /// Items asked to be downloaded to this Mac: shown in the Finder once they arrive.
@@ -83,7 +83,7 @@ final class ShelfModel: ObservableObject {
             self.store = store; self.sync = sync
             loadLinks()
             reload()
-        } catch { notice = tr("Could not open the Shelf folder. Check disk space and access permissions.") }
+        } catch { say(tr("Could not open the Shelf folder. Check disk space and access permissions."), for: nil, mark: .problem) }
     }
 
     private func reload() {
@@ -110,24 +110,16 @@ final class ShelfModel: ObservableObject {
         }
     }
 
-    private func say(_ text: String, for seconds: Double = 2.4) {
-        let id = UUID()
-        noticeID = id; notice = text
+    /// Shows `text` for `seconds` (nil: until something else is said), and has VoiceOver read it.
+    private func say(_ text: String, for seconds: Double? = 2.4, mark: ShelfNotice.Mark = .none) {
+        let next = ShelfNotice(text: text, mark: mark)
+        notice = next
+        AccessibilityNotification.Announcement(text).post()
+        guard let seconds else { return }
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard let self, self.noticeID == id else { return }
-            self.notice = ""
-        }
-    }
-
-    private func markCopied(_ id: UUID) {
-        let token = UUID()
-        copiedToken = token
-        copiedID = id
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_300_000_000)
-            guard let self, self.copiedToken == token else { return }
-            self.copiedID = nil
+            guard let self, self.notice?.id == next.id else { return }
+            self.notice = nil
         }
     }
 
@@ -202,9 +194,9 @@ final class ShelfModel: ObservableObject {
             let thumbnail = await Self.quickLook(url)
             do {
                 let item = try await store.add(copying: url, kind: image ? .image : .file, origin: self.name, thumbnail: thumbnail)
-                if large { self.say(tr("Added “%@”. Other Macs fetch it when it is needed.", item.name), for: 3.5) }
+                if large { self.say(tr("Added “%@”. Other Macs fetch it when it is needed.", item.name), for: 3.5, mark: .done) }
                 self.keep(item)
-            } catch { self.say(error.localizedDescription, for: 4) }
+            } catch { self.say(error.localizedDescription, for: 4, mark: .problem) }
         }
     }
 
@@ -252,20 +244,20 @@ final class ShelfModel: ObservableObject {
         else if head.starts(with: [0xff, 0xd8, 0xff]) { kind = "jpg" }
         else if head.starts(with: [0x47, 0x49, 0x46]) { kind = "gif" }
         else if let bitmap = NSBitmapImageRep(data: data), let png = bitmap.representation(using: .png, properties: [:]) { payload = png }
-        else { say(tr("This image format is not supported, so it was not put on the Shelf."), for: 4); return }
+        else { say(tr("This image format is not supported, so it was not put on the Shelf."), for: 4, mark: .problem); return }
         // The name is for people to read (it becomes the file's name when dragged out); nothing matches on it.
         do {
             let item = try store.add(payload, kind: .image, name: tr("Image %@.%@", stamp, kind), origin: name,
                                      thumbnail: NSImage(data: payload).flatMap(Self.jpeg))
             keep(item)
-        } catch { say(error.localizedDescription, for: 4) }
+        } catch { say(error.localizedDescription, for: 4, mark: .problem) }
     }
 
     private func addText(_ text: String) {
         guard let store, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard !items.contains(where: { $0.kind == .text && store.text($0) == text }) else { return }
         do { try store.add(Data(text.utf8), kind: .text, name: tr("Text.txt"), origin: name) }
-        catch { say(error.localizedDescription, for: 4) }
+        catch { say(error.localizedDescription, for: 4, mark: .problem) }
     }
 
     // MARK: Taking things off
@@ -363,7 +355,7 @@ final class ShelfModel: ObservableObject {
     func fetch(_ item: ShelfItem) {
         guard let sync, stage(item) != .here else { return }
         sync.fetch(item.id)
-        if let failure = sync.failures[item.id] { say(failure, for: 4) }
+        if let failure = sync.failures[item.id] { say(failure, for: 4, mark: .problem) }
     }
 
     func cancelFetch(_ item: ShelfItem) { copyWhenHere.remove(item.id); revealWhenHere.remove(item.id); sync?.cancel(item.id) }
@@ -444,7 +436,7 @@ final class ShelfModel: ObservableObject {
                     self.revealWhenHere.remove(id)
                     self.copyWhenHere.remove(id)
                     self.answerDrags(id, with: nil)
-                    self.say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5)
+                    self.say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5, mark: .problem)
                 } else { self.transferMoved() }
             }
         }
@@ -491,7 +483,7 @@ final class ShelfModel: ObservableObject {
                 // The Mac it was coming from went away: the primary helper keeps it too.
                 if sync.failures[id] != nil, canLink(item) { fromHelper(item); continue }
                 revealWhenHere.remove(id)
-                if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5) }
+                if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5, mark: .problem) }
             }
         }
         for id in copyWhenHere {
@@ -501,7 +493,7 @@ final class ShelfModel: ObservableObject {
                 // The Mac it was coming from went away: the primary helper keeps it too.
                 if sync.failures[id] != nil, canLink(item) { fromHelper(item, copying: true); continue }
                 copyWhenHere.remove(id)
-                if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5) }
+                if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5, mark: .problem) }
             }
         }
     }
@@ -516,7 +508,7 @@ final class ShelfModel: ObservableObject {
         guard let store else {
             if item.kind == .text {
                 PasteboardLease.general.keep(snippet(item))
-                markCopied(item.id)
+                say(tr("Copied “%@”, ready to paste.", String(snippet(item).prefix(12))), mark: .done)
             }
             return
         }
@@ -544,8 +536,7 @@ final class ShelfModel: ObservableObject {
         case .file:
             board.writeObjects([store.url(item) as NSURL])
         }
-        markCopied(item.id)
-        say(tr("Copied “%@”, ready to paste.", item.kind == .text ? String(snippet(item).prefix(12)) : item.name))
+        say(tr("Copied “%@”, ready to paste.", item.kind == .text ? String(snippet(item).prefix(12)) : item.name), mark: .done)
     }
 
     func provider(_ item: ShelfItem) -> NSItemProvider {
@@ -642,8 +633,7 @@ final class ShelfModel: ObservableObject {
 
     private func place(_ link: String, for item: ShelfItem) {
         PasteboardLease.general.keep(link)
-        markCopied(item.id)
-        say(tr("Link to “%@” copied. It opens on devices on your tailnet.", title(item)), for: 4)
+        say(tr("Link to “%@” copied. It opens on devices on your tailnet.", title(item)), for: 4, mark: .done)
     }
 
     nonisolated private func sent(_ id: UUID, _ fraction: Double) {
@@ -717,7 +707,7 @@ final class ShelfModel: ObservableObject {
             hostAgain[id] = (Date().addingTimeInterval(wait), wait)
         } else if let failure, known == nil, copying || wanted, !(failure is CancellationError) {
             // A link copied already stays as it is; only a first try says why it failed.
-            say(failure.localizedDescription, for: 6)
+            say(failure.localizedDescription, for: 6, mark: .problem)
         }
     }
 
@@ -741,9 +731,9 @@ final class ShelfModel: ObservableObject {
             if down {
                 self.unlinking.remove(id)
                 self.saveLinks()
-                self.say(tr("Link to “%@” removed.", name), for: 3)
+                self.say(tr("Link to “%@” removed.", name), for: 3, mark: .done)
             } else {
-                self.say(tr("The link to “%@” still opens: the primary helper could not be reached. It is taken down once it can be.", name), for: 6)
+                self.say(tr("The link to “%@” still opens: the primary helper could not be reached. It is taken down once it can be.", name), for: 6, mark: .problem)
             }
         }
     }
@@ -833,7 +823,53 @@ final class ShelfModel: ObservableObject {
         }
         linked = 1
     }
+
+    func previewSay(_ text: String, mark: ShelfNotice.Mark = .done) { say(text, for: nil, mark: mark) }
+    func previewQuiet() { notice = nil }
     #endif
+}
+
+/// One thing the Shelf says: copied, on its way, or what went wrong.
+struct ShelfNotice: Equatable, Identifiable {
+    enum Mark { case none, done, problem }
+    let id = UUID()
+    let text: String
+    let mark: Mark
+}
+
+/// What the Shelf says, floating over the bottom of the panel or the bar for a moment: never a line
+/// of its own that would push the panel taller, and never in the way of a click (user 2026-11-27).
+struct ShelfToast: View {
+    @ObservedObject var shelf: ShelfModel
+    var size: CGFloat = 11
+    var lines = 3
+
+    var body: some View {
+        ZStack {
+            if let notice = shelf.notice {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    switch notice.mark {
+                    case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.accent)
+                    case .problem: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+                    case .none: EmptyView()
+                    }
+                    Text(notice.text).foregroundStyle(Palette.ink).lineLimit(lines).multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.system(size: size, weight: .medium))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Palette.line, lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.16), radius: 6, y: 2)
+                .id(notice.id)
+                .transition(Motion.reduced ? .opacity : .asymmetric(insertion: .opacity.combined(with: .offset(y: 5)), removal: .opacity))
+            }
+        }
+        .animation(Motion.reduced ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.9), value: shelf.notice?.id)
+        .allowsHitTesting(false)
+        // VoiceOver hears it as it is said; it is not something to land on.
+        .accessibilityHidden(true)
+    }
 }
 
 /// The shelf, pinned to the bottom of the panel. Drop anything on the panel to park it here;
@@ -857,14 +893,14 @@ struct ShelfBar: View {
                 Button(tr("Paste")) { shelf.addClipboard() }.buttonStyle(QuietButton()).help(tr("Put what is on the clipboard on the Shelf"))
                 if !shelf.items.isEmpty { Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton()) }
             }
-            if !shelf.notice.isEmpty {
-                words(shelf.notice, size: 10.5)
-            }
             if shelf.items.isEmpty {
                 Text(tr("Drop files, images or text here to keep them on the Shelf, in sync with your other Macs."))
                     .font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineSpacing(2)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(9)
+                    // As tall as a row of tiles: the first item put on, or the last taken off, leaves the panel as it is.
+                    .frame(minHeight: 60)
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.muted.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .padding(.top, 4)
             } else {
                 // Two whole rows (60 + 6 + 60) and the room above them; more scroll.
                 FittedScroll(maxHeight: 130) {
@@ -877,6 +913,7 @@ struct ShelfBar: View {
         .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 10)
         .background(shelf.targeted ? Palette.accent.opacity(0.18) : Palette.fill)
         .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: 1) }
+        .overlay(alignment: .bottom) { ShelfToast(shelf: shelf).padding(.horizontal, 14).padding(.bottom, 12) }
         .contentTransition(.identity)
         .animation(Motion.quick, value: shelf.targeted)
         .animation(Motion.quick, value: hovered)
@@ -888,7 +925,6 @@ struct ShelfBar: View {
 
     private func tile(_ item: ShelfItem) -> some View {
         let stage = shelf.stage(item)
-        let copied = shelf.copiedID == item.id
         return ZStack(alignment: .topTrailing) {
             ZStack {
                 Group {
@@ -905,20 +941,15 @@ struct ShelfBar: View {
                             if stage == .here { Text(item.name).font(.system(size: 9)).lineLimit(1).truncationMode(.middle) }
                         }.padding(.horizontal, 4)
                     }
-                }.opacity(stage == .here && !copied ? 1 : 0.35)
-                if copied {
-                    VStack(spacing: 2) {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).foregroundStyle(Palette.accent)
-                        Text(tr("Copied")).font(.system(size: 9, weight: .semibold))
-                    }.transition(Motion.pop)
-                } else if stage != .here {
+                }.opacity(stage == .here ? 1 : 0.35)
+                if stage != .here {
                     badge(stage, size: item.size).transition(Motion.pop)
                 }
             }
             .frame(width: 60, height: 60)
             .background(Color.primary.opacity(hovered == item.id ? 0.11 : 0.07))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(copied ? Palette.accent.opacity(0.6) : Palette.line, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Palette.line, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .onTapGesture {
                 if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }

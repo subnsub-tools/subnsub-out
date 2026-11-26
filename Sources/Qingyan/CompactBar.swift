@@ -104,6 +104,8 @@ struct CompactBar: View {
             .stroke(recording ? CapsuleTint.green.opacity(0.45) : Palette.line, lineWidth: 1))
         .foregroundStyle(Palette.ink).tint(Palette.accent)
         .controlSize(.small)
+        // What the Shelf says floats over the bar's foot, within it: the bar stays as it is.
+        .overlay(alignment: .bottom) { ShelfToast(shelf: shelf, size: 10.5, lines: 2).padding(.horizontal, 10).padding(.bottom, 5) }
         .onDrop(of: ShelfModel.types, isTargeted: $shelf.targeted) { shelf.accept($0) }
         .background(GeometryReader { proxy in Color.clear.preference(key: CompactSizeKey.self, value: proxy.size) })
         .onPreferenceChange(CompactSizeKey.self) { size in if size.width > 0 && size.height > 0 { onSize?(size) } }
@@ -360,7 +362,6 @@ struct CompactBar: View {
 
     private func tile(_ item: ShelfItem) -> some View {
         let stage = shelf.stage(item)
-        let copiedHere = shelf.copiedID == item.id
         return ZStack(alignment: .topTrailing) {
             ZStack {
                 Group {
@@ -374,17 +375,15 @@ struct CompactBar: View {
                     } else {
                         Image(nsImage: shelf.icon(item)).resizable().frame(width: 26, height: 26)
                     }
-                }.opacity(stage == .here && !copiedHere ? 1 : 0.35)
-                if copiedHere {
-                    Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(Palette.accent).transition(Motion.pop)
-                } else if stage != .here {
+                }.opacity(stage == .here ? 1 : 0.35)
+                if stage != .here {
                     Image(systemName: "icloud.and.arrow.down").font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
             }
             .frame(width: 40, height: 40)
             .background(Color.primary.opacity(hovered == item.id ? 0.11 : 0.07))
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(copiedHere ? Palette.accent.opacity(0.6) : Palette.line, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Palette.line, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .onTapGesture {
                 if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
