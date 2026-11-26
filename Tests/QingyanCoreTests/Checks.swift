@@ -1850,9 +1850,18 @@ struct Checks {
                   && Platform.alibaba.baseURL(custom: "", alibaba: "https://ws.ap-southeast-1.maas.aliyuncs.com/x")?.host == "ws.ap-southeast-1.maas.aliyuncs.com",
                   "the custom platform takes the typed address, Model Studio its own")
         try check(Set(Platform.all.map(\.id)).count == Platform.all.count && Platform.all.filter { $0.wire == .openAI } == [.openAI]
-                  && Platform.all.filter { $0.wire == .alibaba } == [.alibaba] && Platform.all.filter { $0.wire == .generic } == [.groq, .siliconFlow, .custom]
-                  && Platform.all.filter { $0.wire == .onDevice } == [.thisMac],
+                  && Platform.all.filter { $0.wire == .alibaba } == [.alibaba]
+                  && Platform.all.filter { $0.wire == .generic } == [.deepInfra, .groq, .siliconFlow, .together, .custom]
+                  && Platform.all.filter { $0.wire == .onDevice } == [.thisMac]
+                  && Platform.all.filter { $0.wire == .own } == [.assemblyAI, .azure, .baidu, .cartesia, .deepgram, .elevenLabs, .gemini,
+                                                                 .gladia, .iFlytek, .mistral, .soniox, .speechmatics, .tencent, .volcano],
                   "platform ids are distinct, and each speaks in its own way only")
+        try check(Platform.all.filter { $0.wire == .own }.allSatisfy { !$0.speechModels.isEmpty && $0.own(model: $0.speechModels[0]) != nil }
+                  && Platform.alibaba.own(model: "fun-asr-realtime") == .live && Platform.alibaba.own(model: "qwen3-asr-flash-realtime") == nil
+                  && Platform.gemini.own(model: "gemini-3.5-transcribe-live") == .live && Platform.gemini.own(model: "gemini-3.6-flash") == .file
+                  && Platform.azure.own(model: "transcribe") == .file && Platform.groq.own(model: "whisper-large-v3") == nil,
+                  "each service with its own protocols takes its default model, live or with the finished recording")
+        try check(Platform.all.allSatisfy { $0.name == $0.englishName }, "services are named in English in every language")
 
         let pcm = Data(repeating: 7, count: 4800)
         let wav = OpenAIWire.wav(pcm: pcm)
