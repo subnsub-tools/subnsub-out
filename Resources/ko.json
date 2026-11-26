@@ -671,7 +671,6 @@
  "Connection Info": "연결 정보",
  "Info": "정보",
  "More": "더 보기",
- "Double-click the picture to work %@. Until then, a drag moves the window.": "화면을 이중 클릭하면 %@을(를) 조작할 수 있습니다. 그 전까지는 드래그하면 윈도우가 움직입니다.",
  "No tunnel to that Mac": "그 Mac으로 가는 터널 없음",
  "Not on a tailnet with this Mac, or its address there is not known": "이 Mac과 같은 tailnet에 없거나, 그곳에서의 주소를 알 수 없음",
  "Showing its screen": "화면을 표시하는 중",

@@ -725,7 +725,6 @@
  "Connection Info": "连接信息",
  "Info": "信息",
  "More": "更多",
- "Double-click the picture to work %@. Until then, a drag moves the window.": "双击画面开始操作「%@」。在此之前，拖动会移动窗口。",
  "No tunnel to that Mac": "没有到那台 Mac 的隧道",
  "Not on a tailnet with this Mac, or its address there is not known": "与这台 Mac 不在同一 tailnet，或尚不知道它在 tailnet 上的地址",
  "Showing its screen": "正在显示屏幕",

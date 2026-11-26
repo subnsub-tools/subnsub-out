@@ -275,7 +275,8 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
             window.makeFirstResponder(view)
             container.banner = inputAllowed ? nil
                 : tr("View only: out on %@ has no Accessibility permission, so the pointer and keys do not reach it.", device.label)
-            if inputAllowed, !view.canControl { flash(tr("Double-click the picture to work %@. Until then, a drag moves the window.", device.label)) }
+            // No line of its own saying a double-click works that Mac: the large words at the top
+            // left (ScreenHint) say it, once (user 2026-11-26: the two were shown together).
             info.live = true
             info.viewOnly = !inputAllowed
             info.since = Date()

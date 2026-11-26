@@ -671,7 +671,6 @@
  "Connection Info": "連線資訊",
  "Info": "資訊",
  "More": "更多",
- "Double-click the picture to work %@. Until then, a drag moves the window.": "按兩下畫面即可開始操作「%@」。在此之前，拖移會移動視窗。",
  "No tunnel to that Mac": "沒有通往那台 Mac 的通道",
  "Not on a tailnet with this Mac, or its address there is not known": "與這台 Mac 不在同一個 tailnet，或尚不知道它在 tailnet 上的位址",
  "Showing its screen": "正在顯示螢幕",

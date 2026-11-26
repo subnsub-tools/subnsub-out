@@ -671,7 +671,6 @@
  "Connection Info": "Сведения о подключении",
  "Info": "Сведения",
  "More": "Ещё",
- "Double-click the picture to work %@. Until then, a drag moves the window.": "Дважды нажмите на изображение, чтобы управлять %@. До этого перетаскивание двигает окно.",
  "No tunnel to that Mac": "Нет туннеля к тому Mac",
  "Not on a tailnet with this Mac, or its address there is not known": "Не в одном tailnet с этим Mac, или его адрес там неизвестен",
  "Showing its screen": "Показывает экран",
