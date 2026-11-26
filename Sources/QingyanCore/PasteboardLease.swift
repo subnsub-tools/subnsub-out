@@ -12,6 +12,17 @@ public final class PasteboardLease {
     /// and text that `keep` was given meanwhile, which waits until that paste is settled.
     private var watched: Int?
     private var keptDuring: String?
+    /// The clipboard's change counts after out put something there for a moment (a paste's text,
+    /// what comes back after it), newest last: the clipboard history leaves those out.
+    private var temporary: [Int] = []
+
+    private func wroteTemporarily() {
+        temporary.append(board.changeCount)
+        if temporary.count > 16 { temporary.removeFirst(temporary.count - 16) }
+    }
+
+    /// Whether the clipboard, at this change count, holds what out put there for a moment.
+    public func isTemporary(_ count: Int) -> Bool { temporary.contains(count) }
 
     public init(board: NSPasteboard) { self.board = board }
 
@@ -35,6 +46,7 @@ public final class PasteboardLease {
         board.clearContents()
         board.setString(text, forType: .string)
         writtenCount = board.changeCount
+        wroteTemporarily()
         paste()
         restoration = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: UInt64(hold * 1_000_000_000)) } catch { return }
@@ -74,6 +86,7 @@ public final class PasteboardLease {
         }
         let count = board.changeCount
         writtenCount = count; watched = count; keptDuring = nil
+        wroteTemporarily()
         let start = Date()
         paste()
         // Waited out in a task of its own: a cancelled dictation does not cut it short (the keystroke
@@ -135,6 +148,7 @@ public final class PasteboardLease {
             return item
         }
         if !items.isEmpty { board.writeObjects(items) }
+        wroteTemporarily()
     }
 }
 

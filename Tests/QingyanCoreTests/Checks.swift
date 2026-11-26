@@ -117,6 +117,8 @@ struct Checks {
         }
         do { try clipboard(); print("PASS Native pasteboard: rich content, rapid pastes, newer user copy, text kept for ⌘V") }
         catch { failed += 1; print("FAIL Clipboard: \(error.localizedDescription)") }
+        do { try clipboardHistory(); print("PASS Clipboard history: kept with its app, the same again brought up, concealed / transient / password managers / apps named / paused / out's own left out, the source an app names, copied just before resuming, turning on or switching apps, links told apart, pictures and files, limit and days with pinned ones kept, search, back in all formats or as plain text, restart, an index that cannot be read, Clear") }
+        catch { failed += 1; print("FAIL Clipboard history: \(error.localizedDescription)") }
         do { try await watchedClipboard(); print("PASS Watched paste: an app that takes the text confirms it and the clipboard comes back; not taken, the text stays; a newer copy is left alone") }
         catch { failed += 1; print("FAIL Watched paste: \(error.localizedDescription)") }
         do { try await archive(); print("PASS Local history: offline audio, cancelled reader, restart, retention, delete and disk failure, retry pace") }
@@ -522,8 +524,9 @@ struct Checks {
         for (code, modifiers) in [(40, M()), (40, M.shift), (40, M.command), (40, [M.command, M.shift]), (49, M())] as [(Int, M)] {
             guard case .refuse = Shortcut.recorded(code: code, modifiers: modifiers) else { throw VoiceError("key \(code) with \(modifiers.rawValue) must be refused") }
         }
-        guard case .refuse = Shortcut.recorded(code: 9, modifiers: [.control, .option]), case .refuse = Shortcut.recorded(code: 53, modifiers: [.control]) else {
-            throw VoiceError("Control + Option + V and Esc are taken")
+        guard case .refuse = Shortcut.recorded(code: 9, modifiers: [.control, .option]), case .refuse = Shortcut.recorded(code: 53, modifiers: [.control]),
+              case .refuse = Shortcut.recorded(code: 8, modifiers: [.control, .option]) else {
+            throw VoiceError("Control + Option + V, Control + Option + C and Esc are taken")
         }
         try check(Shortcut.recordedTap(code: 63) == .accept(.fn) && Shortcut.recordedTap(code: 54) == .accept(.commandTap(right: true))
                   && Shortcut.recordedTap(code: 55) == .accept(.commandTap(right: false)), "Fn or a Command key tapped on its own")
@@ -1162,6 +1165,18 @@ struct Checks {
         try await settle("out asks an older helper") { helper.asked == HistoryFeed.waiting }
         try await Task.sleep(nanoseconds: 2_500_000_000)
         try check(helper.asked == HistoryFeed.waiting, "an older helper is asked \(helper.asked) times in 2.5 seconds")
+        // Show on the Dashboard off: out answers only that it is off.
+        helper.old = false
+        helper.waiting.forEach { $0.cancel() }
+        helper.waiting.removeAll()
+        let only = [newest]
+        let closed = HistoryFeed()
+        defer { closed.stop() }
+        closed.start(entries: { only }, shared: { false })
+        try await settle("out waits at the helper with Show on the Dashboard off") { !helper.waiting.isEmpty }
+        let refused = try await helper.ask()
+        try check(refused["off"] as? Bool == true && refused["entries"] == nil, "off: nothing but that it is off")
+        closed.stop()
         // Pages: newest first, by id within a millisecond, each going on from the last entry of the one before.
         var many: [HistoryEntry] = []
         for i in 0..<40 {
@@ -1191,6 +1206,22 @@ struct Checks {
         try check(cut && head.utf8.count <= HistoryFeed.textLimit && head.utf8.count > HistoryFeed.textLimit - 3
                   && !head.unicodeScalars.contains(UnicodeScalar(0xFFFD)!), "a long entry is cut where a character starts")
         try check(HistoryFeed.cut("short") == ("short", false), "a short entry is whole")
+        // Copies among the dictations, newest first: what they hold and where; of an image, its size alone.
+        var copiedText = ClipEntry(kind: .text, preview: String(repeating: "y", count: 10), count: 5000, bytes: 5000, digest: "t")
+        copiedText.date = Date(timeIntervalSince1970: 1_800_000_100)
+        copiedText.app = "Safari"
+        var picture = ClipEntry(kind: .image, preview: "", count: 0, bytes: 9, digest: "i")
+        picture.date = Date(timeIntervalSince1970: 1_799_999_999)
+        picture.width = 1200
+        picture.height = 800
+        let mixed = HistoryFeed.page([newest], copies: [copiedText, picture], before: 0, beforeID: "", budget: 64 << 10)
+        let rows = (try JSONSerialization.jsonObject(with: mixed) as? [String: Any])?["entries"] as? [[String: Any]] ?? []
+        try check(rows.map { $0["id"] as? String ?? "" } == [copiedText.id, newest.id, picture.id].map { $0.uuidString.lowercased() },
+                  "copies among the dictations, newest first")
+        try check(rows[0]["kind"] as? String == "copy" && rows[0]["what"] as? String == "text" && rows[0]["app"] as? String == "Safari"
+                  && rows[0]["cut"] as? Bool == true && rows[0]["state"] == nil, "a text copy, longer than what is sent")
+        try check(rows[2]["what"] as? String == "image" && (rows[2]["w"] as? NSNumber)?.intValue == 1200
+                  && (rows[2]["h"] as? NSNumber)?.intValue == 800 && rows[2]["text"] as? String == "", "an image copy: its size alone")
     }
 
     @MainActor static func links() async throws {
@@ -1908,6 +1939,169 @@ struct Checks {
         lease.supply("Pasted and kept", keep: true) { seen = board.string(forType: .string) ?? "" }
         lease.restore()
         try check(seen == "Pasted and kept" && board.string(forType: .string) == "Pasted and kept", "a keeping paste leaves its text")
+    }
+
+    /// The clipboard history, on a clipboard of its own and a folder of its own.
+    @MainActor static func clipboardHistory() throws {
+        let board = NSPasteboard(name: .init("local.hopo.qingyan.test.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("qy-clip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var policy = ClipboardHistory.Policy(limit: 3, days: 30)
+        var front: (bundle: String, name: String)? = ("com.apple.Safari", "Safari")
+        var own: Set<Int> = []
+        let history = ClipboardHistory(directory: folder, board: board)
+        history.policy = { policy }
+        history.frontApp = { front }
+        history.isOwn = { own.contains($0) }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func copy(_ text: String, extra: [String: Data] = [:]) {
+            board.clearContents()
+            let item = NSPasteboardItem()
+            item.setString(text, forType: .string)
+            for (type, data) in extra { item.setData(data, forType: .init(type)) }
+            board.writeObjects([item])
+        }
+        let rich = Data("{\\rtf1 rich}".utf8)
+        copy("First", extra: [NSPasteboard.PasteboardType.rtf.rawValue: rich])
+        history.check(now: start)
+        try check(history.entries.count == 1 && history.entries[0].kind == .text && history.entries[0].preview == "First"
+                  && history.entries[0].app == "Safari" && history.entries[0].bundle == "com.apple.Safari", "a copy is kept, with the app it was made in")
+        history.check(now: start.addingTimeInterval(1))
+        try check(history.entries.count == 1, "nothing new on the clipboard, nothing new kept")
+        copy("Second")
+        history.check(now: start.addingTimeInterval(2))
+        copy("First", extra: [NSPasteboard.PasteboardType.rtf.rawValue: rich])
+        front = ("com.apple.TextEdit", "TextEdit")
+        history.check(now: start.addingTimeInterval(3))
+        try check(history.entries.map(\.preview) == ["First", "Second"] && history.entries[0].app == "TextEdit"
+                  && history.entries[0].date == start.addingTimeInterval(3), "the same again comes up instead of being kept twice")
+        // Left out: marked as concealed or transient, copied in a password manager or an app named, while paused, out's own.
+        copy("hunter2", extra: ["org.nspasteboard.ConcealedType": Data()])
+        history.check(now: start.addingTimeInterval(4))
+        copy("for a moment", extra: ["org.nspasteboard.TransientType": Data()])
+        history.check(now: start.addingTimeInterval(5))
+        front = ("com.1password.1password", "1Password")
+        copy("from a password manager")
+        history.check(now: start.addingTimeInterval(6))
+        front = ("com.example.Secret", "Secret")
+        policy.ignored = ["com.example.Secret"]
+        copy("from an app left out")
+        history.check(now: start.addingTimeInterval(7))
+        front = ("com.apple.Safari", "Safari")
+        history.paused = true
+        copy("while paused")
+        history.check(now: start.addingTimeInterval(8))
+        history.paused = false
+        history.check(now: start.addingTimeInterval(9))
+        copy("out pasting")
+        own.insert(board.changeCount)
+        history.check(now: start.addingTimeInterval(10))
+        // Copied while paused or off, then resumed or turned on before the clipboard was looked at again.
+        history.paused = true
+        copy("just before resuming")
+        history.paused = false
+        history.check(now: start.addingTimeInterval(10.2))
+        policy.record = false
+        history.check(now: start.addingTimeInterval(10.4))
+        copy("just before turning on")
+        policy.record = true
+        history.check(now: start.addingTimeInterval(10.6))
+        // Copied in an app left out, with another app in front by the time the clipboard is looked at.
+        front = ("com.example.Secret", "Secret")
+        history.check(now: start.addingTimeInterval(10.7))
+        copy("just before switching apps")
+        front = ("com.apple.Safari", "Safari")
+        history.check(now: start.addingTimeInterval(10.8))
+        try check(history.entries.map(\.preview) == ["First", "Second"], "nothing left out was kept: \(history.entries.map(\.preview))")
+        // Alike in text, not in where their links go: two entries.
+        let link = { (url: String) -> [[String: Data]] in
+            [[NSPasteboard.PasteboardType.string.rawValue: Data("Open".utf8),
+              NSPasteboard.PasteboardType.html.rawValue: Data("<a href=\"\(url)\">Open</a>".utf8)]]
+        }
+        try check(ClipboardHistory.describe(link("https://a.example"))?.digest != ClipboardHistory.describe(link("https://b.example"))?.digest
+                  && ClipboardHistory.describe(link("https://a.example"))?.digest == ClipboardHistory.describe(link("https://a.example"))?.digest,
+                  "copies alike in text but not in their links are not the same")
+        // An app that names itself as the source is believed over the app in front.
+        board.clearContents()
+        let sourced = NSPasteboardItem()
+        sourced.setString("named", forType: .string)
+        sourced.setString("com.example.Secret", forType: .init("org.nspasteboard.source"))
+        board.writeObjects([sourced])
+        history.check(now: start.addingTimeInterval(11))
+        try check(history.entries.count == 2, "a copy whose source is an app left out is not kept")
+        policy.ignored = []
+        // A picture, with its size and a thumbnail.
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 40, pixelsHigh: 30, bitsPerSample: 8, samplesPerPixel: 4,
+                                      hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = bitmap.representation(using: .png, properties: [:])!
+        board.clearContents()
+        board.setData(png, forType: .png)
+        history.check(now: start.addingTimeInterval(12))
+        let picture = history.entries[0]
+        try check(picture.kind == .image && picture.width == 40 && picture.height == 30 && history.thumbnail(picture) != nil
+                  && history.imageBytes(picture) == png, "a picture: its size, its thumbnail and its bytes")
+        // Files, by their names.
+        let a = folder.appendingPathComponent("a.txt"), b = folder.appendingPathComponent("b.pdf")
+        try Data("a".utf8).write(to: a); try Data("b".utf8).write(to: b)
+        board.clearContents()
+        board.writeObjects([a as NSURL, b as NSURL])
+        history.check(now: start.addingTimeInterval(13))
+        let files = history.entries[0]
+        try check(files.kind == .files && files.count == 2 && files.preview == "a.txt\nb.pdf"
+                  && history.files(files).map(\.lastPathComponent) == ["a.txt", "b.pdf"], "files, by name")
+        // The limit lets the oldest go; a pinned one stays past it, and on top.
+        try check(history.entries.map(\.kind) == [.files, .image, .text], "three kept: \(history.entries.map(\.kind))")
+        let second = history.entries.first { $0.preview == "First" }!
+        history.pin(second.id, true)
+        copy("Third")
+        history.check(now: start.addingTimeInterval(14))
+        try check(history.entries.count == 4 && history.entries.contains { $0.id == second.id }, "a pinned one is not counted")
+        try check(history.shown().first?.id == second.id, "pinned ones are shown first")
+        try check(history.shown(matching: "thi").map(\.preview) == ["Third"] && history.shown(matching: "a.txt").count == 1
+                  && history.shown(matching: "safari third").count == 1 && history.shown(matching: "nothing").isEmpty, "search by text, file name and app")
+        // Back on the clipboard in all its formats, or as plain text; not kept again, brought up.
+        try check(history.put(second, at: start.addingTimeInterval(15)), "an entry goes back on the clipboard")
+        try check(board.string(forType: .string) == "First" && board.data(forType: .rtf) == rich, "in all the formats it came in")
+        history.check(now: start.addingTimeInterval(15))
+        try check(history.entries.count == 4 && history.entries[0].id == second.id, "not kept twice, and brought up")
+        try check(history.put(second, plain: true, at: start.addingTimeInterval(15.5)) && board.data(forType: .rtf) == nil
+                  && board.string(forType: .string) == "First", "as plain text")
+        try check(history.put(files, plain: true, at: start.addingTimeInterval(16))
+                  && (board.string(forType: .string) ?? "").components(separatedBy: "\n").map { ($0 as NSString).lastPathComponent } == ["a.txt", "b.pdf"],
+                  "files as plain text: their paths")
+        // Days, then a restart: what is kept is read back, a file no entry names is let go.
+        policy.days = 1
+        history.check(now: start.addingTimeInterval(86_400 + 13.5))
+        try check(history.entries.count == 3 && history.entries.contains { $0.id == second.id }, "past the days: gone, the pinned one stays")
+        let stray = folder.appendingPathComponent(UUID().uuidString + ".clip")
+        try Data().write(to: stray)
+        history.flush()
+        let again = ClipboardHistory(directory: folder, board: board)
+        try check(again.entries.map(\.id) == history.entries.map(\.id) && again.text(again.entries.first { $0.kind == .text }!) != nil,
+                  "kept across a restart")
+        try check(!FileManager.default.fileExists(atPath: stray.path), "a file no entry names is let go")
+        // An index that cannot be read: made again from the copies kept, none of them let go.
+        try Data("{".utf8).write(to: folder.appendingPathComponent("index.json"))
+        let remade = ClipboardHistory(directory: folder, board: board)
+        remade.flush()
+        try check(Set(remade.entries.map(\.id)) == Set(history.entries.map(\.id)) && !remade.entries.contains(where: \.pinned)
+                  && remade.text(remade.entries.first { $0.kind == .text }!) != nil, "an index that cannot be read is made again")
+        let mode = (try FileManager.default.attributesOfItem(atPath: folder.path)[.posixPermissions] as? NSNumber)?.intValue
+        try check(mode == 0o700, "the folder is the user's alone")
+        // Remove and clear: the pinned one stays through Clear.
+        history.remove(history.entries.first { !$0.pinned }!.id)
+        history.clear()
+        try check(history.entries.map(\.id) == [second.id], "Clear keeps the pinned one")
+        history.clear(pinnedToo: true)
+        history.flush()
+        try check(history.entries.isEmpty && ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasSuffix(".clip") }.isEmpty,
+                  "everything removed, from the disk too")
+        // Off: nothing is kept.
+        policy.record = false
+        copy("off")
+        history.check(now: start.addingTimeInterval(86_500))
+        try check(history.entries.isEmpty, "nothing is kept while it is off")
     }
 
     /// A paste into an app that shows no text field is confirmed by the app taking the text.

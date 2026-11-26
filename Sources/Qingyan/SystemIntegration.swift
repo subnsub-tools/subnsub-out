@@ -74,6 +74,8 @@ final class GlobalShortcut {
     var onKnock: ((Int) -> Void)?
     /// Control + Option + V: type the clipboard key by key.
     var onTypeClipboard: (() -> Void)?
+    /// Control + Option + C: the clipboard history.
+    var onClipboardHistory: (() -> Void)?
     /// Holding the shortcut while speaking: Fn held on its own past the tap time, or an F key or
     /// combination pressed, while nothing records. True when a recording started; its release is
     /// then reported to `onHoldReleased`.
@@ -231,6 +233,13 @@ final class GlobalShortcut {
             otherInput(at: time)
             if code == 9, flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand), !flags.contains(.maskShift) {
                 if !repeating { onTypeClipboard?() }
+                swallowed.insert(code)
+                return nil
+            }
+            // Unless it was made the dictation shortcut before it opened the clipboard history.
+            if code == 8, flags.contains([.maskControl, .maskAlternate]), !flags.contains(.maskCommand), !flags.contains(.maskShift),
+               active != .combination(code: 8, modifiers: [.control, .option]), let onClipboardHistory {
+                if !repeating { onClipboardHistory() }
                 swallowed.insert(code)
                 return nil
             }

@@ -20,6 +20,12 @@ struct LegacyPeer: Codable, Equatable {
     }
 }
 
+/// An app whose copies the clipboard history does not keep.
+struct IgnoredApp: Codable, Equatable, Hashable {
+    var bundle: String
+    var name: String
+}
+
 struct Preferences: Codable, Equatable {
     var mode: WritingMode = .dictate
     /// How the dictated text is written: "raw" (the default), "polish", "structured", "formal", or a
@@ -72,6 +78,15 @@ struct Preferences: Codable, Equatable {
     var autoUpdate = true
     /// The language of the app's own words: "system" follows macOS, or a language's code ("en", "de", "zh-Hans"…).
     var language = Localization.followSystem
+    /// Keep what is copied on this Mac (the clipboard history, ClipboardHistory), how many items and
+    /// for how many days (0: until the limit lets them go), and apps whose copies are not kept.
+    var clipHistory = true
+    var clipLimit = 200
+    var clipDays = 30
+    var clipIgnored: [IgnoredApp] = []
+    /// Let the Dashboard's Clipboard tab list this Mac's History and clipboard history, through the
+    /// Monitor helper here (HistoryFeed): off until it is turned on.
+    var showOnDashboard = false
 
     init() {}
 
@@ -104,6 +119,11 @@ struct Preferences: Codable, Equatable {
         remotePeers = try values.decodeIfPresent([LegacyPeer].self, forKey: .remotePeers) ?? remotePeers
         foldedBlocks = try values.decodeIfPresent([String].self, forKey: .foldedBlocks) ?? foldedBlocks
         autoUpdate = try values.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? autoUpdate
+        clipHistory = try values.decodeIfPresent(Bool.self, forKey: .clipHistory) ?? clipHistory
+        clipLimit = try values.decodeIfPresent(Int.self, forKey: .clipLimit) ?? clipLimit
+        clipDays = try values.decodeIfPresent(Int.self, forKey: .clipDays) ?? clipDays
+        clipIgnored = try values.decodeIfPresent([IgnoredApp].self, forKey: .clipIgnored) ?? clipIgnored
+        showOnDashboard = try values.decodeIfPresent(Bool.self, forKey: .showOnDashboard) ?? showOnDashboard
         // Settings saved before the app had English were made in Chinese: they keep it.
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? Localization.Language.simplifiedChinese.rawValue
         if remotePeers.isEmpty && remoteRole == "send" && !remoteHost.isEmpty {

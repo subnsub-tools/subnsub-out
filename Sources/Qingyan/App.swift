@@ -241,6 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if !controller.busy { item(menu, tr("Start Recording"), #selector(startRecording), "mic") }
         if controller.busy { item(menu, tr("Cancel Recording"), #selector(cancelRecording), "xmark.circle") }
         if !controller.busy { item(menu, tr("Type the Clipboard (⌃⌥V)"), #selector(typeClipboard), "keyboard") }
+        item(menu, tr("Clipboard History (⌃⌥C)"), #selector(openClipboard), "list.clipboard")
+        if settings.preferences.clipHistory {
+            item(menu, tr("Pause Clipboard History"), #selector(pauseClipboard), "pause.circle")?.state = controller.clipboard.paused ? .on : .off
+        }
         if controller.screenState == .viewing { item(menu, tr("Stop Showing the Screen"), #selector(stopScreen), "eye.slash") }
         item(menu, tr("Keep on Top"), #selector(togglePinned), "pin")?.state = pinned ? .on : .off
         item(menu, tr("Settings…"), #selector(openSettings), "gearshape")
@@ -277,6 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc private func openSettings() { settings.reveal(.general) }
     @objc private func startRecording() { controller.toggle() }
     @objc private func typeClipboard() { controller.typeClipboard(from: .menu) }
+    @objc private func openClipboard() { controller.picker.show() }
+    @objc private func pauseClipboard() { controller.clipboard.paused.toggle() }
     @objc private func stopRecording() { controller.finish() }
     @objc private func cancelRecording() { controller.cancel() }
     @objc private func copyResult() { controller.copyResult() }

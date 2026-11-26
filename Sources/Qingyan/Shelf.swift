@@ -179,6 +179,16 @@ final class ShelfModel: ObservableObject {
         } else { say(tr("The clipboard holds nothing to put on the Shelf.")) }
     }
 
+    /// An entry of the clipboard history: its files, its picture or its text.
+    func put(_ entry: ClipEntry, from history: ClipboardHistory) {
+        guard store != nil else { return }
+        switch entry.kind {
+        case .files: history.files(entry).forEach(addFile)
+        case .image: if let data = history.imageBytes(entry) { addImage(data) }
+        case .text: if let text = history.text(entry) { addText(text) }
+        }
+    }
+
     private func addFile(_ url: URL) {
         guard let store else { return }
         guard !url.standardizedFileURL.path.hasPrefix(store.directory.standardizedFileURL.path) else { return }

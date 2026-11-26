@@ -136,6 +136,9 @@ final class DictationController: ObservableObject {
     private let receiver = RemoteReceiver()
     /// The History, for the Monitor page's Clipboard tab through the helper on this Mac.
     private let historyFeed = HistoryFeed()
+    /// What is copied on this Mac, and the window it is chosen from (Control + Option + C).
+    let clipboard: ClipboardHistory
+    let picker: ClipboardPicker
     /// This Mac's screen on the owner's Monitor page.
     let screen = ScreenHost()
     @Published var screenState = ScreenHost.State.off
@@ -275,6 +278,11 @@ final class DictationController: ObservableObject {
         self.settings = settings
         microphones = Microphones(preview: settings.preview)
         shelf = ShelfModel(preview: settings.preview)
+        let support = settings.preview ? FileManager.default.temporaryDirectory.appendingPathComponent("out-preview-\(getpid())")
+            : (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))?
+                .appendingPathComponent("Qingyan", isDirectory: true) ?? FileManager.default.temporaryDirectory
+        clipboard = ClipboardHistory(directory: support.appendingPathComponent("Clipboard", isDirectory: true))
+        picker = ClipboardPicker(history: clipboard)
         updater = Updater(settings: settings)
         // Macs paired before put went through the Monitor helper are not the owner's Macs as the
         // helper knows them: they go before anything dials them.
@@ -297,6 +305,21 @@ final class DictationController: ObservableObject {
             Task { @MainActor in TextTarget.prepareFront() }
         }
         shortcut.onTypeClipboard = { [weak self] in Task { @MainActor in self?.typeClipboard(from: .shortcut) } }
+        shortcut.onClipboardHistory = { [weak self] in Task { @MainActor in self?.picker.toggle() } }
+        clipboard.policy = { [weak settings] in
+            guard let prefs = settings?.preferences else { return ClipboardHistory.Policy(record: false) }
+            return ClipboardHistory.Policy(record: prefs.clipHistory, limit: prefs.clipLimit, days: prefs.clipDays,
+                                           ignored: Set(prefs.clipIgnored.map(\.bundle)))
+        }
+        // What out puts on the clipboard for a moment while it pastes is not something copied.
+        clipboard.isOwn = { PasteboardLease.general.isTemporary($0) }
+        picker.isOn = { [weak settings] in settings?.preferences.clipHistory ?? false }
+        picker.onTurnOn = { [weak settings] in settings?.preferences.clipHistory = true }
+        picker.onType = { [weak self] in self?.typeClipboard(from: .shortcut) }
+        picker.onShelf = { [weak self] entry in
+            guard let self else { return }
+            self.shelf.put(entry, from: self.clipboard)
+        }
         // Where the panel's Type the Clipboard types into: the last app in front other than this one.
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() { lastOtherApp = front }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
@@ -413,7 +436,10 @@ final class DictationController: ObservableObject {
         shelf.sync?.listening = settings.preferences.remotePort
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
         refreshHelper()
-        historyFeed.start { [weak self] in self?.settings.history ?? [] }
+        clipboard.start()
+        historyFeed.start(entries: { [weak self] in self?.settings.history ?? [] },
+                          copies: { [weak self] in self?.clipboard.entries ?? [] },
+                          shared: { [weak self] in self?.settings.preferences.showOnDashboard ?? false })
         retryQueued()
     }
 

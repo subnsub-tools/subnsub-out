@@ -105,6 +105,9 @@ public enum Shortcut: Equatable, Sendable {
         if code == 9 && modifiers == [.control, .option] {
             return .refuse(tr("Control + Option + V types the clipboard. Choose another key."))
         }
+        if code == 8 && modifiers == [.control, .option] {
+            return .refuse(tr("Control + Option + C opens the clipboard history. Choose another key."))
+        }
         if functionKeys[code] != nil { return .accept(.combination(code: code, modifiers: modifiers)) }
         // On its own, or with Shift or Command only, a key types or is an app's shortcut.
         guard !modifiers.isDisjoint(with: [.control, .option]) else {

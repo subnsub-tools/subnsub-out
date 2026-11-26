@@ -939,6 +939,15 @@ struct MainView: View {
             .disabled(controller.busy)
             .padding(.leading, 3)
             HeaderIconButton(
+                symbol: "list.clipboard",
+                active: false,
+                helpText: tr("Clipboard History (⌃⌥C)"),
+                accessibility: tr("Open the clipboard history")
+            ) {
+                controller.picker.show()
+            }
+            .padding(.leading, 3)
+            HeaderIconButton(
                 symbol: PanelSection.history.symbol,
                 active: settings.historyOpen,
                 helpText: settings.historyOpen ? tr("Hide History") : tr("History (%ld)", settings.history.count),

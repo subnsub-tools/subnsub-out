@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import QingyanCore
 
 /// Everything that is set once and then left alone. Lives inside the panel's side drawer so
@@ -36,6 +38,9 @@ struct SettingsPage: View {
             }
             InputGroup(settings: settings, controller: controller, microphones: controller.microphones)
             DictionaryGroup(settings: settings, controller: controller)
+            ClipboardGroup(settings: settings, history: controller.clipboard)
+            // Only where the Monitor helper is installed: the Dashboard reaches this Mac through it.
+            if [.ready, .stopped, .noTunnel].contains(controller.helperState) { DashboardGroup(settings: settings) }
             GeneralGroup(settings: settings, updater: controller.updater)
         }
         .disabled(controller.busy)
@@ -472,6 +477,109 @@ private struct DictionaryGroup: View {
         guard !settings.preferences.dictionary.contains(value) else { validation = tr("This entry is already in the dictionary."); return }
         settings.preferences.dictionary.append(value)
         word = ""; validation = ""
+    }
+}
+
+/// What is copied on this Mac, kept for Control + Option + C (ClipboardHistory).
+private struct ClipboardGroup: View {
+    @ObservedObject var settings: SettingsStore
+    @ObservedObject var history: ClipboardHistory
+    @State private var confirming = false
+
+    var body: some View {
+        let on = settings.preferences.clipHistory
+        SettingsGroup(tr("Clipboard history"), detail: history.entries.isEmpty ? "" : history.entries.count == 1 ? tr("1 item") : tr("%ld items", history.entries.count)) {
+            Row(tr("Keep what is copied"), info: tr("Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen.")) {
+                Toggle(tr("Keep what is copied"), isOn: $settings.preferences.clipHistory).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+            }
+            if on {
+                Row(tr("Keep up to")) {
+                    GlassMenu(label: tr("Keep up to"), selection: $settings.preferences.clipLimit,
+                              options: ClipboardHistory.limits.map { ($0, tr("%ld items", $0)) })
+                }
+                Row(tr("Keep for")) {
+                    GlassMenu(label: tr("Keep for"), selection: $settings.preferences.clipDays,
+                              options: ClipboardHistory.dayChoices.map { ($0, Self.days($0)) })
+                }
+                Divider()
+                HStack(spacing: 6) {
+                    Text(tr("Apps left out")).font(.system(size: 12))
+                    Spacer(minLength: 2)
+                    Button(tr("Add App…")) { addApp() }.buttonStyle(QuietButton())
+                }
+                ForEach(settings.preferences.clipIgnored, id: \.bundle) { app in
+                    HStack(spacing: 6) {
+                        Text(app.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 2)
+                        Button { settings.preferences.clipIgnored.removeAll { $0.bundle == app.bundle } } label: {
+                            Image(systemName: "xmark").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Palette.muted)
+                                .frame(width: 18, height: 18).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(tr("Keep copies made in %@", app.name))
+                        .accessibilityLabel(tr("Keep copies made in %@", app.name))
+                    }
+                }
+                hint(tr("Never kept: copies made in Passwords, Keychain Access, 1Password, Bitwarden, KeePassXC, LastPass, Dashlane or Proton Pass, and anything an app marks as a password or as temporary."))
+            }
+            Divider()
+            HStack(spacing: 6) {
+                if confirming {
+                    hint(tr("Remove every item but the pinned ones?"))
+                    Spacer(minLength: 2)
+                    Button(tr("Cancel")) { confirming = false }.buttonStyle(QuietButton())
+                    Button(tr("Remove")) { history.clear(); confirming = false }.buttonStyle(SolidButton())
+                } else {
+                    hint(tr("Pinned items stay until they are removed."))
+                    Spacer(minLength: 2)
+                    Button(tr("Clear")) { confirming = true }.buttonStyle(QuietButton())
+                        .disabled(history.entries.allSatisfy(\.pinned))
+                }
+            }
+        }
+    }
+
+    static func days(_ days: Int) -> String {
+        switch days {
+        case 0: return tr("No time limit")
+        case 1: return tr("1 day")
+        default: return tr("%ld days", days)
+        }
+    }
+
+    /// An app chosen in the Applications folder, by its bundle identifier.
+    private func addApp() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.prompt = tr("Add")
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { response in
+            guard response == .OK else { return }
+            MainActor.assumeIsolated {
+                for url in panel.urls {
+                    guard let bundle = Bundle(url: url)?.bundleIdentifier,
+                          !settings.preferences.clipIgnored.contains(where: { $0.bundle == bundle }) else { continue }
+                    let name = FileManager.default.displayName(atPath: url.path)
+                    settings.preferences.clipIgnored.append(IgnoredApp(bundle: bundle, name: name.hasSuffix(".app") ? String(name.dropLast(4)) : name))
+                }
+            }
+        }
+    }
+}
+
+/// Whether the Dashboard may list this Mac's History and clipboard history (HistoryFeed).
+private struct DashboardGroup: View {
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        SettingsGroup(tr("Dashboard")) {
+            Row(tr("Show on the Dashboard"), info: tr("When on, the Dashboard's Clipboard tab can list this Mac's History and clipboard history, read through the Monitor helper on this Mac while the tab is open. It gets text, file names and image sizes, not the files or images. When off, it is told only that this is off.")) {
+                Toggle(tr("Show on the Dashboard"), isOn: $settings.preferences.showOnDashboard).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+            }
+        }
     }
 }
 
