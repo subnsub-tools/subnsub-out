@@ -314,6 +314,8 @@ public final class FileTranscriber: Transcriber {
         self.wire = wire; self.key = key; self.name = name; self.session = session
     }
 
+    public var live: Bool { false }
+
     public func run(audio: AsyncThrowingStream<Data, Error>, model: String, dictionary: [String],
                     onReady: @escaping () -> Void, onPartial: @escaping (String) -> Void) async throws -> String {
         var pcm = Data()

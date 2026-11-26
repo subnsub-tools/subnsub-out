@@ -2506,6 +2506,8 @@ struct Checks {
         let heard = try await task.value
         try check(heard == "Meeting on Thursday at 3 p.m.", "the uploaded recording comes back as text")
         try check(server.requests.count == 1 && ready == 0 && partials == 0, "one request, and no claim of listening live")
+        try check(!client.live && !FileTranscriber(wire: GeminiWire(), key: "k", name: "Gemini").live,
+                  "a model that takes the finished file says so, so its recording is not shown offline")
         let upload = server.requests[0]
         try check(upload.method == "POST" && upload.path == "/v1/audio/transcriptions" && upload.headers["authorization"] == "Bearer k"
                   && upload.headers["content-type"]?.hasPrefix("multipart/form-data; boundary=") == true, "upload goes to the platform's transcription address with the key")
@@ -2606,6 +2608,7 @@ struct Checks {
         var (record, audio) = try store.begin(request)
         try audio.append(Data(repeating: 1, count: 4800))
         let client = RealtimeTranscriber(key: "fixture-key", endpoint: URL(string: "\(base)/drop")!)
+        try check(client.live, "a stream is live: online once its connection is up")
         do {
             _ = try await client.run(audio: audio.stream(), model: request.speechModel, dictionary: [], onReady: {}, onPartial: { record.text = $0 })
             throw VoiceError("fixture must disconnect")

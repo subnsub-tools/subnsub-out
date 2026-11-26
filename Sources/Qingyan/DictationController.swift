@@ -228,6 +228,15 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Whether the capsule shows the recording as online: its recognition is ready for it (a live
+    /// one once its connection is up; one that takes the finished file at once, as it needs none
+    /// before the end) and, unless it recognizes on this Mac, the network is there. Before this, a
+    /// model that takes the finished file (gpt-transcribe) kept "Offline" up through every
+    /// recording on a working network (user 2026-11-26).
+    var recordingOnline: Bool {
+        connected && (networkAvailable || entry?.request.map { Platform.named($0.speechPlatform).wire == .onDevice } == true)
+    }
+
     /// Compact summary tailored for the miniature floating status capsule.
     var capsuleSummary: String {
         switch phase {
@@ -235,7 +244,7 @@ final class DictationController: ObservableObject {
             return ""
         case .recording:
             let clockText = String(format: "%d:%02d", elapsed / 60, elapsed % 60)
-            return connected ? clockText : tr("%@ · Offline", clockText)
+            return recordingOnline ? clockText : tr("%@ · Offline", clockText)
         case .processing:
             switch capsuleStep {
             case .recognizing: return tr("Recognizing")
@@ -1245,6 +1254,9 @@ final class DictationController: ObservableObject {
                     guard self.networkAvailable || Platform.named(request.speechPlatform).wire == .onDevice else { throw VoiceError(tr("The network is unavailable"), retryable: true) }
                     let client = try await self.transcriber(for: request)
                     self.client = client
+                    // One that takes the finished file connects to nothing while the recording is
+                    // made: there is nothing to wait for, so the recording is not offline.
+                    if !client.live, self.sessionID == id { self.connected = true }
                     let transcript = try await client.run(audio: savedAudio.stream(), model: request.speechModel, dictionary: request.dictionary,
                         onReady: { [weak self] in
                             guard let self, self.sessionID == id else { return }

@@ -1823,7 +1823,7 @@ struct VoiceBar: View {
             .foregroundStyle(Palette.ink)
         } else if controller.phase == .recording {
             HStack(spacing: 5) {
-                CapsuleClock(meter: meter, online: controller.connected)
+                CapsuleClock(meter: meter, online: controller.recordingOnline)
                 if !controller.partial.isEmpty {
                     Text("·").font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.muted)
                     Button(action: copyFromCapsule) {

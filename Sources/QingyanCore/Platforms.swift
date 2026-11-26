@@ -252,6 +252,10 @@ public struct Service: Sendable {
 /// Turns a recording into text. Two ways exist: while it is being made, or after it is finished.
 @MainActor
 public protocol Transcriber: AnyObject {
+    /// Whether the recording goes out while it is being made, so that `onReady` says its connection
+    /// is up. False for one that takes the finished file: it connects to nothing before the
+    /// recording ends and calls no `onReady`, so there is nothing to wait for.
+    var live: Bool { get }
     func run(audio: AsyncThrowingStream<Data, Error>, model: String, dictionary: [String],
              onReady: @escaping () -> Void, onPartial: @escaping (String) -> Void) async throws -> String
     /// The recording has ended; an answer is now due within a bounded time.
@@ -261,6 +265,10 @@ public protocol Transcriber: AnyObject {
 
 extension RealtimeTranscriber: Transcriber {}
 
+extension Transcriber {
+    public var live: Bool { true }
+}
+
 /// For platforms that take a whole file: waits for the recording to end, uploads it once, and
 /// returns the text. Nothing leaves this Mac while the recording is still being made.
 @MainActor
@@ -269,6 +277,8 @@ public final class UploadTranscriber: Transcriber {
     private let session: URLSession
 
     public init(service: Service, session: URLSession = .shared) { self.service = service; self.session = session }
+
+    public var live: Bool { false }
 
     public func run(audio: AsyncThrowingStream<Data, Error>, model: String, dictionary: [String],
                     onReady: @escaping () -> Void, onPartial: @escaping (String) -> Void) async throws -> String {

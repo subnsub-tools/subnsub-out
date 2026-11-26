@@ -191,7 +191,7 @@ struct CompactBar: View {
         } else if recording {
             HStack(spacing: 5) {
                 MicroWaveform(meter: meter)
-                CapsuleClock(meter: meter, online: controller.connected)
+                CapsuleClock(meter: meter, online: controller.recordingOnline)
                 if copied {
                     Text(tr("Copied")).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Palette.accent)
                 } else if !controller.partial.isEmpty {
