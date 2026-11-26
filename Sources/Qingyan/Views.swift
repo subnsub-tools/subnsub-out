@@ -423,8 +423,8 @@ struct HeaderIconButton: View {
 
 extension View {
     /// A text field without the system's opaque bezel.
-    func glassField(mono: Bool = false) -> some View {
-        textFieldStyle(.plain).font(.system(size: 12, design: mono ? .monospaced : .default))
+    func glassField() -> some View {
+        textFieldStyle(.plain).font(.system(size: 12))
             .padding(.horizontal, 8).padding(.vertical, 5.5)
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Palette.line, lineWidth: 1))
@@ -514,20 +514,14 @@ struct GlassMenu<Value: Hashable>: View {
 
     var body: some View {
         let title = Self.short(options.first { $0.value == selection }?.title ?? "—")
-        Group {
-            if #available(macOS 26.0, *) {
-                Menu { items } label: { HStack(spacing: 4) { Text(title).lineLimit(1); chevron } }
-                    .menuStyle(.borderlessButton).fixedSize()
-            } else {
-                // Before macOS 26 a borderless menu button puts an image in its label first and adds an
-                // arrow of its own, which made the model menus so wide that the Settings drawer
-                // overflowed its edge: there the menu shows the name alone and the arrows sit beside it.
-                HStack(spacing: 4) {
-                    Menu { items } label: { Text(title).lineLimit(1) }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    chevron.allowsHitTesting(false)
-                }
-            }
+        // A borderless menu button puts an image in its label first and adds an arrow of its own:
+        // two arrows on every menu (seen on macOS 27, user 2026-11-26), and before macOS 26 a width
+        // that overflowed the Settings drawer. So the menu shows the name alone, with no arrow of its
+        // own, and the arrows sit beside it.
+        HStack(spacing: 4) {
+            Menu { items } label: { Text(title).lineLimit(1) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            chevron.allowsHitTesting(false)
         }
         // The menu button before macOS 26 brings a little room of its own around the name.
         .padding(.horizontal, Metrics.legacy ? 7 : 9).padding(.vertical, 4.5)
@@ -586,10 +580,16 @@ struct RecordingRing: View {
     }
 }
 
-/// Small print under a control. Wraps and supports direct click-to-copy.
-func caption(_ text: String) -> some View {
-    CopyableText(text, font: .system(size: 10.5), color: Palette.muted, lineSpacing: 2)
+/// Words of the interface itself: a hint, a status, a notice. Shown, and wrapped, but never copied
+/// with a click (user 2026-11-26: only what was dictated or received is copied by clicking it; the
+/// interface's own words being copyable was strange).
+func words(_ text: String, size: CGFloat = 11, color: Color = Palette.muted, lineSpacing: CGFloat = 2.5, lineLimit: Int? = nil) -> some View {
+    Text(text).font(.system(size: size)).foregroundStyle(color).lineSpacing(lineSpacing).lineLimit(lineLimit)
+        .fixedSize(horizontal: false, vertical: true)
 }
+
+/// Small print under a control.
+func caption(_ text: String) -> some View { words(text, size: 10.5, lineSpacing: 2) }
 
 /// The long explanation, one click away instead of taking panel height: a click on the mark shows it
 /// at once, and a click anywhere else puts it away (user 2026-11-26: the mark could not be clicked,
@@ -608,7 +608,7 @@ struct Info: View {
         .onHover { hovered = $0 }
         .accessibilityLabel(text)
         .popover(isPresented: $shown) {
-            CopyableText(text, font: .system(size: 11.5))
+            words(text, size: 11.5, color: Palette.ink)
                 .frame(width: 260, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(12)
@@ -1126,12 +1126,7 @@ struct MainView: View {
     private var resultCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 6) {
-                CopyableText(
-                    shownResult.message,
-                    copyValue: shownResult.text.isEmpty ? shownResult.message : shownResult.text,
-                    font: .system(size: 11),
-                    color: shownResult.failed ? Color.orange : Palette.muted
-                )
+                words(shownResult.message, color: shownResult.failed ? Color.orange : Palette.muted)
                 if !shownResult.text.isEmpty {
                     CopyableText(
                         shownResult.text,
@@ -1317,7 +1312,7 @@ struct RemoteSection: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 5) {
                         Image(systemName: "exclamationmark.shield").font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 2)
-                        CopyableText(problem ?? "", font: .system(size: 11), color: .orange)
+                        words(problem ?? "", color: .orange)
                     }
                     // The helper is installed from the Monitor page, whose line carries the account and the
                     // key the Macs trust: its Install window opens with put's switch on.
@@ -1382,7 +1377,7 @@ struct RemoteSection: View {
         return HStack(spacing: 6) {
             Circle().fill(ok == true ? Palette.accent : ok == false ? Color.orange : Palette.muted.opacity(0.5))
                 .frame(width: 6, height: 6)
-            CopyableText(device.label, font: .system(size: 12))
+            Text(device.label).font(.system(size: 12))
                 .lineLimit(1)
             // Its screen in a window of out's own (user 2026-11-21): a Mac reached through the helper,
             // and not one whose out has said it has no Apple silicon (user 2026-11-25: an Intel Mac
@@ -1449,7 +1444,7 @@ struct HistorySection: View {
                     .font(.system(size: 10.5)).foregroundStyle(Palette.muted)
             }
             if !settings.historyMessage.isEmpty {
-                CopyableText(settings.historyMessage, font: .system(size: 11), color: .orange)
+                words(settings.historyMessage, color: .orange)
             }
             if settings.history.isEmpty {
                 caption(tr("No records yet. You can record at any time, even with no text field in focus; results and audio waiting to be transcribed are kept on this Mac."))
@@ -1510,7 +1505,7 @@ struct HistorySection: View {
                 enabled: !entry.text.isEmpty
             )
             if let problem = entry.problem {
-                CopyableText(problem, font: .system(size: 10.5), color: .orange.opacity(0.9), lineLimit: full ? nil : 2)
+                words(problem, size: 10.5, color: .orange.opacity(0.9), lineLimit: full ? nil : 2)
             }
             if full {
                 if entry.state != .completed && !entry.text.isEmpty {

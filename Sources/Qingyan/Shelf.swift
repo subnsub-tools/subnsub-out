@@ -801,14 +801,16 @@ struct ShelfBar: View {
             HStack(spacing: 6) {
                 Image(systemName: "tray").font(.system(size: 11)).frame(width: 15)
                 Text(tr("Shelf")).font(.system(size: 12, weight: .semibold))
-                Text(shelf.linked == 1 ? tr("Connected to 1 Mac") : shelf.linked > 1 ? tr("Connected to %ld Macs", shelf.linked) : tr("This Mac only"))
-                    .font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
+                // How many Macs it is shared with is Multiple Macs' to say; here only that it is not.
+                if shelf.linked == 0 {
+                    Text(tr("This Mac only")).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
+                }
                 Spacer(minLength: 4)
                 Button(tr("Paste")) { shelf.addClipboard() }.buttonStyle(QuietButton()).help(tr("Put what is on the clipboard on the Shelf"))
                 if !shelf.items.isEmpty { Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton()) }
             }
             if !shelf.notice.isEmpty {
-                CopyableText(shelf.notice, font: .system(size: 10.5), color: Palette.muted)
+                words(shelf.notice, size: 10.5)
             }
             if shelf.items.isEmpty {
                 Text(tr("Drop files, images or text here to keep them on the Shelf, in sync with your other Macs."))

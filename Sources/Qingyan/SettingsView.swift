@@ -66,7 +66,7 @@ private struct SettingsGroup<Content: View>: View {
 }
 
 private func hint(_ text: String, warning: Bool = false) -> some View {
-    CopyableText(text, font: .system(size: 11), color: warning ? Color.orange : Palette.muted)
+    words(text, color: warning ? Color.orange : Palette.muted)
 }
 
 /// Styles the user writes themselves: a name for the Style menu and the instructions sent with
@@ -184,7 +184,7 @@ private struct ModelRows: View {
         }
         if suggestions.isEmpty || (!fixed && (typing || !listed)) {
             TextField(speech ? tr("Recognition model name") : tr("Polishing model name"), text: model)
-                .glassField(mono: true).autocorrectionDisabled()
+                .glassField().autocorrectionDisabled()
         }
     }
 }
@@ -205,7 +205,7 @@ private struct KeyGroup: View {
                       detail: saved ? tr("Saved") : tr("Not set up")) {
             if platform.wire == .alibaba {
                 TextField(tr("Address, such as dashscope-intl.aliyuncs.com"), text: $settings.preferences.alibabaHost)
-                    .glassField(mono: true).autocorrectionDisabled()
+                    .glassField().autocorrectionDisabled()
                 hint(tr("Leave empty for the Singapore region. A key works only with the address of the region it was created in; for another region or a workspace's own domain, enter that address."))
                 if !settings.preferences.alibabaHost.trimmingCharacters(in: .whitespaces).isEmpty,
                    Platform.alibabaBase(settings.preferences.alibabaHost) == nil {
@@ -214,7 +214,7 @@ private struct KeyGroup: View {
             }
             if custom {
                 TextField(tr("Endpoint URL, such as https://example.com/v1"), text: $settings.preferences.customBase)
-                    .glassField(mono: true).autocorrectionDisabled()
+                    .glassField().autocorrectionDisabled()
                 if !settings.preferences.customBase.trimmingCharacters(in: .whitespaces).isEmpty,
                    Platform.normalized(base: settings.preferences.customBase) == nil {
                     hint(tr("Use an https:// address. http:// is accepted only for this Mac, a local network host name or an IP address."), warning: true)
@@ -224,7 +224,7 @@ private struct KeyGroup: View {
                 }
             }
             SecureField(saved ? tr("Enter a new key to replace it") : tr("API key (%@)", tr(platform.keyHint)), text: $key)
-                .glassField(mono: true).onSubmit { save() }
+                .glassField().onSubmit { save() }
             HStack(spacing: 6) {
                 Button(saving ? tr("Saving…") : tr("Save")) { save() }
                     .buttonStyle(SolidButton()).disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
@@ -236,7 +236,7 @@ private struct KeyGroup: View {
                 }
             }
             if let message = settings.keyMessages[platform.id], !message.isEmpty {
-                CopyableText(message, font: .system(size: 11), color: Palette.ink)
+                words(message, color: Palette.ink)
             }
         }
         .alert(tr("Remove the %@ API key from the system keychain?", platform.name), isPresented: $deleteConfirmation) {
@@ -322,8 +322,7 @@ private struct InputGroup: View {
         let boundLabel = MicrophoneBinding.displayLabel(boundName: settings.preferences.microphoneName, uid: chosen)
         let away = !settings.preview && microphones.loaded && !chosen.isEmpty && !microphones.all.contains { $0.uid == chosen }
         let inUse = microphones.systemDefault?.name ?? tr("No input device found")
-        SettingsGroup(tr("Audio and shortcut"),
-                      detail: chosen.isEmpty ? tr("Follows macOS") : (away ? tr("Locked device offline") : tr("Microphone locked"))) {
+        SettingsGroup(tr("Audio and shortcut")) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(tr("Input microphone (a click locks it permanently)"))
                     .font(.system(size: 11.5, weight: .medium))
@@ -372,7 +371,7 @@ private struct InputGroup: View {
                 Image(systemName: controller.hotkeyInstalled ? "checkmark.shield" : "exclamationmark.shield")
                     .font(.system(size: 11)).foregroundStyle(controller.hotkeyInstalled ? Palette.muted : .orange)
                     .padding(.top, 2)
-                CopyableText(controller.shortcutStatus, font: .system(size: 11),
+                words(controller.shortcutStatus,
                              color: controller.hotkeyInstalled ? Palette.muted : .orange)
             }
             HStack(spacing: 6) {
@@ -499,7 +498,7 @@ private struct GeneralGroup: View {
                 Toggle(tr("Install updates automatically"), isOn: $settings.preferences.autoUpdate).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             HStack(alignment: .center, spacing: 6) {
-                CopyableText(updater.status, font: .system(size: 11), color: Palette.muted)
+                words(updater.status)
                 Spacer(minLength: 0)
                 Button(updater.working ? tr("Checking…") : tr("Check for updates")) { updater.check(manual: true) }
                     .buttonStyle(QuietButton()).disabled(updater.working)
