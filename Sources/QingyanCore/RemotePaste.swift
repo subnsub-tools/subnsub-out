@@ -159,6 +159,33 @@ public enum RemoteWire {
     public static func localTailnetAddress() -> String? { tailnet()?.address }
     /// The network interface Tailscale runs on, when it is running.
     public static func tailnetInterface() -> String? { tailnet()?.interface }
+
+    /// How long before a recording began a Mac's last input may be for it to count, and how close
+    /// together two Macs' last inputs may be for neither to stand out.
+    public static let workedWithin: TimeInterval = 20
+    public static let workedApart: TimeInterval = 5
+
+    /// Which of the Macs that answered is the one being worked, from what each said when it was
+    /// asked (user 2026-11-26: the Mac whose pointer or keys moved, one with a text cursor first).
+    /// `seen`: each Mac's seconds since its last input, now, and whether a text field has its
+    /// keyboard; nil for a Mac that does not say (an older out), and then only the knock can tell.
+    /// `quietFor`: seconds since the recording began, while no one is expected to touch anything.
+    /// A Mac counts only with input from `workedWithin` before the recording on. The one with the
+    /// latest input is it when no other's came within `workedApart` of it; among those that close,
+    /// the only one with a text cursor is it. Input clearly later elsewhere outweighs a text
+    /// cursor: the window worked last is the one in front. Anything else: nil, and the knock decides.
+    public static func worked(_ seen: [(idle: TimeInterval, caret: Bool)?], quietFor: TimeInterval) -> Int? {
+        var recent: [(index: Int, idle: TimeInterval, caret: Bool)] = []
+        for (index, one) in seen.enumerated() {
+            guard let one else { return nil }
+            if one.idle - max(0, quietFor) <= workedWithin { recent.append((index, one.idle, one.caret)) }
+        }
+        guard let latest = recent.map(\.idle).min() else { return nil }
+        let close = recent.filter { $0.idle <= latest + workedApart }
+        if close.count == 1 { return close[0].index }
+        let typing = close.filter(\.caret)
+        return typing.count == 1 ? typing[0].index : nil
+    }
 }
 
 /// The knock: a keystroke pattern the sending Mac types into whatever window is in front.
@@ -514,6 +541,11 @@ public final class RemoteSession {
         /// Why this Mac said no to the arming, when it said no.
         var miss: MissReason?
         var seen: Date?
+        /// Seconds since its last input, as it said when it armed (at `idleAt`), and whether a text
+        /// field had its keyboard; nil from an out that does not say.
+        var idle: TimeInterval?
+        var idleAt: Date?
+        var caret = false
         var elapsed: TimeInterval = 0
         var reply: Once<[String: Any]>?
         /// Arming was tried, and whether a channel to the Mac opened at all.
@@ -555,6 +587,44 @@ public final class RemoteSession {
     public var patience: TimeInterval {
         let slowest = links.filter(\.armed).map(\.elapsed).max() ?? 0
         return min(0.9, max(0.25, slowest / 3 + 0.2))
+    }
+
+    /// The places of the Macs not in `doubtful` (by key).
+    public func places(except doubtful: Set<String>) -> [Int] {
+        links.indices.filter { !doubtful.contains(links[$0].device.key) }
+    }
+
+    /// The armed Mac being worked, by what each said of its input when it armed
+    /// (`RemoteWire.worked`); nil when none stands out, or one of them did not say.
+    public func worked(quietFor: TimeInterval) -> Int? {
+        let armed = links.indices.filter { links[$0].armed }
+        guard !armed.isEmpty else { return nil }
+        let now = Date()
+        let seen = armed.map { index -> (idle: TimeInterval, caret: Bool)? in
+            let link = links[index]
+            guard let idle = link.idle, let at = link.idleAt else { return nil }
+            return (idle + now.timeIntervalSince(at), link.caret)
+        }
+        return RemoteWire.worked(seen, quietFor: quietFor).map { armed[$0] }
+    }
+
+    /// What the Mac at `index` said of its input, for the log.
+    public func input(_ index: Int) -> String {
+        let link = links[index]
+        guard let idle = link.idle, let at = link.idleAt else { return "says nothing of its input" }
+        return String(format: "input %.1f s ago", idle + Date().timeIntervalSince(at)) + (link.caret ? ", a text cursor" : "")
+    }
+
+    /// What every armed Mac said of its input, for the log.
+    public var inputs: String {
+        links.indices.filter { links[$0].armed }.map { "\(name($0)) \(input($0))" }.joined(separator: "; ")
+    }
+
+    /// Tells the Mac at `index` that the text is for it, as its seeing the knock would have: it
+    /// says whose text is on the way and gets the app in front ready for it.
+    public func choose(_ index: Int) {
+        guard links.indices.contains(index), links[index].armed else { return }
+        links[index].channel?.post(["chosen": true])
     }
 
     /// Connects to every Mac at once. Unreachable ones are simply left out.
@@ -630,6 +700,9 @@ public final class RemoteSession {
                     throw VoiceError(reply["message"] as? String ?? tr("Not ready."))
                 }
                 link.name = reply["name"] as? String ?? channel.peerName
+                if let idle = (reply["idle"] as? NSNumber)?.doubleValue, idle.isFinite, idle >= 0 {
+                    link.idle = idle; link.idleAt = Date(); link.caret = reply["caret"] as? Bool == true
+                }
             } catch let error as VoiceError { throw error }
             catch { throw RemoteIO.unreachable(link.device.label, link.device.port) }
             guard !closed else { channel.close(); return }
@@ -805,6 +878,9 @@ public final class RemoteReceiver {
     /// the end of the one named last names the other again, and only the end of both is an end.
     public var onIncoming: ((String) -> Void)?
     public var onIncomingEnded: (() -> Void)?
+    /// Seconds since this Mac's pointer or keys last moved, and whether a text field has the
+    /// keyboard: told to a Mac that arms here, which may tell from it alone that its text comes here.
+    public var activity: (() -> (idle: TimeInterval, caret: Bool))?
     /// One of the owner's other Macs asks to show this screen in its out (a trusted Mac allowed to
     /// type here, reached through the Monitor helper): the connection is the screen session's from
     /// here on (ScreenWire), with that Mac's key and name. Not set: no other Mac is shown this screen.
@@ -823,7 +899,8 @@ public final class RemoteReceiver {
     private var timedOut = Set<ObjectIdentifier>()
     /// A dictation may be transcribed for a while before its text arrives.
     private static let armedLifetime: TimeInterval = 300
-    private enum Next { case close, keep, handOver, screen }
+    /// `quiet`: kept, and nothing is written back.
+    private enum Next { case close, keep, quiet, handOver, screen }
 
     public init() {}
 
@@ -939,8 +1016,13 @@ public final class RemoteReceiver {
     public func knocked(_ nonce: Int) {
         guard let channel = armed[nonce] else { Trace.note("receive: a knock was typed here that no Mac is waiting on"); return }
         channel.post(["seen": true])
+        Trace.note("receive: knock seen; \(sender(channel)) is told its text comes here")
+        expect(channel)
+    }
+
+    /// The text of the Mac on `channel` is on the way here.
+    private func expect(_ channel: Channel) {
         let from = sender(channel)
-        Trace.note("receive: knock seen; \(from) is told its text comes here")
         incoming.removeAll { $0.connection === channel.connection }
         incoming.append((channel.connection, from))
         onIncoming?(from)
@@ -1014,9 +1096,10 @@ public final class RemoteReceiver {
         while let request = try? await channel.readObject() {
             if request["text"] != nil { textCame = true }
             let (reply, next) = await answer(request, on: channel)
+            if next == .quiet { continue }
             guard (try? await channel.write(reply)) != nil else { break }
             switch next {
-            case .keep: continue
+            case .keep, .quiet: continue
             case .close: connection.cancel(); return
             // The shelf reads this connection from now on, for as long as it lives.
             case .handOver: return
@@ -1098,7 +1181,20 @@ public final class RemoteReceiver {
             Trace.note("receive: \(sender(channel)) is ready to send, waiting for its knock")
             armed[nonce] = channel
             expire(channel.connection, after: Self.armedLifetime)
-            return (["ok": true, "message": "armed", "name": name], .keep)
+            var reply: [String: Any] = ["ok": true, "message": "armed", "name": name]
+            if let activity = activity?() {
+                reply["idle"] = min(max(0, activity.idle), 86_400 * 365); reply["caret"] = activity.caret
+            }
+            return (reply, .keep)
+        }
+        if object["chosen"] as? Bool == true {
+            // The Mac that armed here told from this Mac's input, with no knock, that its text comes
+            // here. Nothing is written back: its reader would take a reply for the text's.
+            if armed.values.contains(where: { $0 === channel }) {
+                Trace.note("receive: \(sender(channel)) told from this Mac's input that its text comes here")
+                expect(channel)
+            }
+            return ([:], .quiet)
         }
         let stays: Next = armed.values.contains(where: { $0 === channel }) ? .keep : .close
         if object["context"] as? Bool == true {

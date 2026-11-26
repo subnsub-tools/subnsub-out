@@ -115,6 +115,8 @@ final class DictationController: ObservableObject {
     private var retryAfter: [UUID: Date] = [:]
     private var sessionID = UUID()
     private var stopTime: Date?
+    /// When the recording began, for how long no other Mac was expected to be touched.
+    private var recordingBegan: Date?
     /// A write watched for a correction (Learn from corrections), bound to the very field it went
     /// into by the focused AX element captured right after the write; `before`/`after` are the
     /// baseline read one second later, split at the cursor.
@@ -308,7 +310,13 @@ final class DictationController: ObservableObject {
             guard let self, self.settings.preferences.linkEnabled else { return nil }
             return self.settings.preferences.devices.first { $0.key == key }
         }
-        receiver.onIncoming = { [weak self] from in self?.receivingStarted(from: from) }
+        receiver.onIncoming = { [weak self] from in
+            self?.receivingStarted(from: from)
+            // The text is coming to the app in front here, told by a knock or by this Mac's input.
+            TextTarget.prepareFront()
+        }
+        // Told to a Mac about to send text, which may tell from it alone that the text is for this one.
+        receiver.activity = { (TextTarget.secondsSinceInput(), TextTarget.caretInFront()) }
         // Another Mac's out shows this screen in its window (user 2026-11-21: no switch for that).
         receiver.onScreen = { [weak self] connection, key, viewer in
             guard let self else { connection.cancel(); return }
@@ -664,25 +672,47 @@ final class DictationController: ObservableObject {
     /// claim the knock (RemoteSession.find).
     /// No knock is typed once the window in front is no longer a remote desktop: it would reach an
     /// app on this Mac, and the text is then for this Mac anyway.
-    private func locate(in session: RemoteSession) async -> (FocusMark?, Int?) {
+    /// `byInput`: first ask every Mac at once and go by what each says of its input; false when
+    /// what they said is older than the window in front.
+    private func locate(in session: RemoteSession, byInput: Bool = true) async -> (FocusMark?, Int?) {
         var mark: FocusMark?
         let first = session.index(namedIn: FocusMark.current()?.title ?? "", learned: armedNames)
         let started = Date()
         var knocks = 0
-        let found = await session.find(first: first, doubtful: unopened, timeout: 1.5, dial: Self.scoutDial) {
-            guard self.remoteInFront else {
-                Trace.note("send: no knock: the window in front is no longer a remote desktop (\(Self.frontApp))")
-                return false
+        var found: Int?
+        var worked = false
+        if byInput {
+            // The Macs reached the last time, all at once: what each says of its input may tell which
+            // one is being worked, with no knock (user 2026-11-26: the Mac whose pointer or keys moved,
+            // one with a text cursor first). The others come only if the knock comes to them.
+            await session.arm(session.places(except: unopened), timeout: 1.5, dial: Self.scoutDial)
+            let quiet = recordingBegan.map { Date().timeIntervalSince($0) } ?? 0
+            if remoteSession === session, remoteInFront, let index = session.worked(quietFor: quiet) {
+                mark = FocusMark.current()
+                session.choose(index)
+                found = index; worked = true
+            } else if remoteSession === session, session.armedCount > 0 {
+                Trace.note("send: no Mac stands out by its input (\(session.inputs)); knocking")
             }
-            mark = FocusMark.current()
-            knocks += 1
-            await KnockKeys.post(nonce: session.nonce)
-            return true
+        }
+        if !worked {
+            found = await session.find(first: first, doubtful: unopened, timeout: 1.5, dial: Self.scoutDial) {
+                guard self.remoteInFront else {
+                    Trace.note("send: no knock: the window in front is no longer a remote desktop (\(Self.frontApp))")
+                    return false
+                }
+                mark = FocusMark.current()
+                knocks += 1
+                await KnockKeys.post(nonce: session.nonce)
+                return true
+            }
         }
         let named = first.map { session.name($0) } ?? "none"
         // A search whose dictation is over (its links closed under it) says nothing about the Macs.
         if remoteSession === session {
-            if let found {
+            if worked, let found {
+                Trace.note("send: \(session.name(found)) is the Mac being worked (\(session.input(found))), told after \(Trace.ms(since: started)) ms; no knock")
+            } else if let found {
                 Trace.note("send: \(session.name(found)) saw knock \(knocks) after \(Trace.ms(since: started)) ms (the window's title names \(named))")
             } else if knocks > 0 {
                 Trace.note("send: no Mac saw the knock (\(knocks) typed, \(Trace.ms(since: started)) ms; \(Self.readiness(session)); the title names \(named))")
@@ -746,7 +776,7 @@ final class DictationController: ObservableObject {
             return Destination(session: session, target: early)
         }
         Trace.note("send: text ready, but the window in front is not the one the knock was typed in (\(mark == nil ? "no knock was typed" : "\(Self.appName(mark)) then, \(Self.appName(now)) now\(mark?.pid == now?.pid ? ", the same app" : "")")); knocking again")
-        let (again, found) = await locate(in: session)
+        let (again, found) = await locate(in: session, byInput: false)
         let target = again?.same(as: FocusMark.current()) == true ? found : nil
         if found != nil, target == nil { Trace.note("send: the window in front changed again while knocking; not sending to \(found.map { session.name($0) } ?? "")") }
         return Destination(session: session, target: target)
@@ -1184,6 +1214,7 @@ final class DictationController: ObservableObject {
             let (record, savedAudio) = try settings.beginHistory(request)
             entry = record; audioFile = savedAudio
             phase = .recording
+            recordingBegan = Date()
             message = mode != prefs.mode ? tr("No text selected · Handled as dictation") : tr("Recording · Tap again to stop")
             presentOverlay?()
             startClock(id: id)

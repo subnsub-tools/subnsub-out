@@ -95,6 +95,7 @@ struct Checks {
             ("Errors never echo secrets", errors),
             ("Remote paste framing, pairing code and Tailscale-only peers", remoteWire),
             ("Knock: every nonce round-trips, noise and broken patterns are ignored", knock),
+            ("Which Mac is being worked: the latest input, a text cursor among Macs touched together, else the knock", worked),
             ("Spoken editing: two-step requests, field text as data, markers, smallest changed span", revision),
             ("Platforms: addresses, recording as a WAV upload, short vocabulary hint, chat request and reply, errors name the platform, old recordings mean OpenAI", platforms),
             ("Model Studio: address forms, realtime session shape, transcript joining, resampling, thinking off", alibaba),
@@ -145,6 +146,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Links: \(error.localizedDescription)") }
         do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
+        do { try await remoteWorked(); print("PASS Which Mac is being worked over real TCP: told by what each says of its input when it arms, no knock, the chosen Mac told whose text is on the way, the text reaches it; a Mac that says nothing leaves it to the knock") }
+        catch { failed += 1; print("FAIL Remote worked: \(error.localizedDescription)") }
         do { try await platformCalls(); print("PASS Other platforms over real HTTP: nothing sent until the recording ends, upload and reply, hint only where taken, no key no header, short and cancelled recordings, tidying through chat and through Responses, cut-off replies refused, model list, errors without the reply's text") }
         catch { failed += 1; print("FAIL Platform calls: \(error.localizedDescription)") }
         if let index = CommandLine.arguments.firstIndex(of: "--socket-fixture"), CommandLine.arguments.count > index + 1 {
@@ -887,6 +890,66 @@ struct Checks {
 
         try check(OpenAIWire.keepingEdges(of: "\n  First paragraph.\n\n", "First paragraph, changed.") == "\n  First paragraph, changed.\n\n", "blank edges of the field survive a trimmed answer")
         try check(OpenAIWire.keepingEdges(of: "First paragraph.\n", "") == "" && OpenAIWire.keepingEdges(of: "  \n", "New content") == "New content", "clearing clears, and a blank field takes the text as is")
+    }
+
+    static func worked() throws {
+        func pick(_ seen: [(TimeInterval, Bool)?], _ quiet: TimeInterval) -> Int? {
+            RemoteWire.worked(seen.map { $0.map { (idle: $0.0, caret: $0.1) } }, quietFor: quiet)
+        }
+        try check(pick([(2, false), (400, true)], 0) == 0, "the Mac touched just now is it")
+        try check(pick([(30, false), (400, true)], 15) == 0, "input from just before a long recording still counts")
+        try check(pick([(60, false), (400, true)], 10) == nil, "no Mac touched near the recording: the knock decides")
+        try check(pick([(2, false), (4, true)], 0) == 1, "two touched together: the one with a text cursor")
+        try check(pick([(2, true), (4, true)], 0) == nil, "two with a text cursor: the knock decides")
+        try check(pick([(2, false), (3, false)], 0) == nil, "two with none: the knock decides")
+        try check(pick([(2, false), (10, true)], 0) == 0, "a text cursor does not outweigh input clearly later elsewhere")
+        try check(pick([(2, true), nil], 0) == nil, "a Mac that says nothing leaves it to the knock")
+        try check(pick([], 0) == nil, "no Mac, no answer")
+    }
+
+    /// Over real TCP: what each Mac says of its input when it arms tells which one is being worked,
+    /// with no knock, and the Mac chosen hears whose text is on the way as if it had seen one.
+    @MainActor static func remoteWorked() async throws {
+        let base = 20000 + Int.random(in: 0..<19000)
+        let me = DeviceIdentity()
+        let laptop = TrustedDevice(key: me.publicKey, name: "Laptop", host: "", port: 30001)
+        let study = RemoteReceiver(), office = RemoteReceiver()
+        study.name = "Study"; office.name = "Office"
+        study.trusted = { $0 == me.publicKey ? laptop : nil }
+        office.trusted = { $0 == me.publicKey ? laptop : nil }
+        study.activity = { (400, true) }
+        office.activity = { (1.5, false) }
+        var incomingAtStudy: [String] = [], incomingAtOffice: [String] = []
+        var atOffice: [RemoteReceiver.Request] = []
+        study.onIncoming = { incomingAtStudy.append($0) }
+        office.onIncoming = { incomingAtOffice.append($0) }
+        study.start(port: base, probe: { (true, "ready") }, deliver: { _ in "Pasted into Notes" })
+        office.start(port: base + 1, probe: { (true, "ready") }, deliver: { atOffice.append($0); return "Pasted into Terminal" })
+        defer { study.stop(); office.stop() }
+        let deadline = Date().addingTimeInterval(3)
+        while !(study.listening && office.listening) && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        try check(study.listening && office.listening, "both receivers listen")
+        let peers = [TrustedDevice(key: study.identity.publicKey, name: "", host: "127.0.0.1", port: base),
+                     TrustedDevice(key: office.identity.publicKey, name: "", host: "127.0.0.1", port: base + 1)]
+
+        let session = RemoteSession(devices: peers, identity: me, name: "Laptop", listening: 30001)
+        await session.arm(timeout: 2)
+        try check(session.armedCount == 2, "both Macs arm")
+        try check(session.worked(quietFor: 0) == 1, "the Mac touched just now is the one being worked")
+        session.choose(1)
+        let told = Date().addingTimeInterval(2)
+        while incomingAtOffice.isEmpty && Date() < told { try await Task.sleep(nanoseconds: 20_000_000) }
+        try check(incomingAtOffice == ["Laptop"] && incomingAtStudy.isEmpty, "the Mac chosen hears whose text is on the way, the other nothing")
+        let outcome = try await session.send(to: 1, text: "ls", mode: .dictate, seconds: 1)
+        try check(outcome.message == "Pasted into Terminal" && atOffice.count == 1 && atOffice[0].text == "ls",
+                  "the text reaches it, and being chosen gets no reply that could be taken for the text's")
+        session.close()
+
+        study.activity = nil
+        let mixed = RemoteSession(devices: peers, identity: me, name: "Laptop", listening: 30001)
+        await mixed.arm(timeout: 2)
+        try check(mixed.armedCount == 2 && mixed.worked(quietFor: 0) == nil, "a Mac that says nothing of its input leaves it to the knock")
+        mixed.close()
     }
 
     static func knock() throws {

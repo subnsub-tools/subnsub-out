@@ -670,6 +670,30 @@ struct TextTarget {
         }
     }
 
+    /// Seconds since this Mac's pointer, mouse buttons or keys last moved, whoever moved them: its
+    /// own mouse and keyboard, out's typing, or a remote desktop's, which posts its events into the
+    /// session as well.
+    static func secondsSinceInput() -> TimeInterval {
+        let kinds: [CGEventType] = [.mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                    .leftMouseDragged, .scrollWheel, .keyDown, .flagsChanged]
+        return kinds.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? 86_400
+    }
+
+    /// Whether the app in front has a text field with the keyboard, a text cursor, as far as
+    /// Accessibility shows it within a tenth of a second.
+    static func caretInFront() -> Bool {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return false }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, 0.1)
+        guard let raw = attribute(appElement, kAXFocusedUIElementAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
+        let element = unsafeBitCast(raw, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(element, 0.1)
+        let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+        guard [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(role)
+                || attribute(element, kAXSelectedTextRangeAttribute) != nil else { return false }
+        return writable(element, in: app)
+    }
+
     private static func writable(_ element: AXUIElement, in app: NSRunningApplication) -> Bool {
         if attribute(element, kAXEnabledAttribute) as? Bool == false { return false }
         if terminals.contains(app.bundleIdentifier ?? "") { return true }
