@@ -49,6 +49,14 @@ for code in $languages; do
   cp "$ROOT/Resources/$code.json" "$APP/Contents/Resources/$code.json"
   cp -R "$ROOT/Resources/$code.lproj" "$APP/Contents/Resources/"
 done
+# out Mic (Driver/): the virtual microphone another Mac speaks into, installed from Settings. Built for
+# both kinds of Mac with the Command Line Tools' clang, and signed before the app that carries it.
+DRIVER="$APP/Contents/Resources/OutMic.driver"
+mkdir -p "$DRIVER/Contents/MacOS"
+cp "$ROOT/Driver/Info.plist" "$DRIVER/Contents/Info.plist"
+clang -bundle -O2 -Wall -Wextra -Wno-unused-parameter -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 \
+  -framework CoreAudio -framework CoreFoundation -o "$DRIVER/Contents/MacOS/OutMic" "$ROOT/Driver/OutMic.c"
+codesign --force --sign "$SIGNING_IDENTITY" --identifier local.hopo.qingyan.mic "$DRIVER"
 if [[ -n "$INPUT_BUILD" ]]; then
   [[ "$INPUT_BUILD" =~ ^[0-9]+$ ]] || { printf 'INPUT_BUILD must be a number.\n' >&2; exit 1; }
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $INPUT_BUILD" -c "Set :CFBundleShortVersionString 0.1.$INPUT_BUILD" "$APP/Contents/Info.plist"

@@ -950,6 +950,11 @@ public final class RemoteReceiver {
     /// type here, reached through the Monitor helper): the connection is the screen session's from
     /// here on (ScreenWire), with that Mac's key and name. Not set: no other Mac is shown this screen.
     public var onScreen: ((NWConnection, String, String) -> Void)?
+    /// A trusted Mac allowed to type here sends its microphone, to come out here as out Mic: the
+    /// connection is the stream's from here on. Not set: this Mac takes no microphone.
+    public var onMicrophone: ((MicrophoneIn) -> Void)?
+    /// Why this Mac cannot take a microphone now (out Mic not installed), or nil when it can.
+    public var microphoneRefusal: (() -> String?)?
     /// The connections of the Macs whose text is on the way, the latest knock last.
     private var incoming: [(connection: NWConnection, from: String)] = []
 
@@ -965,7 +970,7 @@ public final class RemoteReceiver {
     /// A dictation may be transcribed for a while before its text arrives.
     private static let armedLifetime: TimeInterval = 300
     /// `quiet`: kept, and nothing is written back.
-    private enum Next { case close, keep, quiet, handOver, screen }
+    private enum Next { case close, keep, quiet, handOver, screen, microphone }
 
     public init() {}
 
@@ -1173,6 +1178,11 @@ public final class RemoteReceiver {
                 guard let onScreen else { connection.cancel(); return }
                 onScreen(connection, channel.peerKey, trusted(channel.peerKey)?.label ?? channel.peerName)
                 return
+            // And the microphone's stream, once its yes has gone out.
+            case .microphone:
+                guard let onMicrophone else { connection.cancel(); return }
+                onMicrophone(MicrophoneIn(channel: channel, key: channel.peerKey, name: trusted(channel.peerKey)?.label ?? channel.peerName))
+                return
             }
         }
         // A Mac that was waiting to send, gone before its text came (or before the answer to it went).
@@ -1230,6 +1240,12 @@ public final class RemoteReceiver {
             expire(channel.connection, after: nil)
             return (["ok": true, "pipe": 2, "name": Host.current().localizedName ?? name, "user": NSUserName(),
                      "arm64": ScreenTunnel.appleSilicon], .screen)
+        }
+        if object["mic"] as? String == "open" {
+            guard onMicrophone != nil else { return refuse(tr("out on the other Mac cannot take a microphone.")) }
+            if let refusal = microphoneRefusal?() { return refuse(refusal) }
+            expire(channel.connection, after: nil)
+            return (["ok": true], .microphone)
         }
         if let nonce = object["arm"] as? Int {
             guard Knock.validNonce(nonce) else { return refuse(tr("The two Macs run different versions of out. Update both to the same version.")) }

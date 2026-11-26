@@ -1429,12 +1429,40 @@ struct RemoteSection: View {
                 .help(tr("Show %@’s screen and work it from here", device.label))
                 .accessibilityLabel(tr("Show %@’s screen", device.label))
             }
+            // This Mac's microphone as that Mac's out Mic (user 2026-11-27: a virtual microphone there, for meetings).
+            let link = controller.microphone
+            let sending = link.sendingTo == device.key
+            let micOpening = link.opening == device.key
+            Button { controller.toggleMicrophone(device) } label: {
+                Image(systemName: sending ? "mic.fill" : "mic")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(sending || micOpening ? Palette.accent : Palette.ink.opacity(0.8))
+                    .frame(width: 22, height: 18)
+                    .background(sending ? Palette.accent.opacity(0.16) : Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!device.reachable)
+            .help(sending ? tr("Stop sending this Mac's microphone to %@", device.label)
+                          : tr("Send this Mac's microphone to %@, where meeting apps pick it as out Mic", device.label))
+            .accessibilityLabel(sending ? tr("Stop sending this Mac's microphone to %@", device.label) : tr("Send this Mac's microphone to %@", device.label))
+            // That Mac's microphone is coming in here: a mark, not a control.
+            if link.receivingFrom == device.key {
+                Image(systemName: "waveform")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Palette.accent)
+                    .help(tr("%@’s microphone comes in here as out Mic", device.label))
+                    .accessibilityLabel(tr("%@’s microphone comes in here as out Mic", device.label))
+            }
             Spacer(minLength: 6)
-            Text(status).font(.system(size: 10.5)).foregroundStyle(opening ? Palette.accent : ok == false ? Color.orange : Palette.muted)
+            let micProblem = link.problems[device.key]
+            Text(micOpening ? tr("Connecting…") : micProblem != nil ? tr("Microphone not sent") : status)
+                .font(.system(size: 10.5))
+                .foregroundStyle(opening || micOpening ? Palette.accent : micProblem != nil || ok == false ? Color.orange : Palette.muted)
                 .lineLimit(1).truncationMode(.tail)
         }
         .padding(.horizontal, 6).padding(.vertical, 4.5)
-        .help(controller.peerStatus[device.key] ?? "")
+        .help(controller.microphone.problems[device.key] ?? controller.peerStatus[device.key] ?? "")
         .padding(.top, 6)
     }
 }

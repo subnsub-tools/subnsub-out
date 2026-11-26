@@ -148,6 +148,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Links: \(error.localizedDescription)") }
         do { try await historyFeed(); print("PASS History for the Monitor page: out waits at the helper, answers with its History as it is when asked, waits again, and leaves an older helper alone") }
         catch { failed += 1; print("FAIL History for the Monitor page: \(error.localizedDescription)") }
+        do { try microphoneWire(); print("PASS Another Mac's microphone: frames round-trip, the jitter buffer plays behind the newest, waits when empty and catches up on drift, not on a burst") }
+        catch { failed += 1; print("FAIL Microphone: \(error.localizedDescription)") }
         do { try corners(); print("PASS Corners: every shape out draws itself has continuous corners, written so, and no circular AppKit paths") }
         catch { failed += 1; print("FAIL Corners: \(error.localizedDescription)") }
         do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
@@ -1126,6 +1128,39 @@ struct Checks {
             try await RemoteIO.write(connection, Data("{\"ask\":\"history\"}\n".utf8))
             return try await line(connection)
         }
+    }
+
+    static func microphoneWire() throws {
+        let samples: [Int16] = (0..<MicWire.block).map { Int16(truncatingIfNeeded: $0 * 77 - 16_000) }
+        let body = MicWire.frame(seq: 7, at: 3_360, samples: samples)
+        let parsed = MicWire.parse(body)
+        try check(parsed?.seq == 7 && parsed?.at == 3_360 && parsed?.samples == samples, "a frame comes back as it went")
+        try check(MicWire.parse(Data([1, 2, 3])) == nil && MicWire.parse(body.dropLast()) == nil, "a broken frame is refused")
+        let jitter = MicJitter(milliseconds: 20)
+        var out = [Float](repeating: 1, count: MicWire.block)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        try check(out.allSatisfy { $0 == 0 }, "nothing came yet: silence")
+        let ones = [Int16](repeating: 16_384, count: MicWire.block)
+        jitter.put(at: 0, samples: ones)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        // 20 ms behind the newest: the first 960 samples are the silence before the stream.
+        try check(out.allSatisfy { $0 == 0 }, "played behind the newest sample")
+        jitter.put(at: UInt64(MicWire.block), samples: ones)
+        jitter.put(at: UInt64(2 * MicWire.block), samples: ones)
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        try check(out.allSatisfy { abs($0 - 0.5) < 0.001 }, "then the stream, as it was sent")
+        for _ in 0..<20 { out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) } }
+        try check(jitter.waited > 0 && out.allSatisfy { $0 == 0 }, "run dry: it waits in silence")
+        // A burst far ahead, then nothing more for two seconds: caught up once the depth stays.
+        var frame = UInt64(3 * MicWire.block)
+        for _ in 0..<100 { jitter.put(at: frame, samples: ones); frame += UInt64(MicWire.block) }
+        let deep = jitter.depth
+        for _ in 0..<420 {
+            jitter.put(at: frame, samples: ones); frame += UInt64(MicWire.block)
+            out.withUnsafeMutableBufferPointer { jitter.take(MicWire.block, into: $0.baseAddress!) }
+        }
+        try check(deep > 900 && jitter.skipped >= 1 && jitter.depth < 100, "a depth that stays is caught up (\(Int(deep)) ms, then \(Int(jitter.depth)) ms)")
     }
 
     /// Every corner out draws itself is continuous (user 2026-11-27), written so rather than left to

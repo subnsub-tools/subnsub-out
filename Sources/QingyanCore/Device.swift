@@ -214,6 +214,11 @@ final class Channel: @unchecked Sendable {
         catch { failed(error) }
     }
 
+    /// Sends a frame's content as it is, without waiting; `left` is called once it has gone or failed.
+    func post(body: Data, left: @escaping @Sendable () -> Void) {
+        do { try enqueue(body) { _ in left() } } catch { left() }
+    }
+
     /// Sends without waiting; for a notice that needs no answer.
     func post(_ object: [String: Any]) {
         guard let body = try? JSONSerialization.data(withJSONObject: object) else { return }

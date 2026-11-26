@@ -389,7 +389,36 @@ private struct InputGroup: View {
             Row(tr("Type the Clipboard"), info: tr("Control + Option + V types the clipboard's text into the field in front, key by key, where pasting is refused: password fields, forms that block paste, remote desktops and consoles. Line breaks are typed as Return. Esc or the capsule's Cancel button stops it. Nothing typed is kept.")) {
                 Text("⌃ ⌥ V").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.muted)
             }
+            Divider()
+            OutMicRow(link: controller.microphone)
         }
+    }
+}
+
+/// out Mic on this Mac: installed once, with the Mac's password (user 2026-11-27: a virtual
+/// microphone on the Mac worked from another one, for meetings).
+private struct OutMicRow: View {
+    @ObservedObject var link: MicrophoneLink
+
+    var body: some View {
+        Row(tr("out Mic"), info: tr("A microphone on this Mac that another of your Macs speaks into. On that Mac, the microphone button beside this Mac in Multiple Macs sends its microphone here, and meeting apps here pick out Mic as their microphone. Installing it asks for this Mac's password; the sound of every app stops for a moment.")) {
+            HStack(spacing: 6) {
+                if link.installing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    switch link.driver {
+                    case .absent:
+                        Button(tr("Install")) { link.install() }.buttonStyle(QuietButton())
+                    case .older:
+                        Button(tr("Update")) { link.install() }.buttonStyle(QuietButton())
+                    case .current:
+                        Text(tr("Installed")).font(.system(size: 11)).foregroundStyle(Palette.muted)
+                        Button(tr("Remove")) { link.install(remove: true) }.buttonStyle(QuietButton())
+                    }
+                }
+            }
+        }
+        .onAppear { link.refreshDriver() }
     }
 }
 
