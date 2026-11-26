@@ -244,7 +244,7 @@ struct ScreenTitleRow: View {
         if #available(macOS 26, *) {
             text.padding(.horizontal, 14)
                 .frame(height: 28)
-                .glassEffect(.regular, in: Capsule())
+                .glassEffect(.regular, in: Capsule(style: .continuous))
                 .padding(.top, ScreenContainer.lightsMiddle - 14)
         } else {
             text.frame(height: 22)
@@ -416,7 +416,7 @@ private struct ScreenRailButton: View {
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .modifier(ScreenGlass(shape: Capsule(), stroke: Palette.strong))
+                    .modifier(ScreenGlass(shape: Capsule(style: .continuous), stroke: Palette.strong))
                     .fixedSize()
                     .offset(x: -(ScreenRail.side + 8))
                     .allowsHitTesting(false)
@@ -462,7 +462,7 @@ struct ScreenHint: View {
 private struct RailColumnGlass: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26, *) {
-            content.glassEffect(.regular.interactive(), in: Capsule())
+            content.glassEffect(.regular.interactive(), in: Capsule(style: .continuous))
         } else {
             content
         }

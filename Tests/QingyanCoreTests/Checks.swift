@@ -148,6 +148,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Links: \(error.localizedDescription)") }
         do { try await historyFeed(); print("PASS History for the Monitor page: out waits at the helper, answers with its History as it is when asked, waits again, and leaves an older helper alone") }
         catch { failed += 1; print("FAIL History for the Monitor page: \(error.localizedDescription)") }
+        do { try corners(); print("PASS Corners: every shape out draws itself has continuous corners, written so, and no circular AppKit paths") }
+        catch { failed += 1; print("FAIL Corners: \(error.localizedDescription)") }
         do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
         do { try await remoteWorked(); print("PASS Which Mac is being worked over real TCP: told by what each says of its input when it arms, no knock, the chosen Mac told whose text is on the way, the text reaches it; a Mac that says nothing leaves it to the knock") }
@@ -1126,6 +1128,35 @@ struct Checks {
         }
     }
 
+    /// Every corner out draws itself is continuous (user 2026-11-27), written so rather than left to
+    /// the SDK's default, and AppKit's rounded paths, which are circular, are not used; the system's
+    /// own controls keep theirs. Read from the sources when the checks run from the package.
+    static func corners() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Sources")
+        guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
+        let shape = try NSRegularExpression(pattern: #"\b(RoundedRectangle|UnevenRoundedRectangle|Capsule)\(|Path\(roundedRect:|\.rect\((cornerRadius|topLeadingRadius|cornerSize)"#)
+        let circular = try NSRegularExpression(pattern: #"NSBezierPath\(roundedRect|CGPath\(roundedRect|addRoundedRect|\.cornerRadius\("#)
+        var found: [String] = []
+        var read = 0
+        for case let url as URL in files where url.pathExtension == "swift" {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            read += 1
+            let layered = text.contains("cornerCurve = .continuous")
+            for (number, line) in text.components(separatedBy: "\n").enumerated() where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
+                let range = NSRange(line.startIndex..., in: line)
+                let shapes = shape.numberOfMatches(in: line, range: range)
+                let continuous = line.components(separatedBy: "style: .continuous").count - 1
+                let layer = line.contains("cornerRadius = ") && !layered
+                if shapes > continuous || circular.numberOfMatches(in: line, range: range) > 0 || layer {
+                    found.append("\(url.lastPathComponent):\(number + 1)")
+                }
+            }
+        }
+        // Not run from the package: there is nothing to read.
+        guard read > 0 else { return }
+        try check(found.isEmpty, "corners not written continuous: \(found.joined(separator: ", "))")
+    }
+
     @MainActor static func historyFeed() async throws {
         let path = "/tmp/qy-hist-\(UInt32.random(in: 0..<UInt32.max)).sock"
         let helper = try FakeHistoryHelper(path: path)
@@ -1162,9 +1193,14 @@ struct Checks {
         let older = HistoryFeed()
         defer { older.stop() }
         older.start { [] }
-        try await settle("out asks an older helper") { helper.asked == HistoryFeed.waiting }
+        // At least once each: an ask from the feed stopped just before may still come in late on a
+        // busy machine (it failed twice on a GitHub runner, 2026-11-27, never on a Mac).
+        let asking = Date().addingTimeInterval(8)
+        while helper.asked < HistoryFeed.waiting && Date() < asking { try await Task.sleep(nanoseconds: 20_000_000) }
+        let asked = helper.asked
+        try check(asked >= HistoryFeed.waiting, "out asks an older helper (asked \(asked) times in 8 seconds)")
         try await Task.sleep(nanoseconds: 2_500_000_000)
-        try check(helper.asked == HistoryFeed.waiting, "an older helper is asked \(helper.asked) times in 2.5 seconds")
+        try check(helper.asked == asked, "an older helper is not asked again for a long while (\(asked), then \(helper.asked) after 2.5 seconds)")
         // Show on the Dashboard off: out answers only that it is off.
         helper.old = false
         helper.waiting.forEach { $0.cancel() }

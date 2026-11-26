@@ -1259,7 +1259,7 @@ struct ShelfBar: View {
 
     /// The right edge of a tile, dragged: one, two or three cells, as far as the item may go.
     private func edge(_ item: ShelfItem, cells: Int) -> some View {
-        Capsule().fill(Palette.muted.opacity(sizing == item.id ? 0.8 : 0.5)).frame(width: 3, height: 22)
+        Capsule(style: .continuous).fill(Palette.muted.opacity(sizing == item.id ? 0.8 : 0.5)).frame(width: 3, height: 22)
             .frame(width: 10, height: 44)
             .contentShape(Rectangle())
             .onHover { inside in

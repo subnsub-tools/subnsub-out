@@ -149,8 +149,8 @@ struct CopyableText: View {
                         }
                         .foregroundStyle(Palette.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().stroke(Palette.accent.opacity(0.4), lineWidth: 0.75))
+                        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+                        .overlay(Capsule(style: .continuous).stroke(Palette.accent.opacity(0.4), lineWidth: 0.75))
                         .padding(block ? 3 : 0)
                         .offset(x: block ? 0 : 2, y: block ? 0 : -4)
                         .transition(Motion.pop)
@@ -1489,7 +1489,7 @@ struct LevelTrace: View {
                     }
                     let height = max(Self.bar, pow(CGFloat(level ?? 0), 0.75) * size.height)
                     let rect = CGRect(x: x, y: middle - height / 2, width: Self.bar, height: height)
-                    graphics.fill(Path(roundedRect: rect, cornerRadius: Self.bar / 2),
+                    graphics.fill(Path(roundedRect: rect, cornerRadius: Self.bar / 2, style: .continuous),
                                   with: .color(CapsuleTint.green.opacity(level == nil ? 0.35 : 1)))
                 }
             }
@@ -1769,7 +1769,7 @@ private struct GlyphWave: View {
     var body: some View {
         HStack(spacing: 2 * unit) {
             ForEach(0..<5, id: \.self) { index in
-                Capsule()
+                Capsule(style: .continuous)
                     .fill(CapsuleTint.green)
                     .frame(width: 2.2 * unit,
                            height: gathered ? 2.2 * unit : max(3.5, CGFloat(meter.level) * Self.weights[index]) * unit)

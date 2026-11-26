@@ -465,8 +465,8 @@ private struct DictionaryGroup: View {
             .accessibilityLabel(tr("Remove %@", item))
         }
         .padding(.trailing, 3)
-        .background(Color.primary.opacity(isCopied ? 0.13 : 0.07), in: Capsule())
-        .overlay(Capsule().stroke(isCopied ? Palette.accent.opacity(0.5) : Palette.line, lineWidth: 0.75))
+        .background(Color.primary.opacity(isCopied ? 0.13 : 0.07), in: Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).stroke(isCopied ? Palette.accent.opacity(0.5) : Palette.line, lineWidth: 0.75))
     }
 
     private func add() {
