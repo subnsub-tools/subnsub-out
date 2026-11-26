@@ -134,6 +134,8 @@ final class DictationController: ObservableObject {
     private var checkJob: Task<Void, Never>?
     private var hadSignal = false
     private let receiver = RemoteReceiver()
+    /// The History, for the Monitor page's Clipboard tab through the helper on this Mac.
+    private let historyFeed = HistoryFeed()
     /// This Mac's screen on the owner's Monitor page.
     let screen = ScreenHost()
     @Published var screenState = ScreenHost.State.off
@@ -411,6 +413,7 @@ final class DictationController: ObservableObject {
         shelf.sync?.listening = settings.preferences.remotePort
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
         refreshHelper()
+        historyFeed.start { [weak self] in self?.settings.history ?? [] }
         retryQueued()
     }
 

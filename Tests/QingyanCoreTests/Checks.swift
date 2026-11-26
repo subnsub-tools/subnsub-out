@@ -144,6 +144,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Shelf sync: \(error.localizedDescription)") }
         do { try await links(); print("PASS Links through the helper: the helper says whether it can, a file goes whole and its link comes back, hosted already sends nothing, a card with no file, each refusal in words, taken down") }
         catch { failed += 1; print("FAIL Links: \(error.localizedDescription)") }
+        do { try await historyFeed(); print("PASS History for the Monitor page: out waits at the helper, answers with its History as it is when asked, waits again, and leaves an older helper alone") }
+        catch { failed += 1; print("FAIL History for the Monitor page: \(error.localizedDescription)") }
         do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
         do { try await remoteWorked(); print("PASS Which Mac is being worked over real TCP: told by what each says of its input when it arms, no knock, the chosen Mac told whose text is on the way, the text reaches it; a Mac that says nothing leaves it to the knock") }
@@ -1063,6 +1065,132 @@ struct Checks {
         private var values: [Double] = []
         func add(_ value: Double) { lock.lock(); values.append(value); lock.unlock() }
         var all: [Double] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+
+    /// The helper's put.sock as far as the History goes: out's waits, and the page's ask on one.
+    @MainActor final class FakeHistoryHelper {
+        private let listener: NWListener
+        var waiting: [NWConnection] = []
+        var old = false
+        var asked = 0
+
+        init(path: String) throws {
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = NWEndpoint.unix(path: path)
+            listener = try NWListener(using: parameters)
+            listener.newConnectionHandler = { [weak self] connection in
+                MainActor.assumeIsolated {
+                    connection.start(queue: .main)
+                    Task { @MainActor in await self?.serve(connection) }
+                }
+            }
+            listener.start(queue: .main)
+        }
+
+        func stop() {
+            listener.cancel()
+            for connection in waiting { connection.cancel() }
+            waiting.removeAll()
+        }
+
+        private func line(_ connection: NWConnection) async throws -> [String: Any] {
+            var data = Data()
+            while true {
+                let byte = try await RemoteIO.read(connection, count: 1)
+                if byte.first == 0x0A { break }
+                data.append(byte)
+            }
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        }
+
+        private func serve(_ connection: NWConnection) async {
+            guard let ask = try? await line(connection) else { connection.cancel(); return }
+            asked += 1
+            if old || ask["op"] as? String != "history" {
+                try? await RemoteIO.write(connection, Data("{\"ok\":false,\"error\":\"unknown-op\"}\n".utf8))
+                connection.cancel()
+                return
+            }
+            waiting.append(connection)
+        }
+
+        /// What the page's put-history does: asks the newest wait, and reads out's answer.
+        func ask() async throws -> [String: Any] {
+            guard let connection = waiting.popLast() else { throw VoiceError("out is not waiting at the helper") }
+            defer { connection.cancel() }
+            try await RemoteIO.write(connection, Data("{\"ask\":\"history\"}\n".utf8))
+            return try await line(connection)
+        }
+    }
+
+    @MainActor static func historyFeed() async throws {
+        let path = "/tmp/qy-hist-\(UInt32.random(in: 0..<UInt32.max)).sock"
+        let helper = try FakeHistoryHelper(path: path)
+        defer { helper.stop(); try? FileManager.default.removeItem(atPath: path) }
+        HelperLink.socketOverride = path
+        defer { HelperLink.socketOverride = nil }
+        try await settle("the stand-in helper listens") { FileManager.default.fileExists(atPath: path) }
+        var newest = HistoryEntry(text: "newest", mode: .dictate, seconds: 2.345)
+        newest.date = Date(timeIntervalSince1970: 1_800_000_000.25)
+        var waiting = HistoryEntry(text: "", mode: .dictate, seconds: .nan, status: .pending)
+        waiting.date = Date(timeIntervalSince1970: 1_799_999_000)
+        var entries = [newest, waiting]
+        let feed = HistoryFeed()
+        defer { feed.stop() }
+        feed.start { entries }
+        try await settle("out waits at the helper") { helper.waiting.count == HistoryFeed.waiting }
+        let answer = try await helper.ask()
+        let list = answer["entries"] as? [[String: Any]] ?? []
+        try check(list.count == 2, "both entries are sent")
+        try check(list[0]["id"] as? String == newest.id.uuidString.lowercased() && list[0]["text"] as? String == "newest"
+                  && list[0]["state"] as? String == "completed" && (list[0]["secs"] as? NSNumber)?.doubleValue == 2.3
+                  && (list[0]["at"] as? NSNumber)?.int64Value == 1_800_000_000_250, "an entry: id, text, state, seconds, milliseconds")
+        try check(list[1]["state"] as? String == "pending" && (list[1]["secs"] as? NSNumber)?.doubleValue == 0,
+                  "a recording waiting for the network, with a length that is not a number")
+        try await settle("out waits again once it has answered") { helper.waiting.count == HistoryFeed.waiting }
+        // The History is read when the page asks, not when the wait began.
+        entries.removeAll()
+        let later = try await helper.ask()
+        try check((later["entries"] as? [Any])?.isEmpty == true, "the History as it is when asked")
+        feed.stop()
+        // A helper from before the History is not asked again for a long while.
+        helper.old = true
+        helper.asked = 0
+        let older = HistoryFeed()
+        defer { older.stop() }
+        older.start { [] }
+        try await settle("out asks an older helper") { helper.asked == HistoryFeed.waiting }
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        try check(helper.asked == HistoryFeed.waiting, "an older helper is asked \(helper.asked) times in 2.5 seconds")
+        // Pages: newest first, by id within a millisecond, each going on from the last entry of the one before.
+        var many: [HistoryEntry] = []
+        for i in 0..<40 {
+            var entry = HistoryEntry(text: String(repeating: "x", count: 900), mode: .dictate, seconds: 1)
+            entry.date = Date(timeIntervalSince1970: i < 20 ? 1_800_000_000 : 1_800_000_000 - Double(i))
+            many.append(entry)
+        }
+        var seen = Set<String>(), before: Int64 = 0, beforeID = "", pages = 0
+        while true {
+            pages += 1
+            try check(pages < 20, "the pages end")
+            let line = HistoryFeed.page(many, before: before, beforeID: beforeID, budget: 8 << 10)
+            let object = try JSONSerialization.jsonObject(with: line) as? [String: Any] ?? [:]
+            let list = object["entries"] as? [[String: Any]] ?? []
+            try check(!list.isEmpty && line.count < 10 << 10, "a page has entries and keeps to its size")
+            for item in list {
+                let id = item["id"] as? String ?? ""
+                try check(seen.insert(id).inserted, "an entry comes once")
+                before = (item["at"] as? NSNumber)?.int64Value ?? 0
+                beforeID = id
+            }
+            if object["more"] as? Bool != true { break }
+        }
+        try check(seen.count == 40 && pages > 2, "every entry, in \(pages) pages")
+        let wide = String(repeating: String(UnicodeScalar(0x4E2D)!), count: HistoryFeed.textLimit)
+        let (head, cut) = HistoryFeed.cut(wide)
+        try check(cut && head.utf8.count <= HistoryFeed.textLimit && head.utf8.count > HistoryFeed.textLimit - 3
+                  && !head.unicodeScalars.contains(UnicodeScalar(0xFFFD)!), "a long entry is cut where a character starts")
+        try check(HistoryFeed.cut("short") == ("short", false), "a short entry is whole")
     }
 
     @MainActor static func links() async throws {
