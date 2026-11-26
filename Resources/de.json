@@ -617,8 +617,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "Der Monitor-Helper auf diesem Mac ist zu alt, um den Verbindungsweg zu melden. Er aktualisiert sich selbst.",
  "The Monitor helper on this Mac does not know that Mac yet.": "Der Monitor-Helper auf diesem Mac kennt den anderen Mac noch nicht.",
  "Mode": "Modus",
- "Scaling": "Skalierung",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "Den Bildschirm an das Fenster anpassen. Aus: Er wird in seiner eigenen Größe angezeigt, und das Fenster scrollt, wenn der Zeiger einen Rand erreicht.",
  "Sound": "Ton",
  "Play that Mac’s sound on this Mac.": "Den Ton des anderen Mac auf diesem Mac wiedergeben.",
  "Keys": "Tasten",

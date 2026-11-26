@@ -26,7 +26,7 @@ import VideoToolbox
 ///
 /// The window has what Screen Sharing's own has (user 2026-11-22: and the features of macOS's own
 /// Screen Sharing go without saying): the shared clipboard always, and as buttons down its right
-/// side full screen, Scaling, the sound, keys this Mac keeps for itself and Info; each kept for
+/// side full screen, the sound, keys this Mac keeps for itself and Info; each kept for
 /// each Mac. Under the picture, always, what is known of the way there (ScreenInfo): the road,
 /// the path (direct, a peer relay or DERP) with a ping a second, the picture's size, codec, frame
 /// rate and bit rate; a click there, or Info, shows everything. The window is glass, as out's panel
@@ -111,8 +111,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
     }
     private func keep(_ name: String, _ value: Bool) { UserDefaults.standard.set(value, forKey: "screen.\(name)." + device.key) }
 
-    /// The picture scaled to fit the window; off, at its own size, the window scrolling over it.
-    private var scaled: Bool { get { kept("scaled", true) } set { keep("scaled", newValue) } }
     /// Only watching by choice: never now, and with no button (user 2026-11-23: no Observe button; a
     /// window works that Mac once its picture is double-clicked, see `engaged`). A Mac whose Screen
     /// Sharing lets this account watch only is still only watched (inputAllowed).
@@ -150,7 +148,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         window.center()
         window.delegate = self
         window.collectionBehavior.insert(.fullScreenPrimary)
-        container.scaled = scaled
         container.onAct = { [weak self] action in self?.act(action) }
         container.overlay.onReconnect = { [weak self] in self?.connect() }
         container.overlay.onSignIn = { [weak self] account, password, remember in
@@ -169,7 +166,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         }
         info.sound = sound
         info.observing = observing
-        info.scaled = scaled
         info.clipboard = sharedClipboard
         watchPath()
     }
@@ -675,10 +671,6 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
         switch action {
         case .observe(let on):
             setObserving(on)
-        case .scaling(let on):
-            scaled = on
-            info.scaled = on
-            container.scaled = on
         case .clipboard(let on):
             sharedClipboard = on
             info.clipboard = on
@@ -903,15 +895,15 @@ final class ScreenViewer: NSObject, NSWindowDelegate {
                             try await Task.sleep(nanoseconds: 80_000_000)
                         }
                     }
-                    // A click on the rail's Scaling button, as the mouse makes it, reaches it there (the
+                    // A click on the rail's Sound button, as the mouse makes it, reaches it there (the
                     // container is the window's whole content, drawn from its top).
-                    let before = viewer.info.scaled
-                    let button = viewer.container.railFrame(of: ScreenRail.scalingIndex)
+                    let before = viewer.info.sound
+                    let button = viewer.container.railFrame(of: ScreenRail.soundIndex)
                     try await click(NSPoint(x: button.midX, y: window.frame.height - button.midY))
                     try await Task.sleep(nanoseconds: 300_000_000)
-                    print("Scaling clicked: \(before) -> \(viewer.info.scaled)")
-                    if viewer.info.scaled == before { throw VoiceError("A click on the rail did not reach its Scaling button.") }
-                    viewer.act(.scaling(before))
+                    print("Sound clicked: \(before) -> \(viewer.info.sound)")
+                    if viewer.info.sound == before { throw VoiceError("A click on the rail did not reach its Sound button.") }
+                    viewer.act(.sound(before))
                     // With the title strip gone, a click at the window's top left, under its title bar and
                     // where its buttons were, goes to that Mac.
                     viewer.container.chrome(shown: false, animated: false)

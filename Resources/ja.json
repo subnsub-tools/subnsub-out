@@ -617,8 +617,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "このMacのMonitorのヘルパーは古いため、経路を報告できません。自動的にアップデートされます。",
  "The Monitor helper on this Mac does not know that Mac yet.": "このMacのMonitorのヘルパーは、そのMacをまだ知りません。",
  "Mode": "モード",
- "Scaling": "拡大／縮小",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "ウインドウに合わせて画面を拡大／縮小します。オフ：画面を実寸で表示し、ポインタが端に達するとウインドウがスクロールします。",
  "Sound": "サウンド",
  "Play that Mac’s sound on this Mac.": "そのMacのサウンドをこのMacで再生します。",
  "Keys": "キー",

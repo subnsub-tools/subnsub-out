@@ -735,15 +735,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return frame
     }
 
-    private func glideCompact(to goal: NSRect) {
+    /// Out of the way quickly (`back` false); back to its place slowly enough to be followed (user
+    /// 2026-11-26: it snapped back; it should come back along the way, diagonally when it stood aside
+    /// both ways). Both axes move together, so the way is the straight line between the two.
+    private func glideCompact(to goal: NSRect, back: Bool = false) {
         guard let panel = compactPanel else { return }
         // out's own move, not the user's place (windowDidMove).
         if userMoving === panel { userMoving = nil }
         guard !Motion.reduced, panel.isVisible else { compactGlide = nil; panel.setFrame(goal, display: true); return }
         compactGlide = goal
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(controlPoints: Float(Motion.curve.0), Float(Motion.curve.1), Float(Motion.curve.2), Float(Motion.curve.3))
+            context.duration = back ? 0.45 : 0.18
+            context.timingFunction = back ? CAMediaTimingFunction(name: .easeInEaseOut)
+                : CAMediaTimingFunction(controlPoints: Float(Motion.curve.0), Float(Motion.curve.1), Float(Motion.curve.2), Float(Motion.curve.3))
             panel.animator().setFrame(goal, display: true)
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated {
@@ -773,7 +777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard let since = compactAwaySince else { compactAwaySince = now; return }
         guard now - since >= 0.6 else { return }
         settleCompact()
-        glideCompact(to: home)
+        glideCompact(to: home, back: true)
     }
 
     /// No longer standing aside: where the bar is (or is going) is its place.

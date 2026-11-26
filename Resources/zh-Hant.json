@@ -617,8 +617,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "這台 Mac 上的 Monitor 監控程式版本太舊，無法回報連線路徑。它會自動更新。",
  "The Monitor helper on this Mac does not know that Mac yet.": "這台 Mac 上的 Monitor 監控程式尚未認得那台 Mac。",
  "Mode": "模式",
- "Scaling": "縮放",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "依視窗大小縮放螢幕。關閉後以原始大小顯示，指標移到視窗邊緣時畫面會隨之捲動。",
  "Sound": "聲音",
  "Play that Mac’s sound on this Mac.": "在這台 Mac 上播放那台 Mac 的聲音。",
  "Keys": "按鍵",

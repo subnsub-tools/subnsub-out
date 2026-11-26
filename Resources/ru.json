@@ -617,8 +617,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "Хелпер Monitor на этом Mac слишком старый, чтобы сообщать маршрут. Он обновляется сам.",
  "The Monitor helper on this Mac does not know that Mac yet.": "Хелпер Monitor на этом Mac ещё не знает тот Mac.",
  "Mode": "Режим",
- "Scaling": "Масштаб",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "Масштабировать экран по размеру окна. Выкл.: экран показывается в своём размере, а окно прокручивается, когда указатель доходит до края.",
  "Sound": "Звук",
  "Play that Mac’s sound on this Mac.": "Воспроизводить звук того Mac на этом Mac.",
  "Keys": "Клавиши",

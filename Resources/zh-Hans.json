@@ -671,8 +671,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "这台 Mac 上的 Monitor 探针版本太旧，无法报告连接路径。探针会自动更新。",
  "The Monitor helper on this Mac does not know that Mac yet.": "这台 Mac 上的 Monitor 探针尚未识别那台 Mac。",
  "Mode": "模式",
- "Scaling": "缩放",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "按窗口大小缩放屏幕。关闭后按原始大小显示，指针移到窗口边缘时画面随之滚动。",
  "Sound": "声音",
  "Play that Mac’s sound on this Mac.": "在这台 Mac 上播放那台 Mac 的声音。",
  "Keys": "按键",

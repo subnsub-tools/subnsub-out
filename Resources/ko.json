@@ -617,8 +617,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "이 Mac의 Monitor 헬퍼가 너무 오래되어 경로를 알려 줄 수 없습니다. 자동으로 업데이트됩니다.",
  "The Monitor helper on this Mac does not know that Mac yet.": "이 Mac의 Monitor 헬퍼가 아직 그 Mac을 모릅니다.",
  "Mode": "모드",
- "Scaling": "크기 조절",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "화면을 윈도우 크기에 맞춥니다. 끔: 원래 크기로 표시하며, 포인터가 가장자리에 닿으면 윈도우가 스크롤됩니다.",
  "Sound": "사운드",
  "Play that Mac’s sound on this Mac.": "그 Mac의 사운드를 이 Mac에서 재생합니다.",
  "Keys": "키",

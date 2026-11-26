@@ -617,8 +617,6 @@
  "The Monitor helper on this Mac is too old to report the path. It updates itself.": "इस Mac पर Monitor हेल्पर रास्ता बताने के लिए बहुत पुराना है। वह अपने आप अपडेट होता है।",
  "The Monitor helper on this Mac does not know that Mac yet.": "इस Mac पर Monitor हेल्पर अभी उस Mac को नहीं जानता।",
  "Mode": "मोड",
- "Scaling": "स्केलिंग",
- "Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.": "स्क्रीन को विंडो के हिसाब से स्केल करें। बंद: वह अपने असली आकार में दिखती है, और पॉइंटर किनारे तक पहुँचने पर विंडो स्क्रॉल होती है।",
  "Sound": "आवाज़",
  "Play that Mac’s sound on this Mac.": "उस Mac की आवाज़ इस Mac पर चलाएँ।",
  "Keys": "कुंजियाँ",

@@ -61,7 +61,6 @@ final class ScreenInfo: ObservableObject {
     @Published var live = false
     /// What the window's buttons and title strip show: the window's settings, whether a session is under way, whether the
     /// pointer and keys go to that Mac, Info open, and full screen.
-    @Published var scaled = true
     @Published var clipboard = true
     @Published var ended = true
     @Published var controlling = false
@@ -211,7 +210,7 @@ final class ScreenInfo: ObservableObject {
 
 /// What the rail's buttons ask the window to do.
 enum ScreenAction {
-    case observe(Bool), scaling(Bool), clipboard(Bool), sound(Bool)
+    case observe(Bool), clipboard(Bool), sound(Bool)
     case keys, screenshot, fullScreen, connection, close
 }
 
@@ -281,18 +280,20 @@ struct ScreenRail: View {
     /// Close, Full Screen and More, then what More brings; Keys only while the window works that Mac.
     /// There is no High Performance, Dynamic Resolution or Full Quality button (user 2026-11-25: a
     /// session is High Performance with Dynamic Resolution, always; 2026-11-23: no choice of quality).
-    enum Kind { case close, fullScreen, more, scaling, sound, keys, info }
+    /// No Scaling button either (user 2026-11-26): with Dynamic Resolution the picture is the
+    /// window's size, so it always fits.
+    enum Kind { case close, fullScreen, more, sound, keys, info }
     static func kinds(controlling: Bool) -> [Kind] {
-        var kinds: [Kind] = [.close, .fullScreen, .more, .scaling, .sound]
+        var kinds: [Kind] = [.close, .fullScreen, .more, .sound]
         if controlling { kinds.append(.keys) }
         kinds.append(.info)
         return kinds
     }
     /// The most there are, for the room a click may stop in, and how many are always there.
-    static let most = 7
+    static let most = 6
     static let always = 3
     static let moreIndex = 2
-    static let scalingIndex = 3
+    static let soundIndex = 3
 
     /// How many buttons a column holds in a room that tall.
     static func rows(in height: CGFloat) -> Int { max(2, Int((height + gap) / (side + gap))) }
@@ -343,11 +344,6 @@ struct ScreenRail: View {
             }
         case .more:
             ScreenRailButton(symbol: "ellipsis", title: tr("More"), active: false, hint: "") { more() }
-        case .scaling:
-            ScreenRailButton(symbol: "arrow.down.right.and.arrow.up.left", title: tr("Scaling"), active: info.scaled,
-                             hint: tr("Scale the screen to fit the window. Off: it is shown at its own size, and the window scrolls when the pointer reaches an edge.")) {
-                act(.scaling(!info.scaled))
-            }
         case .sound:
             ScreenRailButton(symbol: info.sound ? "speaker.wave.2" : "speaker.slash", title: tr("Sound"), active: info.sound,
                              hint: tr("Play that Mac’s sound on this Mac.")) {
