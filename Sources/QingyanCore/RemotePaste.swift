@@ -461,6 +461,9 @@ public enum MissReason: String, Sendable {
     case unreachable = "unreachable"
     case noAnswer = "no-answer"
     case unconfirmed = "unconfirmed"
+    /// No Mac claimed the knock, so the text went to the clipboard alone of the Mac the window's
+    /// title names (or of the only one ready) and was not typed there.
+    case unclaimed = "unclaimed"
     case other = "other"
 }
 
@@ -546,6 +549,8 @@ public final class RemoteSession {
         var idle: TimeInterval?
         var idleAt: Date?
         var caret = false
+        /// Its out takes text for the clipboard alone (`clipboardOnly`); an earlier one would type it.
+        var takesClipboard = false
         var elapsed: TimeInterval = 0
         var reply: Once<[String: Any]>?
         /// Arming was tried, and whether a channel to the Mac opened at all.
@@ -560,6 +565,9 @@ public final class RemoteSession {
     private let name: String
     private let listening: Int
     private var closed = false
+    /// When the first knock of the last search was typed: any armed Mac that says it saw a knock
+    /// since then saw one in that search's window.
+    private var searchSince: Date?
 
     /// `nonce`: the knock's combination, random unless a check needs a known one.
     public init(devices: [TrustedDevice], identity: DeviceIdentity, name: String, listening: Int, nonce: Int = Knock.newNonce()) {
@@ -650,31 +658,76 @@ public final class RemoteSession {
 
     /// Finds the Mac the front window shows, in stages, each one armed and then knocked at: `first`
     /// (the one the window's title names), then the others, then the `doubtful` ones (by key: no
-    /// channel reached them last time). The first knock may be claimed by any armed Mac; a later
-    /// one only by a Mac that has just armed, since a Mac knocked at before has had its knock, and
-    /// its late answer to it must not be taken for one to this knock (every knock of a session is
-    /// the same combination). The first claim ends the search. So the Mac being looked at answers
-    /// without waiting for the rest, and one that is out of reach holds up only a search that comes
-    /// to it. `knock` types the knock and says whether it did: false (the window in front is no
-    /// longer a remote desktop) ends the search with no Mac.
+    /// channel reached them last time). `knock` types every knock of a search into one window and
+    /// says whether it did: false (the window in front is another one, or no longer a remote
+    /// desktop) ends the search with no Mac. So any armed Mac that saw a knock of the search, the
+    /// first or a later one, is the one: an answer that comes late still counts, and a stage looks
+    /// for one before it knocks again (user 2026-11-26: the Mac being worked saw both knocks, but
+    /// its first answer came after the wait and its second was taken for a late one, so the text
+    /// went nowhere). A later stage knocks only when it armed a Mac. When no stage found the Mac,
+    /// the knock is typed once more and given a longer wait. The first claim ends the search, so
+    /// the Mac being looked at answers without waiting for the rest, and one that is out of reach
+    /// holds up only a search that comes to it.
     public func find(first: Int?, doubtful: Set<String> = [], timeout: TimeInterval, dial: TimeInterval,
                      knock: @MainActor () async -> Bool) async -> Int? {
+        searchSince = nil
         let others = links.indices.filter { $0 != first }
         let stages = [first.map { [$0] } ?? [],
                       others.filter { !doubtful.contains(links[$0].device.key) },
                       others.filter { doubtful.contains(links[$0].device.key) }]
-        var knocked = false
+        var since: Date?
         for stage in stages {
             let fresh = stage.filter { links.indices.contains($0) && !links[$0].tried }
             if !fresh.isEmpty { await arm(fresh, timeout: timeout, dial: dial) }
             guard !closed else { return nil }
-            let among = knocked ? Set(fresh.filter { links[$0].armed }) : Set(links.indices.filter { links[$0].armed })
-            guard !among.isEmpty else { continue }
-            knocked = true
-            guard let outcome = await claim(among: among, knock: knock) else { return nil }
-            if let found = outcome { return found }
+            if let since, let found = claimant(since: since) { return found }
+            guard since == nil ? armedCount > 0 : fresh.contains(where: { links[$0].armed }) else { continue }
+            let started = Date()
+            guard await knock() else { return nil }
+            let first = since ?? started
+            since = first; searchSince = first
+            if let found = await claimant(since: first, within: patience) { return found }
         }
-        return nil
+        // No claim yet: the knock once more (keys can be lost on the way), and a longer wait.
+        guard let since, !closed, armedCount > 0 else { return nil }
+        if let found = claimant(since: since) { return found }
+        Trace.note("send: no Mac claimed the knock yet; knocking once more")
+        guard await knock() else { return nil }
+        return await claimant(since: since, within: max(1.5, patience * 2))
+    }
+
+    /// The armed Mac that saw a knock typed since `since`, if one did.
+    private func claimant(since: Date) -> Int? {
+        links.indices.first { links[$0].armed && (links[$0].seen ?? .distantPast) >= since }
+    }
+
+    /// Waits up to `patience` for an armed Mac to say it saw a knock typed since `since`.
+    private func claimant(since: Date, within patience: TimeInterval) async -> Int? {
+        let deadline = Date().addingTimeInterval(patience)
+        while true {
+            if let found = claimant(since: since) { return found }
+            if closed || Date() >= deadline { return nil }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    /// The armed Mac that saw a knock of the last search, though its answer came after the search
+    /// gave up: it is still the Mac of that search's window.
+    public var claimed: Int? { searchSince.flatMap { claimant(since: $0) } }
+
+    /// Where the text may still go when no Mac claimed the knock: to the clipboard alone of the
+    /// Mac the window's title names (`named`, read from the window when the text is ready), or,
+    /// with no Mac named, of the only Mac armed (user 2026-11-26: at least the receiving Mac should
+    /// have it). Only to an out that takes text for the clipboard alone: an earlier one would type it.
+    public func fallback(named: Int?) -> Int? {
+        let pick: Int?
+        if let named {
+            pick = links.indices.contains(named) && links[named].armed ? named : nil
+        } else {
+            let armed = links.indices.filter { links[$0].armed }
+            pick = armed.count == 1 ? armed[0] : nil
+        }
+        return pick.flatMap { links[$0].takesClipboard ? $0 : nil }
     }
 
     private func arm(_ link: Link, timeout: TimeInterval, dial: TimeInterval) async {
@@ -700,6 +753,7 @@ public final class RemoteSession {
                     throw VoiceError(reply["message"] as? String ?? tr("Not ready."))
                 }
                 link.name = reply["name"] as? String ?? channel.peerName
+                link.takesClipboard = reply["clipboardOnly"] as? Bool == true
                 if let idle = (reply["idle"] as? NSNumber)?.doubleValue, idle.isFinite, idle >= 0 {
                     link.idle = idle; link.idleAt = Date(); link.caret = reply["caret"] as? Bool == true
                 }
@@ -776,11 +830,20 @@ public final class RemoteSession {
     /// Hands the text to the Mac that claimed the knock and returns what happened there.
     /// `replace`: the text this Mac sent there last, which the new text takes the place of.
     /// `field`: the whole content of that Mac's text field as it was read; `text` is its new content.
+    /// `clipboardOnly`: for that Mac's clipboard, not typed (no Mac claimed the knock; `fallback`).
     public func send(to index: Int, text: String, mode: WritingMode, seconds: Double, replace: String? = nil,
-                     field: String? = nil, timeout: TimeInterval = 8) async throws -> SendReply {
+                     field: String? = nil, clipboardOnly: Bool = false, timeout: TimeInterval = 8) async throws -> SendReply {
         var request: [String: Any] = ["text": text, "mode": mode.rawValue, "seconds": seconds]
         if let replace { request["replace"] = replace }
         if let field { request["field"] = field }
+        if clipboardOnly {
+            // An earlier out would not know the flag, and would type the text.
+            guard links.indices.contains(index), links[index].takesClipboard else {
+                throw RemoteRefusal(peer: name(index), miss: .other,
+                                    description: tr("%@: %@", name(index), tr("The two Macs run different versions of out. Update both to the same version.")))
+            }
+            request["clipboardOnly"] = true
+        }
         let reply = try await exchange(index, request, timeout: timeout)
         let message = reply["message"] as? String ?? ""
         let miss = (reply["miss"] as? String).flatMap(MissReason.init(rawValue:))
@@ -834,6 +897,8 @@ public final class RemoteReceiver {
         public let field: String?
         /// The sending Mac, by its name in the list of Macs (or the name it gives itself).
         public var from = ""
+        /// For the clipboard here alone, not typed: no Mac claimed the sender's knock.
+        public var clipboardOnly = false
     }
 
     /// Another Mac asks to be trusted. Shown to the user, who calls `answer` once.
@@ -1181,7 +1246,8 @@ public final class RemoteReceiver {
             Trace.note("receive: \(sender(channel)) is ready to send, waiting for its knock")
             armed[nonce] = channel
             expire(channel.connection, after: Self.armedLifetime)
-            var reply: [String: Any] = ["ok": true, "message": "armed", "name": name]
+            // It takes text for the clipboard alone, which the sender sends when no Mac claims its knock.
+            var reply: [String: Any] = ["ok": true, "message": "armed", "name": name, "clipboardOnly": true]
             if let activity = activity?() {
                 reply["idle"] = min(max(0, activity.idle), 86_400 * 365); reply["caret"] = activity.caret
             }
@@ -1202,8 +1268,10 @@ public final class RemoteReceiver {
             guard let field = context?() else { return (["ok": false, "message": tr("Could not read the text field on the other Mac.")], stays) }
             return (["ok": true, "before": field.before, "after": field.after], stays)
         }
-        let replace = (object["replace"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let field = object["field"] as? String
+        // Text for the clipboard alone is never a replacement or a field's new content: those are typed.
+        let clipboardOnly = object["clipboardOnly"] as? Bool == true
+        let replace = clipboardOnly ? nil : (object["replace"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let field = clipboardOnly ? nil : object["field"] as? String
         guard let text = object["text"] as? String, !text.isEmpty || replace != nil || field != nil else {
             Trace.note("receive: \(sender(channel)) sent a request with no text")
             return refuse(tr("No text was received."))
@@ -1212,13 +1280,15 @@ public final class RemoteReceiver {
             Trace.note("receive: \(sender(channel)) sent a field's new content; refused: reading the field is not allowed")
             return (["ok": false, "message": tr("The other Mac does not allow changing its text field."), "miss": MissReason.notAllowed.rawValue], .close)
         }
-        let kind = field != nil ? "a field's new content" : replace != nil ? "a replacement for its last text" : "text"
+        let kind = field != nil ? "a field's new content" : replace != nil ? "a replacement for its last text"
+            : clipboardOnly ? "text for the clipboard only (no Mac claimed its knock)" : "text"
         Trace.note("receive: \(kind) from \(sender(channel)), \(text.count) characters")
         let started = Date()
         let request = Request(text: text, mode: WritingMode(rawValue: object["mode"] as? String ?? "") ?? .dictate,
                               seconds: object["seconds"] as? Double ?? 0, replace: replace, field: field,
                               // As the capsule names it (knocked).
-                              from: !device.name.isEmpty ? device.name : channel.peerName.isEmpty ? device.label : channel.peerName)
+                              from: !device.name.isEmpty ? device.name : channel.peerName.isEmpty ? device.label : channel.peerName,
+                              clipboardOnly: clipboardOnly)
         do {
             let outcome = try await deliver?(request) ?? ""
             Trace.note("receive: \(outcome.miss.map { "not typed (\($0.rawValue))" } ?? "typed") after \(Trace.ms(since: started)) ms\(outcome.onClipboard ? ", on the clipboard" : "")")

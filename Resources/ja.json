@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "このMacからの入力は許可されていません",
  "Could not be reached": "接続できません",
  "None of your other Macs answered": "ほかのMacはどれも応答しませんでした",
+ "Not sure it is the Mac you are controlling": "操作しているMacか確認できません",
  "%@ · On the clipboard (⌘V)": "%@ · クリップボードにあります（⌘V）",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · このMacのクリップボードにあります（⌘V）",
  "%@ · On its clipboard": "%@ · 相手のクリップボードにあります",

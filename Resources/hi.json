@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "इस Mac से टाइप करने की अनुमति नहीं है",
  "Could not be reached": "पहुँचा नहीं जा सका",
  "None of your other Macs answered": "आपके किसी दूसरे Mac ने जवाब नहीं दिया",
+ "Not sure it is the Mac you are controlling": "पक्का नहीं कि यह वही Mac है जिसे आप नियंत्रित कर रहे हैं",
  "%@ · On the clipboard (⌘V)": "%@ · क्लिपबोर्ड पर (⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · इस Mac के क्लिपबोर्ड पर (⌘V)",
  "%@ · On its clipboard": "%@ · उसके क्लिपबोर्ड पर",

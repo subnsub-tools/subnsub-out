@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "不允許從這台 Mac 輸入",
  "Could not be reached": "無法連線",
  "None of your other Macs answered": "其他 Mac 都沒有回應",
+ "Not sure it is the Mac you are controlling": "無法確認是否為正在遠端控制的那台 Mac",
  "%@ · On the clipboard (⌘V)": "%@ · 已放入剪貼簿（⌘V）",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · 已放入這台 Mac 的剪貼簿（⌘V）",
  "%@ · On its clipboard": "%@ · 已放入對方的剪貼簿",

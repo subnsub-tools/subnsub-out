@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "Eingabe von diesem Mac ist nicht erlaubt",
  "Could not be reached": "Nicht erreichbar",
  "None of your other Macs answered": "Keiner Ihrer anderen Macs hat geantwortet",
+ "Not sure it is the Mac you are controlling": "Nicht sicher, ob es der Mac ist, den Sie steuern",
  "%@ · On the clipboard (⌘V)": "%@ · In der Zwischenablage (⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · In der Zwischenablage dieses Mac (⌘V)",
  "%@ · On its clipboard": "%@ · In seiner Zwischenablage",

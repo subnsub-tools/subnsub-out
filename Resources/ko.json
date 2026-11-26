@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "이 Mac에서의 입력이 허용되지 않음",
  "Could not be reached": "연결할 수 없음",
  "None of your other Macs answered": "다른 Mac이 하나도 응답하지 않음",
+ "Not sure it is the Mac you are controlling": "제어 중인 Mac인지 확인할 수 없음",
  "%@ · On the clipboard (⌘V)": "%@ · 클립보드에 있음(⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · 이 Mac의 클립보드에 있음(⌘V)",
  "%@ · On its clipboard": "%@ · 그쪽 클립보드에 있음",

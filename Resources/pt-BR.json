@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "Digitar a partir deste Mac não é permitido",
  "Could not be reached": "Não foi possível alcançar",
  "None of your other Macs answered": "Nenhum dos seus outros Macs respondeu",
+ "Not sure it is the Mac you are controlling": "Não há certeza de que seja o Mac que você controla",
  "%@ · On the clipboard (⌘V)": "%@ · Na área de transferência (⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · Na área de transferência deste Mac (⌘V)",
  "%@ · On its clipboard": "%@ · Na área de transferência dele",

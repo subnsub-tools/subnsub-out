@@ -1477,6 +1477,7 @@ struct Checks {
         try check(outcome == SendReply(message: "Pasted into Notes", miss: nil, onClipboard: false), "sender learns what the claiming Mac did")
         try check(atStudy.count == 1 && atStudy[0].text == text && atStudy[0].mode == .translate && atOffice.isEmpty, "text reaches the claiming Mac only")
         try check(atStudy[0].replace == nil, "ordinary text replaces nothing")
+        try check(!atStudy[0].clipboardOnly, "and is for typing, not for the clipboard alone")
         session.close()
         let ending = Date().addingTimeInterval(2)
         while endedAtOffice == 0 && Date() < ending { try await Task.sleep(nanoseconds: 20_000_000) }
@@ -1683,8 +1684,20 @@ struct Checks {
             if rounds > 1 { study.knocked(late.nonce) }
             return true
         }
-        try check(stale == nil && rounds == 2, "a Mac knocked at before cannot claim a later stage's knock")
+        try check(stale == 0 && rounds == 2, "a Mac knocked at first that answers only during a later knock still claims: every knock of a search is in one window")
         late.close()
+        let slow = freshSession()
+        var slowKnocks = 0
+        let lateAnswer = await slow.find(first: 0, timeout: 2, dial: 3) {
+            slowKnocks += 1
+            // The Mac's answer to the first knock comes after the wait for it, as it did 2026-11-26.
+            if slowKnocks == 1 {
+                Task { @MainActor in try? await Task.sleep(nanoseconds: 1_000_000_000); study.knocked(slow.nonce) }
+            }
+            return true
+        }
+        try check(lateAnswer == 0, "an answer that comes after the wait for its knock still claims")
+        slow.close()
         let wary = freshSession()
         let early = await wary.find(first: nil, doubtful: [peers[2].key], timeout: 2, dial: 3) { study.knocked(wary.nonce); return true }
         try check(early == 0 && wary.reachable[peers[2].key] == nil, "a Mac not reached last time is not called while another claims")
@@ -1692,9 +1705,32 @@ struct Checks {
         let unclaimed = freshSession()
         var tries = 0
         let none = await unclaimed.find(first: nil, doubtful: [peers[2].key], timeout: 2, dial: 3) { tries += 1; return true }
-        try check(none == nil && tries == 1 && unclaimed.reachable[peers[2].key] == false,
-                  "when nobody claims, the doubtful Mac is tried last, and a stage with nobody new is not knocked again")
+        try check(none == nil && tries == 2 && unclaimed.reachable[peers[2].key] == false,
+                  "when nobody claims, the doubtful Mac is tried last, a stage with nobody new is not knocked at, and the knock is typed once more at the end")
+        try check(unclaimed.fallback(named: nil) == nil, "with no Mac named and two ready, no Mac is guessed for the text")
         unclaimed.close()
+        let spare = freshSession()
+        let nobodyThere = await spare.find(first: 1, timeout: 2, dial: 3) { true }
+        try check(nobodyThere == nil && spare.claimed == nil && spare.fallback(named: 1) == 1,
+                  "when nobody claims, the Mac the title names may still have the text, on its clipboard")
+        _ = try await spare.send(to: 1, text: "For the clipboard", mode: .dictate, seconds: 1, replace: "Earlier text", clipboardOnly: true)
+        try check(atOffice.last?.text == "For the clipboard" && atOffice.last?.clipboardOnly == true && atOffice.last?.replace == nil,
+                  "text for the clipboard alone arrives marked so, and never as a replacement to type")
+        spare.close()
+        let afterwards = freshSession()
+        var later2 = 0
+        let gaveUp = await afterwards.find(first: 0, timeout: 2, dial: 3) {
+            later2 += 1
+            // The answer to the first knock comes only after the search has given up.
+            if later2 == 1 {
+                Task { @MainActor in try? await Task.sleep(nanoseconds: 4_000_000_000); study.knocked(afterwards.nonce) }
+            }
+            return true
+        }
+        let waitLate = Date().addingTimeInterval(4)
+        while afterwards.claimed == nil && Date() < waitLate { try await Task.sleep(nanoseconds: 20_000_000) }
+        try check(gaveUp == nil && afterwards.claimed == 0, "an answer after the search gave up still names the Mac before the text goes anywhere else")
+        afterwards.close()
         let left = freshSession()
         let started = Date()
         let local = await left.find(first: 1, timeout: 2, dial: 3) { false }

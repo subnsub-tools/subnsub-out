@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "La saisie depuis ce Mac n’est pas autorisée",
  "Could not be reached": "Injoignable",
  "None of your other Macs answered": "Aucun de vos autres Mac n’a répondu",
+ "Not sure it is the Mac you are controlling": "Impossible de savoir si c’est le Mac que vous contrôlez",
  "%@ · On the clipboard (⌘V)": "%@ · Dans le presse-papiers (⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · Dans le presse-papiers de ce Mac (⌘V)",
  "%@ · On its clipboard": "%@ · Dans son presse-papiers",

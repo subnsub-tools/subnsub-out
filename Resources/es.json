@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "No se permite escribir desde este Mac",
  "Could not be reached": "No se pudo conectar",
  "None of your other Macs answered": "Ninguno de tus otros Mac respondió",
+ "Not sure it is the Mac you are controlling": "No se sabe si es el Mac que controlas",
  "%@ · On the clipboard (⌘V)": "%@ · En el portapapeles (⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · En el portapapeles de este Mac (⌘V)",
  "%@ · On its clipboard": "%@ · En su portapapeles",

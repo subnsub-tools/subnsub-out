@@ -511,6 +511,7 @@
  "Typing from this Mac is not allowed": "Ввод с этого Mac не разрешён",
  "Could not be reached": "Не удалось подключиться",
  "None of your other Macs answered": "Ни один из ваших других Mac не ответил",
+ "Not sure it is the Mac you are controlling": "Не удалось понять, тот ли это Mac, которым вы управляете",
  "%@ · On the clipboard (⌘V)": "%@ · В буфере обмена (⌘V)",
  "%@ · On this Mac’s clipboard (⌘V)": "%@ · В буфере обмена этого Mac (⌘V)",
  "%@ · On its clipboard": "%@ · В его буфере обмена",

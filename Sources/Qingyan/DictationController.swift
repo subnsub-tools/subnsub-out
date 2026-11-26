@@ -428,7 +428,7 @@ final class DictationController: ObservableObject {
             context: { TextTarget.field() },
             deliver: { [weak self] request in
                 guard let self else { throw VoiceError(tr("out is quitting on the other Mac.")) }
-                if request.field == nil { await TextTarget.awaitFocus() }
+                if request.field == nil && !request.clipboardOnly { await TextTarget.awaitFocus() }
                 return try await self.receive(request)
             })
     }
@@ -467,13 +467,34 @@ final class DictationController: ObservableObject {
         // New text, not a field rewritten or a deletion: the panel's Received card, and this Mac's
         // clipboard whatever became of it (user 2026-11-25: and copied automatically, on the receiving Mac).
         let fresh = request.field == nil && !request.text.isEmpty
-        Trace.note("receive: writing into \(Self.frontApp)")
+        Trace.note(request.clipboardOnly ? "receive: putting it on the clipboard, not typing it" : "receive: writing into \(Self.frontApp)")
         receivedCount += 1
         let order = receivedCount, arrived = Date()
         func show(written: Bool, status: [String]) {
             guard fresh, order > lastReceived?.order ?? 0 else { return }
             lastReceived = ReceivedText(order: order, text: request.text, from: request.from, date: arrived, written: written,
                                         status: status.joined(separator: " · "))
+        }
+        if request.clipboardOnly {
+            // No Mac claimed the sender's knock: the text is left on the clipboard here, not typed into
+            // whatever is in front (user 2026-11-26: at least the receiving Mac has it).
+            keepOnClipboard(request.text)
+            show(written: false, status: [Self.missTitle(.unclaimed, peer: nil), Self.missLine(.unclaimed, clipboard: nil), tr("Copied to the clipboard")])
+            if !busy, !starting {
+                sessionID = id
+                result = request.text; latency = nil
+                phase = .done
+                capsuleResult = .notWritten(Self.missTitle(.unclaimed, peer: nil), Self.missLine(.unclaimed, clipboard: .here))
+                message = tr("From another Mac · %@ · Saved to History", tr("Saved to the clipboard (⌘V)"))
+                resultIsReceived = fresh; messageIsReceived = fresh
+                presentOverlay?()
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    guard let self, self.sessionID == id, self.phase == .done else { return }
+                    self.dismissOverlay?()
+                }
+            }
+            return DeliveryOutcome(message: tr("Copied to the clipboard"), miss: .unclaimed, onClipboard: true)
         }
         do {
             let outcome: WriteResult
@@ -710,7 +731,13 @@ final class DictationController: ObservableObject {
                     Trace.note("send: no knock: the window in front is no longer a remote desktop (\(Self.frontApp))")
                     return false
                 }
-                mark = FocusMark.current()
+                // Every knock of a search goes into one window, so an answer to any of them is one for it.
+                let now = FocusMark.current()
+                if let mark, !mark.same(as: now) {
+                    Trace.note("send: no more knocks: the window in front is not the one the first knock was typed in")
+                    return false
+                }
+                mark = mark ?? now
                 knocks += 1
                 await KnockKeys.post(nonce: session.nonce)
                 return true
@@ -752,6 +779,9 @@ final class DictationController: ObservableObject {
     private struct Destination {
         let session: RemoteSession?
         let target: Int?
+        /// No Mac claimed the knock in the window still in front: the Mac that may have the text on
+        /// its clipboard alone (RemoteSession.fallback).
+        var fallback: Int? = nil
     }
 
     /// Typing on this Mac waits for no other Mac; a remote desktop brought to the front after the
@@ -781,14 +811,37 @@ final class DictationController: ObservableObject {
         }
         let now = FocusMark.current()
         if mark?.same(as: now) ?? false {
-            Trace.note("send: text ready in the window the knock was typed in: \(early.map { "for \(session.name($0))" } ?? "no Mac saw that knock")")
-            return Destination(session: session, target: early)
+            return settle(session, early, in: now)
         }
-        Trace.note("send: text ready, but the window in front is not the one the knock was typed in (\(mark == nil ? "no knock was typed" : "\(Self.appName(mark)) then, \(Self.appName(now)) now\(mark?.pid == now?.pid ? ", the same app" : "")")); knocking again")
-        let (again, found) = await locate(in: session, byInput: false)
-        let target = again?.same(as: FocusMark.current()) == true ? found : nil
-        if found != nil, target == nil { Trace.note("send: the window in front changed again while knocking; not sending to \(found.map { session.name($0) } ?? "")") }
-        return Destination(session: session, target: target)
+        Trace.note("send: text ready, but the window in front is not the one the knock was typed in (\(mark == nil ? "no knock was typed" : "\(Self.appName(mark)) then, \(Self.appName(now)) now\(mark?.pid == now?.pid ? ", the same app" : "")")); looking again with new connections")
+        // New connections and a new knock: a late answer from the Mac of the earlier window cannot
+        // be taken for one from this window's Mac.
+        scoutRemote()
+        guard let fresh = remoteSession, let again = remoteScout else { return Destination(session: nil, target: nil) }
+        let (seen, found) = await again.value
+        let current = FocusMark.current()
+        guard seen?.same(as: current) == true else {
+            if let found { Trace.note("send: the window in front changed again while looking; not sending to \(fresh.name(found))") }
+            return Destination(session: fresh, target: nil)
+        }
+        return settle(fresh, found, in: current)
+    }
+
+    /// The Mac for the window `now`, which the knocks of `session` all went into: the one that
+    /// claimed a knock, during the search or since; else none, with the Mac whose clipboard alone
+    /// may have the text, by the window's title as it is now.
+    private func settle(_ session: RemoteSession, _ found: Int?, in now: FocusMark?) -> Destination {
+        if let found {
+            Trace.note("send: text ready in the window the knock was typed in: for \(session.name(found))")
+            return Destination(session: session, target: found)
+        }
+        if let late = session.claimed {
+            Trace.note("send: text ready in the window the knock was typed in: \(session.name(late)) answered after the search gave up")
+            return Destination(session: session, target: late)
+        }
+        Trace.note("send: text ready in the window the knock was typed in: no Mac saw that knock")
+        let named = session.index(namedIn: now?.title ?? "", learned: armedNames)
+        return Destination(session: session, target: nil, fallback: session.fallback(named: named))
     }
 
     private enum Revision {
@@ -844,11 +897,20 @@ final class DictationController: ObservableObject {
             if session != nil { Trace.note("send: cancelled before sending") }
             throw error
         }
-        if let session, let target {
+        // No Mac claimed the knock: plain text still goes to the Mac the window's title names (or the
+        // only one ready), for its clipboard alone (user 2026-11-26).
+        var plain = false
+        if case .insert = plan { plain = true }
+        let spare = target == nil && plain ? found.fallback : nil
+        if let session, let target = target ?? spare {
+            let clipboardOnly = found.target == nil
             let name = session.name(target), id = session.key(target)
             sendingTo = name
             capsuleStep = .sending
             message = tr("Sending to %@…", name)
+            if clipboardOnly {
+                Trace.note("send: no Mac claimed the knock; \(name) gets the text for its clipboard only (\(Self.readiness(session)))")
+            }
             var replace: String?, field: String?
             switch plan {
             case .insert: break
@@ -859,7 +921,7 @@ final class DictationController: ObservableObject {
             let kind = field != nil ? "a field's new content" : replace != nil ? "a replacement for the last text" : "text"
             Trace.note("send: sending \(kind) to \(name), \(text.count) characters")
             let started = Date()
-            do { reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field) }
+            do { reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field, clipboardOnly: clipboardOnly) }
             catch let refusal as RemoteRefusal {
                 Trace.note("send: \(name) did not type it (\(refusal.miss.rawValue)) after \(Trace.ms(since: started)) ms\(refusal.onClipboard ? ", on its clipboard" : "")")
                 throw refusal
@@ -878,10 +940,11 @@ final class DictationController: ObservableObject {
                 throw RemoteRefusal(peer: name, miss: .other, description: error.localizedDescription)
             }
             Trace.note("send: \(name) answered after \(Trace.ms(since: started)) ms: \(reply.miss.map { "not typed (\($0.rawValue))" } ?? "typed")\(reply.onClipboard ? ", on its clipboard" : "")")
+            let miss = clipboardOnly ? reply.miss ?? .unclaimed : reply.miss
             // A text that may not be in a field is nothing to take back by backspace later.
-            lastDelivered = text.isEmpty || field != nil || reply.miss != nil ? nil
+            lastDelivered = text.isEmpty || field != nil || miss != nil ? nil
                 : Delivered(text: text, peer: id, mark: FocusMark.current(), at: Date())
-            return WriteResult(summary: tr("%@: %@", name, reply.message), onClipboard: reply.onClipboard, miss: reply.miss, peer: name)
+            return WriteResult(summary: tr("%@: %@", name, reply.message), onClipboard: reply.onClipboard, miss: miss, peer: name)
         }
         if settings.preferences.linkEnabled, anotherScreenInFront,
            session != nil || helperState != .ready || !settings.preferences.devices.isEmpty {
@@ -1036,6 +1099,7 @@ final class DictationController: ObservableObject {
         case .unreachable: why = tr("Could not be reached")
         case .noAnswer: why = tr("None of your other Macs answered")
         case .unconfirmed: why = tr("No answer after sending")
+        case .unclaimed: why = tr("Not sure it is the Mac you are controlling")
         case .other: why = tr("The panel shows the reason")
         }
         switch clipboard {
