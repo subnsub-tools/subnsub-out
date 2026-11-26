@@ -1570,8 +1570,16 @@ final class ScreenContainer: NSView {
     /// The floating line: its height, and its distance from the window's left and bottom edges.
     static let lineHeight: CGFloat = 28
     static let lineInset: CGFloat = 12
+    /// The floating line's size as SwiftUI draws it: as wide as what it says, taller where it wraps.
+    private var lineSize = CGSize(width: 0, height: ScreenContainer.lineHeight)
     /// What the line takes from the bottom of the window.
-    static var bottomRoom: CGFloat { floating ? lineHeight + lineInset : barHeight }
+    private var bottomRoom: CGFloat { Self.floating ? max(lineSize.height, Self.lineHeight) + Self.lineInset : Self.barHeight }
+    /// Where the floating line is drawn, in this view: its pane spans the window's width, and only
+    /// this part of it is the line.
+    private var lineRect: NSRect {
+        guard Self.floating else { return bottom.frame }
+        return NSRect(x: bottom.frame.minX, y: bottom.frame.maxY - lineSize.height, width: lineSize.width, height: lineSize.height)
+    }
     /// The title strip: the window's own buttons and the Mac's name.
     static let rowHeight: CGFloat = 32
     /// The rail's distance from the window's right edge, and from the strip and the line.
@@ -1633,7 +1641,7 @@ final class ScreenContainer: NSView {
     }
     private let scroll = NSScrollView()
     private let top = NSView()
-    private let bottom = NSView()
+    private let bottom = PassThroughView()
     /// What the title strip and the line are drawn on over the picture: the window's own colour,
     /// solid to their edge, with no blur and no fade into the picture (user 2026-11-25: no
     /// transition, nothing fuzzy, no layer of blur). Not there while no picture is shown: then they
@@ -1676,18 +1684,22 @@ final class ScreenContainer: NSView {
         rail = ScreenRailHost(rootView: ScreenRail(info: info))
         hint = ScreenHintHost(rootView: ScreenHint(info: info))
         super.init(frame: frame)
-        bar.rootView = ScreenInfoBar(info: info) { [weak self] in self?.onInfo?() }
+        // The floating line says how large it is drawn; its room and its clicks follow.
+        bar.rootView = ScreenInfoBar(info: info, open: { [weak self] in self?.onInfo?() }, onSize: { [weak self] size in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, size != self.lineSize, size.width > 0 else { return }
+                    self.lineSize = size
+                    self.needsLayout = true
+                }
+            }
+        })
         rail.rootView = ScreenRail(info: info, act: { [weak self] action in self?.onAct?(action) },
                                    more: { [weak self] in self?.chrome(shown: true, animated: true) })
         // Laid out here, not by their content; the title strip also ignores the title bar's safe area,
         // as the panel's does.
         titleRow.sizingOptions = []; titleRow.safeAreaRegions = []
-        // The floating line is as wide as what it says: its own width is read, and it is laid out
-        // again when that changes.
-        bar.sizingOptions = Self.floating ? [.intrinsicContentSize] : []; bar.safeAreaRegions = []
-        bar.onResize = { [weak self] in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.needsLayout = true } }
-        }
+        bar.sizingOptions = []; bar.safeAreaRegions = []
         rail.sizingOptions = []; rail.safeAreaRegions = []
         hint.sizingOptions = []; hint.safeAreaRegions = []
         glass.material = .hudWindow
@@ -1746,9 +1758,12 @@ final class ScreenContainer: NSView {
         top.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.rowHeight)
         titleRow.frame = top.bounds
         if Self.floating {
-            // At the bottom left, as wide as what it says and no wider than the window leaves it.
-            let width = min(ceil(max(bar.intrinsicContentSize.width, 0)), max(bounds.width - Self.lineInset * 2, 0))
-            bottom.frame = NSRect(x: Self.lineInset, y: bounds.height - Self.lineInset - Self.lineHeight, width: width, height: Self.lineHeight)
+            // Its pane: the window's width less the insets, from the line's top to the inset above
+            // the bottom; the line is drawn at its bottom left, at its own size, and only it takes clicks.
+            let height = ceil(max(lineSize.height, Self.lineHeight))
+            bottom.frame = NSRect(x: Self.lineInset, y: bounds.height - Self.lineInset - height,
+                                  width: max(bounds.width - Self.lineInset * 2, 0), height: height)
+            bar.clicks = NSRect(x: 0, y: height - lineSize.height, width: lineSize.width, height: lineSize.height)
         } else {
             bottom.frame = NSRect(x: 0, y: bounds.height - Self.barHeight, width: bounds.width, height: Self.barHeight)
         }
@@ -1759,7 +1774,7 @@ final class ScreenContainer: NSView {
         let solid = screen.showsPicture && !Self.floating
         for blur in [topBlur, bottomBlur] where blur.isHidden == solid { blur.isHidden = !solid }
         rail.frame = railRoom
-        hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - Self.bottomRoom, 0))
+        hint.frame = NSRect(x: 0, y: Self.rowHeight, width: bounds.width, height: max(bounds.height - Self.rowHeight - bottomRoom, 0))
         rail.buttons = railRegion
         overlay.top = chromeShown ? Self.rowHeight : 0
         // AppKit shows the window's buttons again as it lays its title bar out.
@@ -1781,7 +1796,7 @@ final class ScreenContainer: NSView {
     private var railRoom: NSRect {
         let top = Self.rowHeight + Self.railClear, least = ScreenRail.side * 2 + ScreenRail.gap
         return NSRect(x: 0, y: top, width: max(bounds.width - Self.railInset, ScreenRail.side),
-                      height: max(bounds.height - top - Self.bottomRoom - Self.railClear, least))
+                      height: max(bounds.height - top - bottomRoom - Self.railClear, least))
     }
     /// Where the rail's buttons are now: Close, Full Screen and More, or all of them.
     private var railRegion: NSRect { ScreenRail.region(shown: chromeShown ? ScreenRail.most : ScreenRail.always, in: railRoom) }
@@ -1789,7 +1804,7 @@ final class ScreenContainer: NSView {
     func railFrame(of index: Int) -> NSRect { ScreenRail.frame(of: index, in: railRoom) }
     /// The pointer there keeps what More brought: on the title strip, on the line, or among the buttons.
     private func onChrome(_ point: NSPoint) -> Bool {
-        top.frame.contains(point) || bottom.frame.contains(point) || railRegion.insetBy(dx: -ScreenRail.gap, dy: -ScreenRail.gap).contains(point)
+        top.frame.contains(point) || lineRect.contains(point) || railRegion.insetBy(dx: -ScreenRail.gap, dy: -ScreenRail.gap).contains(point)
     }
 
     override func updateTrackingAreas() {
@@ -1899,12 +1914,26 @@ final class ScreenHintHost: NSHostingView<ScreenHint> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// The line under the picture; floating, it tells when what it says needs another width.
+/// The line under the picture. Floating, its pane is wider than the line: a click elsewhere in it
+/// goes on to the picture.
 final class ScreenLineHost: NSHostingView<ScreenInfoBar> {
-    var onResize: (() -> Void)?
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        onResize?()
+    /// Where the line is, in this view's own coordinates (flipped: from its top); nil takes every click.
+    var clicks: NSRect?
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let clicks, let superview {
+            let local = convert(point, from: superview)
+            let fromTop = NSPoint(x: local.x, y: isFlipped ? local.y : bounds.height - local.y)
+            if !clicks.contains(fromTop) { return nil }
+        }
+        return super.hitTest(point)
+    }
+}
+
+/// A view that holds others and takes no click of its own: one on it goes to what is under it.
+final class PassThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
     }
 }
 

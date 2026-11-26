@@ -531,6 +531,8 @@ private struct RailGlass: NSViewRepresentable {
 struct ScreenInfoBar: View {
     @ObservedObject var info: ScreenInfo
     var open: () -> Void = {}
+    /// The floating line's own size, as it is drawn: the window keeps its room and its clicks to it.
+    var onSize: (CGSize) -> Void = { _ in }
 
     var body: some View {
         Button(action: open) { line }
@@ -541,34 +543,48 @@ struct ScreenInfoBar: View {
     }
 
     /// With Liquid Glass (macOS 26 and later) a capsule of glass floating at the picture's bottom left,
-    /// as wide as what it says (the window sizes it, ScreenContainer); before it, a strip across the
-    /// window's bottom.
+    /// as wide as what it says, all of it (user 2026-11-26: no ellipsis, everything shown whole; the
+    /// display's size was cut to "102…40" while the window chased the line's width): one line where
+    /// the window has room for it, more where it has not. Before macOS 26, a strip across the
+    /// window's bottom that makes its words smaller rather than cut them.
     @ViewBuilder private var line: some View {
-        let words = HStack(spacing: 6) {
+        let floating = ScreenContainer.floating
+        let words = HStack(alignment: .firstTextBaseline, spacing: 6) {
             Circle().fill(dot).frame(width: 7, height: 7)
-            Text(info.summary).lineLimit(1).truncationMode(.middle)
-            if !ScreenContainer.floating { Spacer(minLength: 8) }
+            Text(info.summary).fixedSize(horizontal: false, vertical: true).layoutPriority(1)
+            if !floating { Spacer(minLength: 8) }
             if let note = info.pathNote {
-                Text(note).lineLimit(1).truncationMode(.tail).foregroundStyle(.orange)
+                Text(note).fixedSize(horizontal: false, vertical: true).foregroundStyle(.orange)
             }
             Image(systemName: "info.circle")
         }
         .font(.system(size: 11).monospacedDigit())
         .foregroundStyle(.secondary)
         if #available(macOS 26, *) {
+            let shape = RoundedRectangle(cornerRadius: ScreenContainer.lineHeight / 2, style: .continuous)
             words
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: ScreenContainer.lineHeight, maxHeight: ScreenContainer.lineHeight, alignment: .leading)
-                .contentShape(Capsule())
-                .glassEffect(.regular.interactive(), in: Capsule())
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .frame(minHeight: ScreenContainer.lineHeight)
+                .fixedSize(horizontal: false, vertical: true)
+                .contentShape(shape)
+                .glassEffect(.regular.interactive(), in: shape)
+                .background(GeometryReader { geometry in Color.clear.preference(key: LineSizeKey.self, value: geometry.size) })
+                .onPreferenceChange(LineSizeKey.self) { size in onSize(size) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         } else {
             words
+                .lineLimit(1).minimumScaleFactor(0.6)
                 .padding(.horizontal, 10)
                 .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
                 // On the window's glass, as the panel's rows are.
                 .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: 1) }
                 .contentShape(Rectangle())
         }
+    }
+
+    private struct LineSizeKey: PreferenceKey {
+        static let defaultValue = CGSize.zero
+        static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
     }
 
     private var dot: Color {
