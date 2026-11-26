@@ -1426,22 +1426,56 @@ struct OverlaySizeKey: PreferenceKey {
     }
 }
 
-/// Isolated 5-bar micro-waveform driven solely by `AudioMeter`.
-/// The capsule's level bars; the bar kept on top uses them too.
-struct MicroWaveform: View {
-    @ObservedObject var meter: AudioMeter
-    private static let weights: [CGFloat] = [7.5, 13, 9.5, 14, 8.5]
+/// The recording's level running across as wide as it is given, newest at the right edge, older
+/// moments drifting left and fading at the left edge (user 2026-11-27: the bar kept on top showed five
+/// short bars beside the time; nothing is transcribed while recording, so the waveform can take the
+/// row and the time go to its end). Each bar is a fixed slice of time, the loudest level heard in it,
+/// so the waveform runs at an even pace however often the microphone reports; slices nothing was
+/// heard for are dots, so the line is whole from the start. With Reduce Motion it steps a slice at a
+/// time instead of gliding.
+struct LevelTrace: View {
+    let meter: AudioMeter
+    private static let bar: CGFloat = 2
+    private static let pitch: CGFloat = 3.5
+    private static let slice: TimeInterval = 0.06
+    /// How far behind the moment the right edge runs: a moment's level is reported a little after it
+    /// (the microphone's buffer, at most every 45 ms), and a slice is drawn once it is known.
+    private static let lag: TimeInterval = 0.15
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<5, id: \.self) { index in
-                Capsule()
-                    .fill(CapsuleTint.green)
-                    .frame(width: 2.2, height: max(3.5, CGFloat(meter.level) * Self.weights[index]))
+        TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
+            Canvas { graphics, size in
+                let trace = meter.trace
+                var end = context.date.timeIntervalSinceReferenceDate - Self.lag
+                if Motion.reduced { end = (end / Self.slice).rounded(.down) * Self.slice }
+                let newest = Int((end / Self.slice).rounded(.down))
+                let middle = size.height / 2
+                // Walks back through the trace as the slices go back in time.
+                var index = trace.count
+                for back in 0..<(Int(size.width / Self.pitch) + 2) {
+                    let start = Double(newest - back) * Self.slice
+                    let x = size.width - Self.bar - CGFloat((end - start) / Self.slice) * Self.pitch
+                    guard x > -Self.bar else { break }
+                    while index > 0 && trace[index - 1].at >= start { index -= 1 }
+                    // The loudest level reported in the slice, else the next one after it (its buffer
+                    // covered the slice), unless that came much later: nothing was heard then.
+                    var level: Float?
+                    if index < trace.count, trace[index].at - (start + Self.slice) < 0.25 {
+                        var loudest = trace[index].level
+                        var next = index + 1
+                        while next < trace.count && trace[next].at < start + Self.slice { loudest = max(loudest, trace[next].level); next += 1 }
+                        level = loudest
+                    }
+                    let height = max(Self.bar, pow(CGFloat(level ?? 0), 0.75) * size.height)
+                    let rect = CGRect(x: x, y: middle - height / 2, width: Self.bar, height: height)
+                    graphics.fill(Path(roundedRect: rect, cornerRadius: Self.bar / 2),
+                                  with: .color(CapsuleTint.green.opacity(level == nil ? 0.35 : 1)))
+                }
             }
         }
-        .frame(width: 19, height: 14)
-        .animation(.easeOut(duration: 0.08), value: meter.level)
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.14), .init(color: .black, location: 1)],
+                             startPoint: .leading, endPoint: .trailing))
+        .accessibilityHidden(true)
     }
 }
 

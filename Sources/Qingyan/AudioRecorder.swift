@@ -60,9 +60,15 @@ struct Microphone: Identifiable, Equatable, Sendable {
 final class AudioMeter: ObservableObject {
     @Published private(set) var level: Float = 0
     @Published private(set) var elapsed: Int = 0
+    /// The recording's levels as they came and when (seconds since the reference date), newest last,
+    /// for the waveform that runs across the bar kept on top: some seconds of them, more than its
+    /// widest shows. Not published: that view redraws every frame.
+    private(set) var trace: [(at: TimeInterval, level: Float)] = []
 
     func setLevel(_ next: Float) {
         let clamped = min(1, max(0, next))
+        trace.append((Date.timeIntervalSinceReferenceDate, clamped))
+        if trace.count > 240 { trace.removeFirst(trace.count - 200) }
         guard abs(level - clamped) >= 0.015 || (clamped == 0 && level != 0) else { return }
         level = clamped
     }
@@ -75,7 +81,21 @@ final class AudioMeter: ObservableObject {
     func reset() {
         if level != 0 { level = 0 }
         if elapsed != 0 { elapsed = 0 }
+        trace = []
     }
+
+    #if DEBUG
+    /// A spoken sentence's worth of levels, for the previews.
+    func previewTrace() {
+        // Running on past the moment it is made, so the picture taken a little later is full too.
+        let now = Date.timeIntervalSinceReferenceDate
+        trace = (0..<180).map { index in
+            let t = Float(index)
+            let syllables = max(0, sin(t * 0.55)) * (0.55 + 0.45 * sin(t * 0.13 + 1))
+            return (now - 6 + Double(index) * 0.05, index % 37 > 30 ? 0.02 : 0.05 + syllables * 0.85)
+        }
+    }
+    #endif
 }
 
 /// The microphones this Mac has at the moment, kept current off the main thread as devices are

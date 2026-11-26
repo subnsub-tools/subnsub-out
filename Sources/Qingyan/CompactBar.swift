@@ -196,24 +196,13 @@ struct CompactBar: View {
                 Spacer(minLength: 0)
             }
         } else if recording {
-            HStack(spacing: 5) {
-                MicroWaveform(meter: meter)
+            // The waveform takes the row and the time its end (user 2026-11-27); the words recognized
+            // so far are left out here. Neither takes a click: the row moves the bar.
+            HStack(spacing: 8) {
+                LevelTrace(meter: meter).frame(maxWidth: .infinity).frame(height: 22)
                 CapsuleClock(meter: meter, online: controller.recordingOnline)
-                if copied {
-                    Text(tr("Copied")).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Palette.accent)
-                } else if !controller.partial.isEmpty {
-                    Text("·").font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.muted)
-                    Button { copy(controller.partial) } label: {
-                        Text(controller.partial)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .lineLimit(1).truncationMode(.head)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(tr("Click to copy the text recognized so far"))
-                }
-                Spacer(minLength: 0)
             }
+            .allowsHitTesting(false)
         } else {
             ZStack(alignment: .leading) {
                 words.id(wordsKey).transition(.capsuleWords)

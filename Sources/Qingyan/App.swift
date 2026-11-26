@@ -1386,6 +1386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.capsuleShown = true
         controller.phase = .recording; controller.elapsed = 7; controller.connected = true
         controller.partial = "Preview: Discuss the new plan at 3 p.m. tomorrow."
+        controller.meter.previewTrace()
         try await compact("compact-recording")
         controller.partial = ""
         controller.phase = .processing; controller.capsuleStep = .sending; controller.sendingTo = "Kitchen Mac mini 2023"
