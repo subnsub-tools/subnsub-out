@@ -98,6 +98,10 @@ public final class ScreenClient: @unchecked Sendable {
     static let videoFrameMax = 6 << 20
     static let videoPacketsMax = 8192
     static let displaySettle: TimeInterval = 0.9
+    /// How long a display asked for may go unanswered before the next form is asked for: a host
+    /// that cannot make it may send no layout at all (seen 2026-11-26: full screen asked for, and
+    /// the session's display stayed at the window's size with nothing after).
+    static let displaySilence: TimeInterval = 3
 
     private let link: ScreenTunnelLink
     private var config: Config
@@ -434,8 +438,19 @@ public final class ScreenClient: @unchecked Sendable {
         askWork?.cancel()
         let form = self.form
         let room = (config.roomWidth, config.roomHeight)
+        awaitAnswer()
         lock.unlock()
+        log("display asked: \(w)x\(h) at \(scale)x, \(form)")
         try? sendEncrypted(ScreenRFB.displayConfig(width: w, height: h, scale: scale, hdr: false, form: form, room: room))
+    }
+
+    /// With `lock` held: the answer to the display just asked for is looked at once the host has
+    /// been silent for `displaySilence` (a layout coming first looks at it sooner, in onLayout).
+    private func awaitAnswer() {
+        let gen = askGen
+        let work = DispatchWorkItem { [weak self] in self?.askedDisplay(gen) }
+        askWork = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.displaySilence, execute: work)
     }
 
     static func formsAfter(_ form: ScreenRFB.DisplayForm, scale: Double) -> [ScreenRFB.DisplayForm] {
@@ -465,6 +480,7 @@ public final class ScreenClient: @unchecked Sendable {
             askLeft = []
             let form = self.form
             lock.unlock()
+            if w > 0 && h > 0 { log("display \(sw)x\(sh), \(bw)x\(bh) px: \(done ? "as asked" : "not as asked, no form left")") }
             if done && form != .plain { Self.formLock.withLock { Self.hostForm = form } }
             return
         }
@@ -472,7 +488,9 @@ public final class ScreenClient: @unchecked Sendable {
         resizeAsked = true
         form = next
         let room = (config.roomWidth, config.roomHeight)
+        awaitAnswer()
         lock.unlock()
+        log("display \(sw)x\(sh), \(bw)x\(bh) px, not \(w)x\(h) at \(scale)x: asked again, \(next)")
         try? sendEncrypted(ScreenRFB.displayConfig(width: w, height: h, scale: scale, hdr: false, form: next, room: room))
     }
 

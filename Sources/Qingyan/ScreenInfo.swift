@@ -324,16 +324,11 @@ struct ScreenRail: View {
                             button(kind)
                         }
                     }
+                    .modifier(RailColumnGlass())
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing)
-            if #available(macOS 26, *) {
-                // Liquid Glass: the buttons' glass runs together into one piece down the side, as in
-                // the demo (user 2026-11-26), and flows out to the rest as More brings them.
-                GlassEffectContainer(spacing: Self.gap + 8) { stack }
-            } else {
-                stack
-            }
+            stack
         }
     }
 
@@ -391,16 +386,29 @@ private struct ScreenRailButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(black ? Color.white : Color(white: 0.07))
-                .frame(width: ScreenRail.side, height: ScreenRail.side)
-                .background { if hovered { Circle().fill((black ? Color.white : Color.black).opacity(0.12)) } }
-                .modifier(ScreenGlass(shape: Circle(), dark: black,
-                                      tint: black ? Color.black.opacity(0.32) : Color.white.opacity(0.38),
-                                      stroke: black ? Color.white.opacity(0.22) : Color.black.opacity(0.15),
-                                      interactive: true))
-                .contentShape(Circle())
+            if ScreenContainer.floating {
+                // On the column's clear glass (RailColumnGlass), as in the demo: the sign in the
+                // label colour, and a button that is on is a solid round with its sign cut out of it.
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(active ? Color(nsColor: .windowBackgroundColor) : Color.primary)
+                    .frame(width: ScreenRail.side, height: ScreenRail.side)
+                    .background {
+                        if active { Circle().fill(Color.primary.opacity(0.85)).padding(3) }
+                        else if hovered { Circle().fill(Color.primary.opacity(0.1)).padding(3) }
+                    }
+                    .contentShape(Circle())
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(black ? Color.white : Color(white: 0.07))
+                    .frame(width: ScreenRail.side, height: ScreenRail.side)
+                    .background { if hovered { Circle().fill((black ? Color.white : Color.black).opacity(0.12)) } }
+                    .modifier(ScreenGlass(shape: Circle(), dark: black,
+                                          tint: black ? Color.black.opacity(0.32) : Color.white.opacity(0.38),
+                                          stroke: black ? Color.white.opacity(0.22) : Color.black.opacity(0.15)))
+                    .contentShape(Circle())
+            }
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
@@ -449,6 +457,19 @@ struct ScreenHint: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(Motion.reduced ? nil : .easeOut(duration: 0.18), value: info.controlling)
         .accessibilityHidden(true)
+    }
+}
+
+/// One column of the rail on macOS 26 and later: a single capsule of clear Liquid Glass behind its
+/// buttons, as in the demo at m2:8847 (user 2026-11-26: what shipped had none of the design, each
+/// button a tinted round of its own). It grows and shrinks with the column as More brings the rest.
+private struct RailColumnGlass: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            content
+        }
     }
 }
 
