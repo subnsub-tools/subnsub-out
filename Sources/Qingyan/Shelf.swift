@@ -25,6 +25,9 @@ final class ShelfModel: ObservableObject {
     @Published private(set) var widths: [UUID: Int] = [:]
     private static let widthsKey = "shelf.widths"
     private var nameWidths: [String: CGFloat] = [:]
+    /// When this Mac's own files were last changed, read from the Shelf's copy (a clone keeps the
+    /// date), for what an earlier version put there without keeping it.
+    private var changedDates: [UUID: Date] = [:]
     private var icons: [UUID: NSImage] = [:]
     /// Copied files on their way onto the Shelf, so that one copied twice in a row goes on once.
     private var shelving: Set<String> = []
@@ -415,17 +418,19 @@ final class ShelfModel: ObservableObject {
         return type.conforms(to: .image) || type.conforms(to: .movie)
     }
 
-    /// The widest an item may be: a picture one cell, text two, any other file three.
-    func mostCells(_ item: ShelfItem) -> Int { isPicture(item) ? 1 : item.kind == .text ? 2 : 3 }
+    /// The widest an item may be: a picture one cell, text two, any other file the whole row, four.
+    func mostCells(_ item: ShelfItem) -> Int { isPicture(item) ? 1 : item.kind == .text ? 2 : ShelfRows.columns }
 
     /// How many cells an item is wide: as set by hand on this Mac, else text two, and any other file
-    /// two when its name fits on its line there, three when it does not (user 2026-11-27).
+    /// the fewest of two, three or four in which its name fits on its line (user 2026-11-27: a long
+    /// name may take the whole row).
     func cells(_ item: ShelfItem) -> Int {
         let most = mostCells(item)
         if let set = widths[item.id] { return min(max(set, 1), most) }
         if most == 1 { return 1 }
         if item.kind == .text { return 2 }
-        return nameWidth(item.name) <= ShelfRows.nameRoom(2) ? 2 : 3
+        let width = nameWidth(item.name)
+        return (2..<most).first { width <= ShelfRows.nameRoom($0) } ?? most
     }
 
     func setCells(_ item: ShelfItem, _ cells: Int) {
@@ -453,15 +458,28 @@ final class ShelfModel: ObservableObject {
     }
 
     /// The second: when the file was changed, as the Finder writes it and with no word before it
-    /// (user 2026-11-27: the time says what it is), or how it is coming. Nothing for a file put on
-    /// the Shelf by an earlier version, which did not keep that time.
-    func detail(_ item: ShelfItem, _ stage: Stage, wide: Bool) -> String? {
+    /// (user 2026-11-27: the time says what it is; every file has this line, here or on another Mac,
+    /// whose place the mark on its icon shows). While it is coming, how far; when that failed, why.
+    func detail(_ item: ShelfItem, _ stage: Stage, wide: Bool) -> String {
         switch stage {
         case .fetching(let progress): return tr("Fetching %ld%%", Int(progress * 100))
         case .failed(let reason): return reason
-        case .elsewhere, .unreachable: return tr("On %@", item.origin)
-        case .here: return item.modified.map { Self.changed($0, wide: wide) }
+        case .here, .elsewhere, .unreachable: return Self.changed(changedDate(item), wide: wide)
         }
+    }
+
+    /// When the file was last changed: as the Mac that put it on the Shelf read it; for this Mac's own
+    /// file from an earlier version, from the Shelf's copy; else when it was put on the Shelf.
+    private func changedDate(_ item: ShelfItem) -> Date {
+        if let modified = item.modified { return modified }
+        if let known = changedDates[item.id] { return known }
+        var date = item.date
+        if let store, store.isOwn(item.id), store.isPresent(item.id),
+           let read = try? store.url(item).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+            date = read
+        }
+        changedDates[item.id] = date
+        return date
     }
 
     /// Today and yesterday by name with the time; an earlier day by its date, and its time where
@@ -1238,9 +1256,7 @@ struct ShelfTile: View {
                 Text(item.name).font(.system(size: ShelfRows.nameSize, weight: .medium))
                     .lineLimit(1).truncationMode(.middle)
                 Text(shelf.facts(item)).font(.system(size: 9.5)).foregroundStyle(Palette.muted).lineLimit(1)
-                if let detail = shelf.detail(item, stage, wide: cells > 2) {
-                    Text(detail).font(.system(size: 9.5)).foregroundStyle(detailTint).lineLimit(1)
-                }
+                Text(shelf.detail(item, stage, wide: cells > 2)).font(.system(size: 9.5)).foregroundStyle(detailTint).lineLimit(1)
             }
             .monospacedDigit()
             Spacer(minLength: 0)
@@ -1372,6 +1388,7 @@ struct ShelfItemMenu: View {
                 Text(tr("One cell")).tag(1)
                 Text(tr("Two cells")).tag(2)
                 if shelf.mostCells(item) > 2 { Text(tr("Three cells")).tag(3) }
+                if shelf.mostCells(item) > 3 { Text(tr("Four cells")).tag(4) }
             }
             .pickerStyle(.menu)
         }
