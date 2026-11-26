@@ -1385,10 +1385,16 @@ struct Checks {
         try check(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(mine.id.uuidString).path), "removing a large item removes its folder")
         let stray = directory.appendingPathComponent("incoming-leftover")
         try Data("partial".utf8).write(to: stray)
-        for index in 0..<(ShelfStore.maxItems + 3) { try store.add(Data("Item \(index)".utf8), kind: .text, name: "Note.txt", origin: "Study") }
-        try check(store.items.count == ShelfStore.maxItems && !store.has(text.id) && store.isGone(text.id), "the oldest make room and are remembered as removed")
+        let before = store.items.count
+        for index in 0..<43 { try store.add(Data("Item \(index)".utf8), kind: .text, name: "Note.txt", origin: "Study") }
+        try check(store.items.count == before + 43 && store.has(text.id) && !store.isGone(text.id), "the shelf has no count limit: the oldest stay")
         store = try ShelfStore(directory: directory)
-        try check(!FileManager.default.fileExists(atPath: stray.path) && store.items.count == ShelfStore.maxItems, "a transfer cut off by quitting leaves nothing behind")
+        try check(!FileManager.default.fileExists(atPath: stray.path) && store.items.count == before + 43, "a transfer cut off by quitting leaves nothing behind")
+
+        let places = ShelfGrid.places([2, 3, 2, 1, 1, 4, 9, 0], columns: 4)
+        try check(places.map(\.row) == [0, 1, 0, 1, 2, 3, 4, 2] && places.map(\.column) == [0, 0, 2, 3, 0, 0, 0, 1]
+                  && places.map(\.cells) == [2, 3, 2, 1, 1, 4, 4, 1],
+                  "tiles go in the first row with room for them, one to four cells wide")
 
         // What an earlier version put on a shelf has no card flag, and goes by its size as it did.
         let older = try JSONDecoder().decode(ShelfItem.self, from: Data(#"{"id":"0B6C3B2A-1E7F-4C3B-9F3D-2A1B0C9D8E7F","kind":"image","name":"a.png","size":5000,"date":0,"origin":"Office"}"#.utf8))

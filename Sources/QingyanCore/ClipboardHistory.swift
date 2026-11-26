@@ -84,6 +84,9 @@ public final class ClipboardHistory: ObservableObject {
     public var policy: @MainActor () -> Policy = { Policy() }
     /// Whether a change of the clipboard is out's own, for a moment (PasteboardLease).
     public var isOwn: @MainActor (Int) -> Bool = { _ in false }
+    /// Told of each copy kept from the clipboard, a new one or one brought up again, with its files
+    /// if it is files; not of an entry put back from the history.
+    public var onKept: (@MainActor (ClipEntry, [URL]) -> Void)?
     /// The app in front, which is taken to be the one the copy was made in.
     public var frontApp: @MainActor () -> (bundle: String, name: String)? = {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
@@ -176,7 +179,7 @@ public final class ClipboardHistory: ObservableObject {
             }
             if !values.isEmpty { payload.append(values) }
         }
-        keep(payload, app: app, at: now)
+        if let entry = keep(payload, app: app, at: now) { onKept?(entry, entry.kind == .files ? Self.fileURLs(payload) : []) }
     }
 
     /// Keeps what was copied; the same again brings its entry up. Returns the entry, or nil when it

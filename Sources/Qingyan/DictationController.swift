@@ -292,6 +292,11 @@ final class DictationController: ObservableObject {
         if !settings.preview { settings.preferences.devices.removeAll { HelperLink.agent(of: $0.host) == nil } }
         receiver.shelf = shelf.sync
         updater.isBusy = { [weak self] in self.map { $0.busy || $0.starting || $0.retryingID != nil } ?? false }
+        // Whatever is a file in History is on the Shelf too (user 2026-11-27).
+        clipboard.onKept = { [weak self] entry, files in
+            guard entry.kind == .files else { return }
+            self?.shelf.shelveCopied(files)
+        }
         shortcut.onToggle = { [weak self] in Task { @MainActor in self?.toggle() } }
         shortcut.onHoldBegan = { [weak self] in self?.holdBegan() ?? false }
         // Stopping and dropping a recording touch the disk: they run once the key event has gone back.

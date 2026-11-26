@@ -489,7 +489,7 @@ private struct ClipboardGroup: View {
     var body: some View {
         let on = settings.preferences.clipHistory
         SettingsGroup(tr("Clipboard history"), detail: history.entries.isEmpty ? "" : history.entries.count == 1 ? tr("1 item") : tr("%ld items", history.entries.count)) {
-            Row(tr("Keep what is copied"), info: tr("Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen.")) {
+            Row(tr("Keep what is copied"), info: tr("Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.")) {
                 Toggle(tr("Keep what is copied"), isOn: $settings.preferences.clipHistory).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             if on {

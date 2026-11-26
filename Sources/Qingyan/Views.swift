@@ -644,18 +644,35 @@ private struct ListHeightKey: PreferenceKey {
 /// scroll bar (user 2026-11-23: no scroll bar in any window).
 struct FittedScroll<Content: View>: View {
     let maxHeight: CGFloat
+    /// All the height it is given instead, whatever its rows need.
+    var fills = false
     var content: Content
     @State private var height: CGFloat = 64
-    init(maxHeight: CGFloat, @ViewBuilder content: () -> Content) { self.maxHeight = maxHeight; self.content = content() }
+    init(maxHeight: CGFloat, fills: Bool = false, @ViewBuilder content: () -> Content) { self.maxHeight = maxHeight; self.fills = fills; self.content = content() }
     var body: some View {
         ScrollView {
             content.background(GeometryReader { Color.clear.preference(key: ListHeightKey.self, value: $0.size.height) })
         }
         .scrollIndicators(.never)
-        .frame(height: min(max(height, 1), maxHeight))
+        .frame(height: fills ? nil : min(max(height, 1), maxHeight))
+        .frame(maxHeight: fills ? .infinity : nil, alignment: .top)
         .onPreferenceChange(ListHeightKey.self) { next in
             if abs(height - next) > 0.5 { height = next }
         }
+    }
+}
+
+/// The panel's blocks, folded away under the Shelf while it is expanded over the whole panel
+/// (user 2026-11-27), and back.
+private struct UnderShelf: ViewModifier {
+    let expanded: Bool
+    func body(content: Content) -> some View {
+        content
+            .frame(maxHeight: expanded ? 0 : nil, alignment: .top)
+            .clipped()
+            .opacity(expanded ? 0 : 1)
+            .allowsHitTesting(!expanded)
+            .accessibilityHidden(expanded)
     }
 }
 
@@ -855,7 +872,8 @@ struct MainView: View {
     /// is how far it still has to go), that is a new height on every frame, sent as `live`: the
     /// window takes each one at once and keeps no animation of its own. Settled, it is sent once.
     private func report() {
-        guard windowed, columnHeight > 0 else { return }
+        // The Shelf over the whole panel keeps the window as it was: it fills it and scrolls.
+        guard windowed, columnHeight > 0, !shelf.expanded else { return }
         let height = Metrics.titlebar + columnHeight + shelfHeight
         let moving = abs(pending) > 0.5
         guard abs(height - lastReported) > 0.01 || moving != lastMoving else { return }
@@ -883,6 +901,8 @@ struct MainView: View {
         .foregroundStyle(Palette.ink).tint(Palette.accent)
         .controlSize(.small)
         .onDrop(of: ShelfModel.types, isTargeted: $shelf.targeted) { shelf.accept($0) }
+        // Put back: what changed meanwhile sizes the window again.
+        .onChange(of: shelf.expanded) { _, _ in report() }
         .ignoresSafeArea()
         // A change of language builds the words again everywhere below.
         .id(settings.preferences.language)
@@ -890,7 +910,7 @@ struct MainView: View {
 
     private var column: some View {
         VStack(spacing: 0) {
-            if windowed { scroller } else { header; content }
+            if windowed { scroller } else { header; content.modifier(UnderShelf(expanded: shelf.expanded)) }
             ShelfBar(shelf: shelf)
                 .background(GeometryReader { Color.clear.preference(key: ShelfHeightKey.self, value: $0.size.height) })
                 .onPreferenceChange(ShelfHeightKey.self) { next in
@@ -918,6 +938,7 @@ struct MainView: View {
     @ViewBuilder private var scroller: some View {
         header
         ScrollView { measuredContent(top: Metrics.underBar) }.scrollIndicators(.never)
+            .modifier(UnderShelf(expanded: shelf.expanded))
     }
 
     private var receiving: Bool { settings.receiverOnly }

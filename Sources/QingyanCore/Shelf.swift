@@ -16,9 +16,13 @@ public struct ShelfItem: Codable, Identifiable, Equatable, Sendable {
     /// and file does since 2026-11-22 (user: one copy kept on the primary helper, a card on the other
     /// Macs, fetched to a Mac when asked); nil for what an earlier version put there, which goes by size.
     public var card: Bool?
+    /// When the file was last changed, as the Mac that put it on the shelf read it; nil for text,
+    /// for pictures from the clipboard, and for what an earlier version put there.
+    public var modified: Date?
 
-    public init(id: UUID = UUID(), kind: Kind, name: String, size: Int, date: Date = Date(), origin: String, card: Bool? = nil) {
+    public init(id: UUID = UUID(), kind: Kind, name: String, size: Int, date: Date = Date(), origin: String, card: Bool? = nil, modified: Date? = nil) {
         self.id = id; self.kind = kind; self.name = name; self.size = size; self.date = date; self.origin = origin; self.card = card
+        self.modified = modified
     }
 
     /// An item that travels as a card — name, size, thumbnail — its bytes only when a Mac asks.
@@ -28,12 +32,32 @@ public struct ShelfItem: Codable, Identifiable, Equatable, Sendable {
     public var expires: Date { date.addingTimeInterval(ShelfStore.lifetime) }
 }
 
+/// Where the Shelf's tiles go: rows of `columns` cells, each tile one row high. A tile goes in the
+/// first row with room left for it, so rows fill from the left and a narrow tile fills the end of a
+/// row that a wider one before it did not fit.
+public enum ShelfGrid {
+    public static func places(_ widths: [Int], columns: Int) -> [(row: Int, column: Int, cells: Int)] {
+        var free: [Int] = []
+        // first[n]: no row before it has n cells left. Rows only fill, so each only moves on.
+        var first = Array(repeating: 0, count: columns + 1)
+        return widths.map { wanted in
+            let cells = min(max(wanted, 1), columns)
+            var row = first[cells]
+            while row < free.count && free[row] < cells { row += 1 }
+            first[cells] = row
+            if row == free.count { free.append(columns) }
+            let column = columns - free[row]
+            free[row] -= cells
+            return (row, column, cells)
+        }
+    }
+}
+
 /// The shelf on this Mac: a folder with one sub-folder per item and an index. Newest first.
 /// Every Mac has every card; a large item's bytes are only on the Macs that put it there or
 /// fetched it. Removed items leave their id behind, so a Mac that was away does not bring them back.
 @MainActor
 public final class ShelfStore {
-    public nonisolated static let maxItems = 40
     /// Up to this size an item is copied to every Mac at once; above it only its card is.
     public nonisolated static let eagerBytes = 8 << 20
     /// The most that may be added from memory (clipboard images, text).
@@ -133,11 +157,12 @@ public final class ShelfStore {
     /// `thumbnail` is a small JPEG shown on the Macs that have only the card.
     @discardableResult
     public func add(copying file: URL, kind: ShelfItem.Kind, origin: String, thumbnail: Data? = nil) async throws -> ShelfItem {
-        let values = try? file.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+        let values = try? file.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
         guard values?.isDirectory != true else { throw VoiceError(tr("Folders cannot be dragged in yet. Compress the folder into a single file first.")) }
         guard let size = values?.fileSize else { throw VoiceError(tr("Cannot read this file.")) }
         guard size > 0 else { throw VoiceError(tr("The file is empty and was not added to the Shelf.")) }
-        let item = ShelfItem(kind: kind, name: Self.cleanName(file.lastPathComponent), size: size, origin: origin, card: kind == .text ? nil : true)
+        let item = ShelfItem(kind: kind, name: Self.cleanName(file.lastPathComponent), size: size, origin: origin,
+                             card: kind == .text ? nil : true, modified: values?.contentModificationDate)
         try makeFolder(item)
         let destination = url(item)
         do { try await Task.detached { try FileManager.default.copyItem(at: file, to: destination) }.value }
@@ -163,7 +188,9 @@ public final class ShelfStore {
         let existed = has(id)
         items.removeAll { $0.id == id }
         present.remove(id); own.remove(id); used[id] = nil
-        if !gone.contains(id) { gone.append(id); if gone.count > 300 { gone.removeFirst(gone.count - 300) } }
+        // Enough to outlast a whole Shelf cleared while another Mac was away, now that the Shelf has
+        // no count limit; about 190 KB in a greeting at the most.
+        if !gone.contains(id) { gone.append(id); if gone.count > 5000 { gone.removeFirst(gone.count - 5000) } }
         save()
         if existed { onChange?() }
         if shouldAnnounce { announce?(.removed(id)) }
@@ -264,8 +291,7 @@ public final class ShelfStore {
         items.sort { $0.date > $1.date }
         save()
         onChange?()
-        // The oldest make room. Told to the other Macs like any removal, so every shelf agrees.
-        while items.count > Self.maxItems, let oldest = items.last { remove(oldest.id) }
+        // No count limit (user 2026-11-27: as many as History keeps); thirty days is the only limit.
     }
 
     private func save() {
@@ -540,6 +566,7 @@ public final class ShelfSync {
         // An earlier version reads the size alone, and would wait for the bytes of a small item for ever:
         // it gets them, from a Mac that has them.
         if let flag = item.card { card["card"] = flag }
+        if let modified = item.modified { card["modified"] = modified.timeIntervalSince1970 }
         let asCard = item.isLarge && (link.takesCards || item.size > ShelfStore.eagerBytes)
         if item.isLarge, !asCard, !store.isPresent(item.id) { return }
         if asCard {
@@ -597,7 +624,8 @@ public final class ShelfSync {
                   let name = frame["name"] as? String, let size = frame["size"] as? Int, size > 0 else { return }
             let item = ShelfItem(id: id, kind: kind, name: ShelfStore.cleanName(name), size: size,
                                  date: Date(timeIntervalSince1970: frame["date"] as? Double ?? Date().timeIntervalSince1970),
-                                 origin: String((frame["origin"] as? String ?? "").prefix(80)), card: frame["card"] as? Bool)
+                                 origin: String((frame["origin"] as? String ?? "").prefix(80)), card: frame["card"] as? Bool,
+                                 modified: (frame["modified"] as? Double).map(Date.init(timeIntervalSince1970:)))
             if item.expires <= Date() {
                 // Its thirty days are over: remembered as removed, and the Mac that sent it is told so too.
                 store.remove(id, announce: false)

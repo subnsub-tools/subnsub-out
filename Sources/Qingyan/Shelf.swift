@@ -18,6 +18,18 @@ final class ShelfModel: ObservableObject {
     /// panel; a toast may say what was copied).
     @Published private(set) var notice: ShelfNotice?
     @Published var targeted = false
+    /// The Shelf over the whole panel, until it is put back (user 2026-11-27).
+    @Published var expanded = false
+    /// Widths set by hand on this Mac, in cells. The rest are worked out here from the item, so
+    /// nothing about them travels to the other Macs (user 2026-11-27).
+    @Published private(set) var widths: [UUID: Int] = [:]
+    private static let widthsKey = "shelf.widths"
+    private var nameWidths: [String: CGFloat] = [:]
+    private var icons: [UUID: NSImage] = [:]
+    /// Copied files on their way onto the Shelf, so that one copied twice in a row goes on once.
+    private var shelving: Set<String> = []
+    /// Put on the Shelf by a copy: kept on the primary helper only once their link is asked for.
+    private var quiet: Set<UUID> = []
     /// The items this Mac was given a link for, and the link.
     @Published private(set) var links: [UUID: String] = [:]
     /// Links being made: how much of the file has gone to the primary helper.
@@ -66,6 +78,9 @@ final class ShelfModel: ObservableObject {
     init(preview: Bool) {
         name = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? ProcessInfo.processInfo.hostName
         guard !preview else { return }
+        if let saved = UserDefaults.standard.dictionary(forKey: Self.widthsKey) as? [String: Int] {
+            widths = Dictionary(uniqueKeysWithValues: saved.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
+        }
         do {
             let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 .appendingPathComponent("Qingyan/Shelf", isDirectory: true)
@@ -91,12 +106,18 @@ final class ShelfModel: ObservableObject {
         if items != next { items = next }
         let present = Set(next.map(\.id))
         thumbnails = thumbnails.filter { present.contains($0.key) }
+        icons = icons.filter { present.contains($0.key) }
         snippets = snippets.filter { present.contains($0.key) }
         peeks = peeks.filter { present.contains($0.key) }
         // An item removed from the Shelf, here or on another Mac, takes its link with it. Removed,
         // not merely missing: a Shelf that could not be read has no items and no removals, and takes
         // nothing down.
         if let store {
+            // A width set by hand goes with its item; not when the Shelf could not be read.
+            let stale = widths.keys.filter { !present.contains($0) && store.isGone($0) }
+            if !stale.isEmpty { stale.forEach { widths[$0] = nil }; saveWidths() }
+            let unquiet = quiet.filter { !present.contains($0) && store.isGone($0) }
+            if !unquiet.isEmpty { quiet.subtract(unquiet); saveLinks() }
             let wasHostable = hostable
             hostable = Set(next.filter { $0.kind != .text && $0.card == true }.map(\.id))
             // Taken down by whichever Mac sees it leave (any may), but only where a primary helper keeps files.
@@ -178,6 +199,65 @@ final class ShelfModel: ObservableObject {
         case .files: history.files(entry).forEach(addFile)
         case .image: if let data = history.imageBytes(entry) { addImage(data) }
         case .text: if let text = history.text(entry) { addText(text) }
+        }
+    }
+
+    /// Every file copied on this Mac goes on the Shelf as History keeps it (user 2026-11-27: whatever
+    /// is a file in History is on the Shelf too). Quietly: nothing is said, and nothing is sent to the
+    /// primary helper until its link is asked for. A folder, a file already on the Shelf, or one that
+    /// cannot be read stays in History alone. The files are looked at off the main thread: one may
+    /// be on a slow disk or a network volume.
+    func shelveCopied(_ files: [URL]) {
+        guard let store, !files.isEmpty, files.count <= Self.quietCopyMost else { return }
+        let home = store.directory
+        Task { [weak self] in
+            let found = await Task.detached(priority: .utility) { files.compactMap { Self.copied($0, home: home) } }.value
+            guard let self else { return }
+            for file in found { self.addQuietly(file) }
+        }
+    }
+
+    /// A copy of more files at once than this stays in History alone: a whole folder's worth would
+    /// bury the Shelf and send a card of each to every Mac.
+    private static let quietCopyMost = 20
+    /// The most a copied file from another disk may be to go on the Shelf by itself: on the Shelf's
+    /// own disk a file is a clone and takes no space, from another one it is copied whole.
+    nonisolated private static let quietCopyLimit = 1 << 30
+
+    private struct Copied: Sendable {
+        let url: URL
+        let name: String
+        let size: Int
+        let modified: Date?
+        let image: Bool
+        var token: String { "\(name)\u{0}\(size)\u{0}\(modified?.timeIntervalSince1970 ?? 0)" }
+    }
+
+    nonisolated private static func copied(_ url: URL, home: URL) -> Copied? {
+        guard url.isFileURL, !url.standardizedFileURL.path.hasPrefix(home.standardizedFileURL.path),
+              let values = try? url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .isDirectoryKey, .contentModificationDateKey, .volumeIdentifierKey]),
+              values.isDirectory != true, let size = values.fileSize, size > 0 else { return nil }
+        if size > quietCopyLimit {
+            let shelfDisk = (try? home.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
+            guard let disk = values.volumeIdentifier as? NSObject, let shelfDisk, disk.isEqual(shelfDisk) else { return nil }
+        }
+        return Copied(url: url, name: url.lastPathComponent, size: size,
+                      modified: values.contentModificationDate, image: values.contentType?.conforms(to: .image) == true)
+    }
+
+    private func addQuietly(_ file: Copied) {
+        let name = ShelfStore.cleanName(file.name)
+        guard let store, !shelving.contains(file.token),
+              !items.contains(where: { $0.kind != .text && $0.name == name && $0.size == file.size && $0.modified == file.modified }) else { return }
+        shelving.insert(file.token)
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.shelving.remove(file.token) }
+            let thumbnail = await Self.quickLook(file.url)
+            guard let item = try? await store.add(copying: file.url, kind: file.image ? .image : .file, origin: self.name, thumbnail: thumbnail) else { return }
+            // Remembered across restarts: the primary helper gets it only when its link is asked for.
+            self.quiet.insert(item.id)
+            self.saveLinks()
         }
     }
 
@@ -326,6 +406,82 @@ final class ShelfModel: ObservableObject {
         return NSImage(cgImage: made, size: NSSize(width: 128, height: 128))
     }
 
+    // MARK: Widths
+
+    /// Pictures and videos show themselves, one cell wide (user 2026-11-27).
+    func isPicture(_ item: ShelfItem) -> Bool {
+        if item.kind == .image { return true }
+        guard item.kind == .file, let type = UTType(filenameExtension: (item.name as NSString).pathExtension) else { return false }
+        return type.conforms(to: .image) || type.conforms(to: .movie)
+    }
+
+    /// The widest an item may be: a picture one cell, text two, any other file three.
+    func mostCells(_ item: ShelfItem) -> Int { isPicture(item) ? 1 : item.kind == .text ? 2 : 3 }
+
+    /// How many cells an item is wide: as set by hand on this Mac, else text two, and any other file
+    /// two when its name fits on its line there, three when it does not (user 2026-11-27).
+    func cells(_ item: ShelfItem) -> Int {
+        let most = mostCells(item)
+        if let set = widths[item.id] { return min(max(set, 1), most) }
+        if most == 1 { return 1 }
+        if item.kind == .text { return 2 }
+        return nameWidth(item.name) <= ShelfRows.nameRoom(2) ? 2 : 3
+    }
+
+    func setCells(_ item: ShelfItem, _ cells: Int) {
+        let next = min(max(cells, 1), mostCells(item))
+        guard widths[item.id] != next else { return }
+        widths[item.id] = next
+        saveWidths()
+    }
+
+    private func saveWidths() {
+        UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: widths.map { ($0.key.uuidString, $0.value) }), forKey: Self.widthsKey)
+    }
+
+    private func nameWidth(_ name: String) -> CGFloat {
+        if let known = nameWidths[name] { return known }
+        let width = (name as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: ShelfRows.nameSize, weight: .medium)]).width.rounded(.up)
+        nameWidths[name] = width
+        return width
+    }
+
+    /// The first line under a file's name: its size and its type.
+    func facts(_ item: ShelfItem) -> String {
+        let type = (item.name as NSString).pathExtension.uppercased()
+        return type.isEmpty ? Self.size(item.size) : "\(Self.size(item.size)) · \(type)"
+    }
+
+    /// The second: when the file was changed, as the Finder writes it and with no word before it
+    /// (user 2026-11-27: the time says what it is), or how it is coming. Nothing for a file put on
+    /// the Shelf by an earlier version, which did not keep that time.
+    func detail(_ item: ShelfItem, _ stage: Stage, wide: Bool) -> String? {
+        switch stage {
+        case .fetching(let progress): return tr("Fetching %ld%%", Int(progress * 100))
+        case .failed(let reason): return reason
+        case .elsewhere, .unreachable: return tr("On %@", item.origin)
+        case .here: return item.modified.map { Self.changed($0, wide: wide) }
+        }
+    }
+
+    /// Today and yesterday by name with the time; an earlier day by its date, and its time where
+    /// the tile is wide enough for it.
+    static func changed(_ date: Date, wide: Bool) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) || calendar.isDateInYesterday(date) {
+            return relativeDay.string(from: date) + " " + date.formatted(date: .omitted, time: .shortened)
+        }
+        return wide ? date.formatted(.dateTime.month(.abbreviated).day().hour().minute()) : date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private static let relativeDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.doesRelativeDateFormatting = true
+        return formatter
+    }()
+
     // MARK: Large items
 
     enum Stage: Equatable {
@@ -370,7 +526,8 @@ final class ShelfModel: ObservableObject {
     /// the day it leaves the Shelf.
     func hint(_ item: ShelfItem, _ stage: Stage) -> String {
         let title = item.kind == .text ? snippet(item) : "\(item.name) · \(Self.size(item.size))"
-        let leaves = tr("Removed from the Shelf on %@", item.expires.formatted(date: .abbreviated, time: .omitted))
+        var leaves = tr("Removed from the Shelf on %@", item.expires.formatted(date: .abbreviated, time: .omitted))
+        if let modified = item.modified { leaves = tr("Modified %@", Self.changed(modified, wide: true)) + "\n" + leaves }
         // An item with a link has it in the right-click menu.
         let linked = item.kind != .text && canLink(item)
         let line: String
@@ -499,8 +656,12 @@ final class ShelfModel: ObservableObject {
     }
 
     func icon(_ item: ShelfItem) -> NSImage {
-        guard let store else { return NSWorkspace.shared.icon(for: UTType(filenameExtension: (item.name as NSString).pathExtension) ?? .data) }
-        return NSWorkspace.shared.icon(forFile: store.url(item).path)
+        let here = store?.isPresent(item.id) == true
+        if here, let known = icons[item.id] { return known }
+        guard let store, here else { return NSWorkspace.shared.icon(for: UTType(filenameExtension: (item.name as NSString).pathExtension) ?? .data) }
+        let icon = NSWorkspace.shared.icon(forFile: store.url(item).path)
+        icons[item.id] = icon
+        return icon
     }
 
     /// Puts the item on the system clipboard, in the forms other apps expect.
@@ -574,6 +735,7 @@ final class ShelfModel: ObservableObject {
         var links: [String: String]
         var unlinking: [String]
         var maybe: [String]?
+        var quiet: [String]?
     }
     private var linkFile: URL? { store?.directory.appendingPathComponent("links.json") }
 
@@ -582,6 +744,7 @@ final class ShelfModel: ObservableObject {
         links = Dictionary(saved.links.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } }, uniquingKeysWith: { first, _ in first })
         unlinking = Set(saved.unlinking.compactMap { UUID(uuidString: $0) })
         maybeLinked = Set((saved.maybe ?? []).compactMap { UUID(uuidString: $0) })
+        quiet = Set((saved.quiet ?? []).compactMap { UUID(uuidString: $0) })
     }
 
     /// Runs work for this item after whatever was asked about it before.
@@ -601,7 +764,8 @@ final class ShelfModel: ObservableObject {
     private func saveLinks() {
         guard let linkFile else { return }
         let file = LinkFile(links: Dictionary(links.map { ($0.key.uuidString, $0.value) }, uniquingKeysWith: { first, _ in first }),
-                            unlinking: unlinking.map(\.uuidString).sorted(), maybe: maybeLinked.map(\.uuidString).sorted())
+                            unlinking: unlinking.map(\.uuidString).sorted(), maybe: maybeLinked.map(\.uuidString).sorted(),
+                            quiet: quiet.map(\.uuidString).sorted())
         if let data = try? JSONEncoder().encode(file) { try? data.write(to: linkFile, options: .atomic) }
     }
 
@@ -619,7 +783,7 @@ final class ShelfModel: ObservableObject {
         guard linkable, let store else { return }
         let now = Date()
         for item in store.items where item.kind != .text && item.card == true && store.isOwn(item.id) && store.isPresent(item.id)
-            && links[item.id] == nil && linkTasks[item.id] == nil {
+            && links[item.id] == nil && linkTasks[item.id] == nil && !quiet.contains(item.id) {
             if !all, let again = hostAgain[item.id], again.at > now { continue }
             if hostAgain[item.id] == nil { hostAgain[item.id] = (now, 30) }
             link(item, copying: false)
@@ -872,13 +1036,31 @@ struct ShelfToast: View {
     }
 }
 
+/// The Shelf's tiles: rows of four cells, every tile one row high and one to three cells wide
+/// (user 2026-11-27), placed by `ShelfGrid`.
+enum ShelfRows {
+    static let cell: CGFloat = 60
+    static let gap: CGFloat = 6
+    static let columns = 4
+    static let icon: CGFloat = 34
+    static let nameSize: CGFloat = 11
+    static func width(_ cells: Int) -> CGFloat { CGFloat(cells) * (cell + gap) - gap }
+    /// What a file's name has beside its icon in a tile `cells` wide.
+    static func nameRoom(_ cells: Int) -> CGFloat { width(cells) - 6 - icon - 6 - 7 }
+}
+
 /// The shelf, pinned to the bottom of the panel. Drop anything on the panel to park it here;
 /// click a tile to copy it, drag a tile out to use it. The same shelf shows on every paired Mac.
 struct ShelfBar: View {
     @ObservedObject var shelf: ShelfModel
     @State private var hovered: UUID?
     @State private var confirm = false
-    private let columns = Array(repeating: GridItem(.fixed(60), spacing: 6), count: 4)
+    /// While a tile's right edge is dragged: the tile, and how wide it was when the drag began.
+    @State private var sizing: UUID?
+    @State private var sizingFrom = 2
+    /// The edge that pushed the resize cursor, the only one that pops it; and the edge under the pointer.
+    @State private var cursorOwner: UUID?
+    @State private var edgeHovered: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -892,6 +1074,7 @@ struct ShelfBar: View {
                 Spacer(minLength: 4)
                 Button(tr("Paste")) { shelf.addClipboard() }.buttonStyle(QuietButton()).help(tr("Put what is on the clipboard on the Shelf"))
                 if !shelf.items.isEmpty { Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton()) }
+                expandButton
             }
             if shelf.items.isEmpty {
                 Text(tr("Drop files, images or text here to keep them on the Shelf, in sync with your other Macs."))
@@ -901,16 +1084,25 @@ struct ShelfBar: View {
                     .frame(minHeight: 60)
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.muted.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                     .padding(.top, 4)
+                    .frame(maxHeight: shelf.expanded ? .infinity : nil, alignment: .top)
             } else {
-                // Two whole rows (60 + 6 + 60) and the room above them; more scroll.
-                FittedScroll(maxHeight: 130) {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
-                        ForEach(shelf.items) { tile($0).transition(Motion.pop) }
-                    }.padding(.top, 4)
+                // Two whole rows (60 + 6 + 60) and the room above them; more scroll. Expanded, all
+                // the room the panel has.
+                FittedScroll(maxHeight: 130, fills: shelf.expanded) {
+                    // Row by row and lazily: only the rows in view are made, and read their pictures.
+                    LazyVStack(alignment: .leading, spacing: ShelfRows.gap) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: ShelfRows.gap) {
+                                ForEach(row, id: \.item.id) { place in tile(place.item, cells: place.cells).transition(Motion.pop) }
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
                 }
             }
         }
         .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 10)
+        .frame(maxHeight: shelf.expanded ? .infinity : nil, alignment: .top)
         .background(shelf.targeted ? Palette.accent.opacity(0.18) : Palette.fill)
         .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: 1) }
         .overlay(alignment: .bottom) { ShelfToast(shelf: shelf).padding(.horizontal, 14).padding(.bottom, 12) }
@@ -923,9 +1115,81 @@ struct ShelfBar: View {
         }
     }
 
-    private func tile(_ item: ShelfItem) -> some View {
+    /// The items in their rows, each with its width.
+    private var rows: [[(item: ShelfItem, cells: Int)]] {
+        let items = shelf.items
+        var rows: [[(item: ShelfItem, cells: Int)]] = []
+        for (item, place) in zip(items, ShelfGrid.places(items.map { shelf.cells($0) }, columns: ShelfRows.columns)) {
+            if place.row == rows.count { rows.append([]) }
+            rows[place.row].append((item, place.cells))
+        }
+        return rows
+    }
+
+    /// Up over the whole panel, and back (user 2026-11-27). The window keeps its size.
+    private var expandButton: some View {
+        let title = shelf.expanded ? tr("Collapse the Shelf") : tr("Expand the Shelf")
+        return Button {
+            withAnimation(Motion.standard) { shelf.expanded.toggle() }
+        } label: {
+            Image(systemName: shelf.expanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 13)
+        }
+        .buttonStyle(QuietButton())
+        .help(title)
+        .accessibilityLabel(title)
+    }
+
+    private func tile(_ item: ShelfItem, cells: Int) -> some View {
         let stage = shelf.stage(item)
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         return ZStack(alignment: .topTrailing) {
+            face(item, stage: stage, cells: cells)
+                .frame(width: ShelfRows.width(cells), height: ShelfRows.cell)
+                .background(Color.primary.opacity(hovered == item.id ? 0.11 : 0.07))
+                .clipShape(shape)
+                .overlay(shape.stroke(sizing == item.id ? Palette.accent : Palette.line, lineWidth: sizing == item.id ? 1.5 : 1))
+                .contentShape(shape)
+                .onTapGesture {
+                    if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
+                }
+                .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
+            if hovered == item.id {
+                // Inside the tile's corner: the Shelf scrolls, and what stood out past the tile was cut
+                // off at the Shelf's edge (user 2026-11-25).
+                Button { shelf.remove(item) } label: {
+                    Image(systemName: "xmark").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
+                        .frame(width: 16, height: 16)
+                        .background(.regularMaterial, in: Circle())
+                        .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help(tr("Remove from the Shelf")).accessibilityLabel(tr("Remove %@", item.name))
+                    .transition(Motion.pop)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            // Always there, seen only under the pointer: the pointer leaving it is what puts the cursor back.
+            if shelf.mostCells(item) > 1 { edge(item, cells: cells).opacity(hovered == item.id || sizing == item.id ? 1 : 0) }
+        }
+        .overlay(alignment: .topLeading) { linkControl(item) }
+        .background(ShelfPeekSource(item: item, shelf: shelf))
+        .onHover { inside in hovered = inside ? item.id : (hovered == item.id ? nil : hovered) }
+        .help(hint(item, stage))
+        .contextMenu { ShelfItemMenu(shelf: shelf, item: item, sizable: true) }
+        .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, hint(item, stage)))
+    }
+
+    /// One cell: the picture, or the icon with the name under it, or a few lines of text. Wider, a
+    /// file is its icon, its name on one line, and two lines under it; text has more room.
+    @ViewBuilder private func face(_ item: ShelfItem, stage: ShelfModel.Stage, cells: Int) -> some View {
+        if cells > 1 && item.kind == .file {
+            wideFile(item, stage: stage, cells: cells)
+        } else if cells > 1 && item.kind == .text {
+            Text(shelf.snippet(item)).font(.system(size: 11)).lineSpacing(1.5).lineLimit(3).multilineTextAlignment(.leading)
+                .padding(.horizontal, 9).padding(.vertical, 7).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
             ZStack {
                 Group {
                     if item.kind == .text {
@@ -946,35 +1210,86 @@ struct ShelfBar: View {
                     badge(stage, size: item.size).transition(Motion.pop)
                 }
             }
-            .frame(width: 60, height: 60)
-            .background(Color.primary.opacity(hovered == item.id ? 0.11 : 0.07))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Palette.line, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .onTapGesture {
-                if case .fetching = stage { shelf.cancelFetch(item) } else { shelf.click(item) }
-            }
-            .onDrag { ShelfPeek.shared.hide(); return shelf.provider(item) }
-            if hovered == item.id {
-                // Inside the tile's corner: the Shelf scrolls, and what stood out past the tile was cut
-                // off at the Shelf's edge (user 2026-11-25).
-                Button { shelf.remove(item) } label: {
-                    Image(systemName: "xmark").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
-                        .frame(width: 16, height: 16)
-                        .background(.regularMaterial, in: Circle())
-                        .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).help(tr("Remove from the Shelf")).accessibilityLabel(tr("Remove %@", item.name))
-                    .transition(Motion.pop)
-            }
         }
-        .overlay(alignment: .topLeading) { linkControl(item) }
-        .background(ShelfPeekSource(item: item, shelf: shelf))
-        .onHover { inside in hovered = inside ? item.id : (hovered == item.id ? nil : hovered) }
-        .help(hint(item, stage))
-        .contextMenu { ShelfItemMenu(shelf: shelf, item: item) }
-        .accessibilityLabel(tr("%@, %@", item.kind == .text ? shelf.snippet(item) : item.name, hint(item, stage)))
+    }
+
+    private func wideFile(_ item: ShelfItem, stage: ShelfModel.Stage, cells: Int) -> some View {
+        let failed: Bool
+        if case .failed = stage { failed = true } else { failed = false }
+        let detailTint: Color = failed ? Color.orange : Palette.muted
+        return HStack(spacing: 6) {
+            ZStack {
+                Image(nsImage: shelf.icon(item)).resizable().interpolation(.high)
+                    .frame(width: ShelfRows.icon, height: ShelfRows.icon)
+                    .opacity(stage == .here ? 1 : 0.35)
+                if stage != .here { mark(stage).transition(Motion.pop) }
+            }
+            .frame(width: ShelfRows.icon, height: ShelfRows.icon)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.name).font(.system(size: ShelfRows.nameSize, weight: .medium))
+                    .lineLimit(1).truncationMode(.middle)
+                Text(shelf.facts(item)).font(.system(size: 9.5)).foregroundStyle(Palette.muted).lineLimit(1)
+                if let detail = shelf.detail(item, stage, wide: cells > 2) {
+                    Text(detail).font(.system(size: 9.5)).foregroundStyle(detailTint).lineLimit(1)
+                }
+            }
+            .monospacedDigit()
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 6).padding(.trailing, 7)
+    }
+
+    /// On the icon of a file that is not here: where it stands.
+    @ViewBuilder private func mark(_ stage: ShelfModel.Stage) -> some View {
+        switch stage {
+        case .fetching(let progress):
+            ZStack {
+                Circle().fill(.regularMaterial)
+                Circle().stroke(Color.primary.opacity(0.18), lineWidth: 2)
+                Circle().trim(from: 0, to: max(0.02, progress)).stroke(Palette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(Motion.reduced ? nil : .linear(duration: 0.2), value: progress)
+            }.frame(width: 20, height: 20)
+        case .elsewhere: Image(systemName: "arrow.down.circle").font(.system(size: 18, weight: .light))
+        case .unreachable: Image(systemName: "wifi.slash").font(.system(size: 14, weight: .light)).foregroundStyle(Palette.muted)
+        case .failed: Image(systemName: "exclamationmark.arrow.circlepath").font(.system(size: 16, weight: .light)).foregroundStyle(.orange)
+        case .here: EmptyView()
+        }
+    }
+
+    /// The right edge of a tile, dragged: one, two or three cells, as far as the item may go.
+    private func edge(_ item: ShelfItem, cells: Int) -> some View {
+        Capsule().fill(Palette.muted.opacity(sizing == item.id ? 0.8 : 0.5)).frame(width: 3, height: 22)
+            .frame(width: 10, height: 44)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    edgeHovered = item.id
+                    if cursorOwner == nil { NSCursor.resizeLeftRight.push(); cursorOwner = item.id }
+                } else {
+                    if edgeHovered == item.id { edgeHovered = nil }
+                    if cursorOwner == item.id, sizing != item.id { NSCursor.pop(); cursorOwner = nil }
+                }
+            }
+            .onDisappear {
+                if edgeHovered == item.id { edgeHovered = nil }
+                if sizing == item.id { sizing = nil }
+                if cursorOwner == item.id { NSCursor.pop(); cursorOwner = nil }
+            }
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    if sizing != item.id { sizing = item.id; sizingFrom = cells; ShelfPeek.shared.hide() }
+                    let wanted = ((ShelfRows.width(sizingFrom) + value.translation.width + ShelfRows.gap) / (ShelfRows.cell + ShelfRows.gap)).rounded()
+                    let next = min(max(Int(wanted), 1), shelf.mostCells(item))
+                    if next != shelf.cells(item) { withAnimation(Motion.standard) { shelf.setCells(item, next) } }
+                }
+                .onEnded { _ in
+                    sizing = nil
+                    // Still over its edge: the cursor stays until the pointer leaves it.
+                    if cursorOwner == item.id, edgeHovered != item.id { NSCursor.pop(); cursorOwner = nil }
+                })
+            .help(tr("Drag to change the width"))
+            .accessibilityHidden(true)
     }
 
     /// In the tile's top left corner, inside it (user 2026-11-25: the mark stood out past the tile and
@@ -1034,6 +1349,8 @@ struct ShelfBar: View {
 struct ShelfItemMenu: View {
     @ObservedObject var shelf: ShelfModel
     let item: ShelfItem
+    /// On the panel, where a tile may be one to three cells wide; the bar kept on top has one size.
+    var sizable = false
 
     var body: some View {
         let stage = shelf.stage(item)
@@ -1046,6 +1363,15 @@ struct ShelfItemMenu: View {
             if shelf.canRelease(item) { Button(tr("Free the copy on this Mac")) { shelf.release(item) } }
         case .fetching: Button(tr("Stop transfer")) { shelf.cancelFetch(item) }
         default: Button(tr("Download to This Mac")) { shelf.download(item) }
+        }
+        if sizable && shelf.mostCells(item) > 1 {
+            Picker(tr("Width"), selection: Binding(get: { shelf.cells(item) },
+                                                   set: { next in withAnimation(Motion.standard) { shelf.setCells(item, next) } })) {
+                Text(tr("One cell")).tag(1)
+                Text(tr("Two cells")).tag(2)
+                if shelf.mostCells(item) > 2 { Text(tr("Three cells")).tag(3) }
+            }
+            .pickerStyle(.menu)
         }
         Divider()
         Button(tr("Remove")) { shelf.remove(item) }

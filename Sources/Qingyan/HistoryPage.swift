@@ -110,6 +110,8 @@ struct HistoryPage: View {
     @ObservedObject var controller: DictationController
     var shelve: (ClipEntry) -> Void
     @FocusState private var searchFocus: Bool
+    /// The chosen row's ground, which moves from row to row.
+    @Namespace private var chosenGround
 
     init(model: HistoryPageModel, settings: SettingsStore, controller: DictationController, shelve: @escaping (ClipEntry) -> Void) {
         self.model = model
@@ -191,7 +193,7 @@ struct HistoryPage: View {
                 }
             }
             if clipboard.entries.isEmpty && settings.history.isEmpty {
-                caption(tr("Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only.")).padding(.top, 4)
+                caption(tr("Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.")).padding(.top, 4)
             } else if shown.isEmpty {
                 caption(tr("Nothing matches.")).padding(.top, 4)
             } else {
@@ -252,6 +254,14 @@ struct HistoryPage: View {
                 }
             }
         }
+        // The ground slides to the chosen row as one row opens and the other closes, on the
+        // panel's curve (user 2026-11-27: opening a row had no transition at all).
+        .animation(Motion.standard, value: model.selection)
+    }
+
+    /// The second click of a double-click on a row the first one chose, as the system counts clicks.
+    private static func second(_ id: UUID, chosen: UUID?) -> Bool {
+        chosen == id && (NSApp.currentEvent?.clickCount ?? 1) >= 2
     }
 
     private func meta<Leading: View>(number: Int, pinned: Bool = false, @ViewBuilder _ leading: () -> Leading) -> some View {
@@ -296,9 +306,11 @@ struct HistoryPage: View {
                 .padding(.top, 2)
             }
         }
-        .modifier(HistoryRowChrome(chosen: chosen))
-        .onTapGesture(count: 2) { controller.pasteClip(entry, plain: false) }
-        .onTapGesture { model.selection = entry.id }
+        .modifier(HistoryRowChrome(chosen: chosen, ground: chosenGround))
+        // A click chooses at once and the second click of a double-click pastes. Two tap gestures
+        // one after the other made every click wait for the double-click interval before choosing
+        // (user 2026-11-27). The buttons in the row take their own clicks.
+        .onTapGesture { if Self.second(entry.id, chosen: model.selection) { controller.pasteClip(entry, plain: false) } else { model.selection = entry.id } }
         .contextMenu {
             Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }
             if entry.kind != .image { Button(tr("Paste as Plain Text")) { controller.pasteClip(entry, plain: true) } }
@@ -355,9 +367,11 @@ struct HistoryPage: View {
                 .padding(.top, 2)
             }
         }
-        .modifier(HistoryRowChrome(chosen: chosen))
-        .onTapGesture(count: 2) { if !entry.text.isEmpty { controller.pasteText(entry.text) } }
-        .onTapGesture { model.selection = entry.id }
+        .modifier(HistoryRowChrome(chosen: chosen, ground: chosenGround))
+        .onTapGesture {
+            if Self.second(entry.id, chosen: model.selection) { if !entry.text.isEmpty { controller.pasteText(entry.text) } }
+            else { model.selection = entry.id }
+        }
         .contextMenu {
             if !entry.text.isEmpty {
                 Button(tr("Paste")) { controller.pasteText(entry.text) }
@@ -406,17 +420,19 @@ struct HistoryPage: View {
     }
 }
 
-/// A row's frame: the chosen one on a ground of its own.
+/// A row's frame: the chosen one on a ground of its own, the same ground moving from row to row.
 private struct HistoryRowChrome: ViewModifier {
     let chosen: Bool
+    let ground: Namespace.ID
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 8).padding(.vertical, 7)
             .background {
-                if chosen { RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Palette.fill) }
-            }
-            .overlay {
-                if chosen { RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Palette.line, lineWidth: 1) }
+                if chosen {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Palette.fill)
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Palette.line, lineWidth: 1))
+                        .matchedGeometryEffect(id: "chosen", in: ground)
+                }
             }
             .contentShape(Rectangle())
             .accessibilityElement(children: .contain)
