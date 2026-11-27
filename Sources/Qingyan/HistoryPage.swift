@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import QingyanCore
 import SwiftUI
@@ -28,6 +29,42 @@ enum HistoryItem: Identifiable {
     }
 }
 
+/// Plays the recording kept with a voice record (user 2026-11-27): the file as the recorder wrote
+/// it, 16-bit mono at 24 kHz, one at a time. The controller stops it when a new recording starts,
+/// when History closes and when its record goes.
+@MainActor
+final class RecordingPlayer: ObservableObject {
+    /// The record whose recording is playing.
+    @Published private(set) var playing: UUID?
+    private var player: AVAudioPlayer?
+    private var turn = 0
+
+    /// Plays the record's recording, or stops it if it is the one playing. False: it could not be played.
+    func toggle(_ id: UUID, file: URL) -> Bool {
+        if playing == id { stop(); return true }
+        stop()
+        guard let pcm = try? Data(contentsOf: file, options: .mappedIfSafe), !pcm.isEmpty,
+              let player = try? AVAudioPlayer(data: OpenAIWire.wav(pcm: pcm), fileTypeHint: AVFileType.wav.rawValue),
+              player.play() else { return false }
+        self.player = player
+        playing = id
+        let mine = turn, length = player.duration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((length + 0.2) * 1_000_000_000))
+            guard let self, self.turn == mine else { return }
+            self.stop()
+        }
+        return true
+    }
+
+    func stop() {
+        turn += 1
+        player?.stop()
+        player = nil
+        if playing != nil { playing = nil }
+    }
+}
+
 /// What the History page shows and keeps while the panel is open: the search, the kind chosen,
 /// the row chosen, and the icons and thumbnails already read.
 @MainActor
@@ -46,6 +83,7 @@ final class HistoryPageModel: ObservableObject {
     @Published private(set) var copied: UUID?
     private var copiedToken = UUID()
     let clipboard: ClipboardHistory
+    let player = RecordingPlayer()
     private var icons: [String: NSImage] = [:]
     private var thumbnails: [UUID: NSImage] = [:]
     private var fileIcons: [String: NSImage] = [:]
@@ -120,6 +158,7 @@ final class HistoryPageModel: ObservableObject {
 struct HistoryPage: View {
     @ObservedObject var model: HistoryPageModel
     @ObservedObject var clipboard: ClipboardHistory
+    @ObservedObject var player: RecordingPlayer
     @ObservedObject var settings: SettingsStore
     @ObservedObject var controller: DictationController
     var shelve: (ClipEntry) -> Void
@@ -130,6 +169,7 @@ struct HistoryPage: View {
     init(model: HistoryPageModel, settings: SettingsStore, controller: DictationController, shelve: @escaping (ClipEntry) -> Void) {
         self.model = model
         clipboard = model.clipboard
+        player = model.player
         self.settings = settings
         self.controller = controller
         self.shelve = shelve
@@ -223,8 +263,8 @@ struct HistoryPage: View {
             Button(tr("Cancel"), role: .cancel) {}
             Button(tr("Remove"), role: .destructive) { clipboard.clear() }
         }
-        .alert(settings.sendsRemotely ? tr("Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?")
-               : tr("Remove every voice record, and the audio waiting to be transcribed, from this Mac?"), isPresented: clearing(.voice)) {
+        .alert(settings.sendsRemotely ? tr("Remove every voice record and its recording, here and on your other Macs, and the audio waiting to be transcribed on this Mac?")
+               : tr("Remove every voice record, its recording and the audio waiting to be transcribed from this Mac?"), isPresented: clearing(.voice)) {
             Button(tr("Cancel"), role: .cancel) {}
             Button(tr("Remove"), role: .destructive) {
                 // A recording may have started being transcribed while this was asked.
@@ -318,16 +358,17 @@ struct HistoryPage: View {
                 Text(entry.app.isEmpty ? tr("Copied") : entry.app).lineLimit(1)
                 Text(verbatim: "·")
                 Text(ClipWords.when(entry.date)).lineLimit(1).layoutPriority(1)
-                if let from = controller.sourceLabel(entry.origin, entry.originName) {
-                    Text(verbatim: "·")
-                    Text(from).lineLimit(1)
-                }
                 if entry.kind == .image && entry.width > 0 {
                     Text(verbatim: "·")
                     Text(verbatim: "\(entry.width) × \(entry.height)").lineLimit(1).layoutPriority(1)
                 } else if entry.kind == .files && entry.count > 1 {
                     Text(verbatim: "·")
                     Text(tr("%ld files", entry.count)).lineLimit(1).layoutPriority(1)
+                }
+                // Which Mac it came from is the last thing on the line, always (user 2026-11-27).
+                if let from = controller.sourceLabel(entry.origin, entry.originName) {
+                    Text(verbatim: "·")
+                    Text(from).lineLimit(1)
                 }
             }
             content(entry, chosen: chosen)
@@ -376,15 +417,16 @@ struct HistoryPage: View {
                 Text(entry.mode.title).lineLimit(1)
                 Text(verbatim: "·")
                 Text(ClipWords.when(entry.date)).lineLimit(1).layoutPriority(1)
-                if let from = controller.sourceLabel(entry.origin, entry.originName) {
-                    Text(verbatim: "·")
-                    Text(from).lineLimit(1)
-                }
                 Text(verbatim: "·")
                 Text(verbatim: "\(max(1, Int(entry.seconds.rounded()))) s").lineLimit(1).layoutPriority(1)
                 if entry.state != .completed {
                     Text(verbatim: "·")
                     Text(entry.state.title).foregroundStyle(.orange).lineLimit(1)
+                }
+                // Which Mac it came from is the last thing on the line, always (user 2026-11-27).
+                if let from = controller.sourceLabel(entry.origin, entry.originName) {
+                    Text(verbatim: "·")
+                    Text(from).lineLimit(1)
                 }
             }
             Text(entry.text.isEmpty ? placeholder : entry.text).font(.system(size: 12))
@@ -399,6 +441,25 @@ struct HistoryPage: View {
                     caption(tr("This is the text recognized so far. It is updated when a retry finishes."))
                 }
                 HStack(spacing: 6) {
+                    // The recording kept with the record, on the Mac that made it: played from here, and
+                    // stopped by the same button. Not while it is still being written.
+                    if entry.state != .recording, let recording = settings.recordingURL(entry.id) {
+                        let playing = player.playing == entry.id
+                        Button {
+                            // What stops it besides this button is the controller's to say: a new
+                            // recording, History closing, the record going.
+                            let unplayable = tr("This recording could not be played.")
+                            guard playing || controller.canPlayRecording else { NSSound.beep(); return }
+                            if !player.toggle(entry.id, file: recording) { settings.historyMessage = unplayable }
+                            else if settings.historyMessage == unplayable { settings.historyMessage = "" }
+                        } label: {
+                            Image(systemName: playing ? "stop.fill" : "play.fill").font(.system(size: 10, weight: .semibold)).frame(width: 12)
+                        }
+                        .buttonStyle(QuietButton())
+                        .disabled(controller.phase == .recording)
+                        .help(playing ? tr("Stop playing") : tr("Play the recording"))
+                        .accessibilityLabel(playing ? tr("Stop playing") : tr("Play the recording"))
+                    }
                     Spacer(minLength: 0)
                     Button(tr("Delete")) { settings.removeHistory(id: entry.id) }.buttonStyle(QuietButton()).disabled(busy)
                     if entry.canRetry {

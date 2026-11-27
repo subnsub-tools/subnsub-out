@@ -377,6 +377,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow, closing === window else { return }
         UserDefaults.standard.set(false, forKey: "panelOpen")
+        // A recording playing from History has no Stop button once the panel is gone.
+        controller?.historyPage.player.stop()
     }
 
     private func followDrawer(of window: NSWindow) {
@@ -656,6 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         showCompact(at: here)
         // Out of sight, not closed: the panel comes back as it was.
         window?.orderOut(nil)
+        controller?.historyPage.player.stop()
     }
 
     /// No longer kept on top: the bar goes, and what it was showing goes on in the capsule (at the
@@ -1261,6 +1264,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await panel("panel-history")
         try await panel("panel-history-dark", dark: true)
         try await panel("history-filled", drawer: true)
+        // A record chosen, with its recording to play, and the Mac a record came from last on its line.
+        settings.history[1].origin = "preview"; settings.history[1].originName = "mbp-14"
+        settings.previewRecordings = [settings.history[0].id]
+        controller.historyPage.selection = settings.history[0].id
+        try await panel("history-recording", drawer: true)
+        controller.historyPage.selection = nil
+        settings.previewRecordings = []; settings.history[1].origin = nil; settings.history[1].originName = nil
         let request = SavedDictation(mode: .dictate, polish: true, targetLanguage: "English", speechModel: "fixture",
                                      textModel: "fixture", dictionary: [], selection: "")
         settings.history.insert(HistoryEntry(text: "", mode: .dictate, seconds: 23, status: .pending,

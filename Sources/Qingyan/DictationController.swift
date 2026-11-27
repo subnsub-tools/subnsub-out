@@ -190,6 +190,10 @@ final class DictationController: ObservableObject {
     /// How long the helper may take to reach a Mac while looking for the one behind a remote desktop.
     private static let scoutDial: TimeInterval = 3
     private var microphoneSubscriptions: Set<AnyCancellable> = []
+    /// How many starts are opening the microphone now.
+    private var micOpening = 0
+    /// Whether a recording kept in History may start playing: not while the microphone records or opens.
+    var canPlayRecording: Bool { phase != .recording && micOpening == 0 }
     /// Whether the bound microphone was connected at the last look; nil when nothing is bound.
     private var boundWasPresent: Bool?
     /// What the status capsule names while processing, and once done. Each is set together with
@@ -471,6 +475,21 @@ final class DictationController: ObservableObject {
         // watcher is not started and the folder is not opened.
         screenshots.onScreenshot = { [weak self] url in self?.shelf.shelveScreenshot(url) }
         screenshots.onUnreadable = { [weak self] _ in self?.shelf.saidScreenshotsUnreadable() }
+        // A recording playing from History stops when History closes or gives way to Settings, and
+        // when its record goes (deleted, cleared, past the last hundred, removed on another Mac):
+        // its Stop button would be out of reach.
+        settings.$historyOpen.removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] open in
+            MainActor.assumeIsolated { if !open { self?.historyPage.player.stop() } }
+        }.store(in: &microphoneSubscriptions)
+        settings.$page.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.historyPage.player.stop() }
+        }.store(in: &microphoneSubscriptions)
+        settings.$history.receive(on: DispatchQueue.main).sink { [weak self] entries in
+            MainActor.assumeIsolated {
+                guard let self, let id = self.historyPage.player.playing, !entries.contains(where: { $0.id == id }) else { return }
+                self.historyPage.player.stop()
+            }
+        }.store(in: &microphoneSubscriptions)
         settings.$preferences.map(\.screenshotsToShelf).removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
             MainActor.assumeIsolated {
                 guard let self, !self.settings.preview else { return }
@@ -1436,11 +1455,19 @@ final class DictationController: ObservableObject {
             result = ""; partial = ""; meter.reset(); latency = nil; connected = false; hadSignal = false; stopTime = nil
             // The microphone opens off the main thread, so an audio system that stops answering ends in
             // an error instead of a frozen out. History gets the recording only once it has started.
-            let audio = try await recorder.start(microphone: prefs.microphone, microphoneName: prefs.microphoneName) { [weak self] value in
-                guard let self, self.sessionID == id, self.phase == .recording else { return }
-                self.meter.setLevel(min(1, value * 12))
-                if value > 0.002 { self.hadSignal = true }
-            }
+            // A recording playing from History would be recorded with this one: it stops before the
+            // microphone opens, and none starts while it opens (see canPlayRecording).
+            historyPage.player.stop()
+            micOpening += 1
+            let audio: AsyncThrowingStream<Data, Error>
+            do {
+                audio = try await recorder.start(microphone: prefs.microphone, microphoneName: prefs.microphoneName) { [weak self] value in
+                    guard let self, self.sessionID == id, self.phase == .recording else { return }
+                    self.meter.setLevel(min(1, value * 12))
+                    if value > 0.002 { self.hadSignal = true }
+                }
+            } catch { micOpening -= 1; throw error }
+            micOpening -= 1
             // Cancelled or replaced while starting: the stream is this start's, so stopping it is safe.
             guard sessionID == id else { recorder.stop(); return }
             let (record, savedAudio) = try settings.beginHistory(request)
@@ -1654,7 +1681,8 @@ final class DictationController: ObservableObject {
     private func keepForRetry(_ error: Error) {
         endRemote("the recording is kept to try again (\(type(of: error)))")
         guard settings.history.first(where: { $0.id == entry?.id })?.state != .completed else {
-            phase = .error; message = tr("The text is saved, but the original audio could not be removed. Delete it in History."); return
+            // The text and its recording are saved already: nothing is left to try again.
+            phase = .error; message = tr("Saved to History"); return
         }
         let pending = (error as? VoiceError)?.retryable == true || error is URLError
         entry?.status = pending ? .pending : .failed
@@ -2063,7 +2091,7 @@ final class DictationController: ObservableObject {
                     do { try self.settings.updateHistory(record) }
                     catch { self.settings.historyMessage = tr("Could not save the retry result. Check the disk space.") }
                     self.retryAfter[id] = wait.map { Date().addingTimeInterval($0) } ?? .distantFuture
-                } else { self.settings.historyMessage = tr("The text is saved, but the original audio could not be removed. Delete this record to remove it.") }
+                }
             }
         }
     }

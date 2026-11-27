@@ -694,6 +694,15 @@ final class SettingsStore: ObservableObject {
         if entry.state == .completed { historyChanged?(.upsert(entry)) }
     }
 
+    /// The previews' voice records shown as having a recording: the previews keep no files.
+    var previewRecordings: Set<UUID> = []
+
+    /// The recording kept on this Mac with a voice record, if there is one.
+    func recordingURL(_ id: UUID) -> URL? {
+        if preview { return previewRecordings.contains(id) ? URL(fileURLWithPath: "/dev/null") : nil }
+        return archive?.recording(id)
+    }
+
     func clearHistory() {
         guard let archive else { return }
         let moment = Date()

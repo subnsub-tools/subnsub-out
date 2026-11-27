@@ -154,6 +154,7 @@ public final class DictationArchive {
             entries[i].problem = tr("The last processing did not finish. The original recording is kept and can be retried by hand.")
         }
         try persist(entries)
+        sweep()
     }
 
     public func audioURL(_ id: UUID) -> URL { directory.appendingPathComponent("\(id.uuidString).pcm") }
@@ -166,14 +167,21 @@ public final class DictationArchive {
         return (entry, audio)
     }
 
+    /// The recording kept with a record, where this Mac has one: none for a record made on another
+    /// Mac, for text received, or for one finished before recordings were kept.
+    public func recording(_ id: UUID) -> URL? {
+        let url = audioURL(id)
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        return size > 0 ? url : nil
+    }
+
+    /// A finished record keeps its recording (user 2026-11-27: kept, and played back from History),
+    /// until the record itself goes.
     public func update(_ entry: HistoryEntry) throws {
         guard let i = entries.firstIndex(where: { $0.id == entry.id }) else { throw VoiceError(tr("This history entry has been deleted.")) }
         var next = entries
         next[i] = entry
         try persist(bounded(next))
-        if entry.state == .completed, FileManager.default.fileExists(atPath: audioURL(entry.id).path) {
-            try FileManager.default.removeItem(at: audioURL(entry.id))
-        }
     }
 
     /// Stores text that arrived already finished, such as text received from another Mac.
@@ -230,20 +238,33 @@ public final class DictationArchive {
         }
     }
 
+    /// The index first: a save that fails leaves the record with its recording, to play or to retry.
     public func remove(_ id: UUID) throws {
-        let url = audioURL(id)
-        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         try persist(entries.filter { $0.id != id })
     }
 
     public func clear() throws {
-        for entry in entries { try remove(entry.id) }
+        try persist([])
+    }
+
+    /// Recordings whose record is gone go: one that could not be deleted when its record went, or
+    /// one left by a stop between the index being saved and the file being deleted.
+    private func sweep() {
+        let kept = Set(entries.map { audioURL($0.id).lastPathComponent })
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasSuffix(".pcm") && UUID(uuidString: String(name.dropLast(4))) != nil && !kept.contains(name) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 
     private func persist(_ next: [HistoryEntry]) throws {
         let data = try JSONEncoder().encode(next)
         try data.write(to: index, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: index.path)
+        // A record that goes takes its recording with it: past the last 100, removed or cleared on
+        // another Mac, or deleted here.
+        let kept = Set(next.map(\.id))
+        for entry in entries where !kept.contains(entry.id) { try? FileManager.default.removeItem(at: audioURL(entry.id)) }
         entries = next
     }
 }

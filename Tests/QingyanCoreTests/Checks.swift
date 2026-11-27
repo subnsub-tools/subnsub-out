@@ -2648,7 +2648,7 @@ struct Checks {
         try check(queued.entries.first?.state == .pending && queued.entries.first?.transcript == "Text not yet polished", "keep pending audio and completed raw transcript across restart")
         record.status = .completed; record.text = "Final text"; record.request = nil; record.transcript = nil
         try queued.update(record)
-        try check(!FileManager.default.fileExists(atPath: audio.url.path), "successful processing removes original audio")
+        try check(FileManager.default.fileExists(atPath: audio.url.path) && queued.recording(record.id)?.path == audio.url.path, "a finished record keeps its recording")
         try check(queued.entries.filter { $0.id == record.id }.count == 1 && queued.entries.first?.text == "Final text", "update same history row")
         let (pending, pendingAudio) = try queued.begin(request)
         try pendingAudio.append(prefix); try pendingAudio.finish()
@@ -2659,6 +2659,8 @@ struct Checks {
             try queued.update(completed)
         }
         try check(queued.entries.filter { $0.state == .completed }.count == 100, "bound completed history")
+        try check(!queued.entries.contains { $0.id == record.id } && !FileManager.default.fileExists(atPath: audio.url.path) && queued.recording(record.id) == nil,
+                  "a record past the last hundred takes its recording with it")
         try check(queued.entries.contains { $0.id == pending.id }, "retention must never evict pending recordings")
         try queued.remove(pending.id)
         try check(!FileManager.default.fileExists(atPath: pendingAudio.url.path), "deletion removes audio")
@@ -2667,8 +2669,15 @@ struct Checks {
         try check(queued.entries.first?.text == "Text from another Mac" && queued.entries.first?.state == .completed, "received text is stored finished, newest first")
         try check(queued.entries.filter { $0.state == .completed }.count == 100, "received text obeys the same retention")
         try check(try DictationArchive(directory: directory).entries.first?.mode == .translate, "received text survives restart")
+        let stray = directory.appendingPathComponent("\(UUID().uuidString).pcm"), other = directory.appendingPathComponent("notes.pcm")
+        try prefix.write(to: stray); try prefix.write(to: other)
+        let swept = try DictationArchive(directory: directory)
+        try check(!FileManager.default.fileExists(atPath: stray.path) && FileManager.default.fileExists(atPath: other.path),
+                  "a recording whose record is gone is removed at the next start, and nothing else")
+        try check(swept.entries.count == queued.entries.count, "and no record")
         try queued.clear()
         try check(try DictationArchive(directory: directory).entries.isEmpty, "clear survives restart")
+        try check((try FileManager.default.contentsOfDirectory(atPath: directory.path)).filter { $0.hasSuffix(".pcm") } == ["notes.pcm"], "clear removes every recording")
 
         var (unsaved, protected) = try queued.begin(request)
         try protected.append(prefix); try protected.finish()
@@ -3414,8 +3423,10 @@ struct Checks {
         try check(text == "\u{5468}\u{56DB}\u{4E0B}\u{5348}\u{4E09}\u{70B9}\u{5F00}\u{4F1A}\u{3002}", "replay gets final result, not stale partial")
         record.text = text; record.status = .completed; record.request = nil
         try restarted.update(record)
-        try check(!FileManager.default.fileExists(atPath: replay.url.path), "replay success cleans audio")
+        try check(restarted.recording(record.id)?.path == replay.url.path, "the recording stays with the record once the retry succeeds")
         try check(restarted.entries.count == 1 && restarted.entries[0].text == text, "retry replaces original record")
+        try restarted.drop([record.id])
+        try check(!FileManager.default.fileExists(atPath: replay.url.path) && restarted.entries.isEmpty, "a record removed on another Mac takes its recording with it")
     }
 
     @MainActor static func network(base: String) async throws {
