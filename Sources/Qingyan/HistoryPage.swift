@@ -298,8 +298,8 @@ struct HistoryPage: View {
                 // (user 2026-11-27: centered like Telegram's).
                 Text(day.id).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.muted)
                     .padding(.horizontal, 9).padding(.vertical, 3)
-                    .background(Palette.fill, in: Capsule())
-                    .overlay(Capsule().stroke(Palette.line, lineWidth: 0.8))
+                    .background(Palette.fill, in: Capsule(style: .continuous))
+                    .overlay(Capsule(style: .continuous).stroke(Palette.line, lineWidth: 0.8))
                     .frame(maxWidth: .infinity)
                     .padding(.top, 8).padding(.bottom, 4)
                     .accessibilityAddTraits(.isHeader)
