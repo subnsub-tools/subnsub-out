@@ -294,8 +294,15 @@ struct HistoryPage: View {
         let numbers = Dictionary(uniqueKeysWithValues: shown.enumerated().map { ($0.element.id, $0.offset) })
         return LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Self.days(shown)) { day in
+                // The day in the middle of the list, on a small ground of its own, as a chat's dates are
+                // (user 2026-11-27: centered like Telegram's).
                 Text(day.id).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.muted)
-                    .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(Palette.fill, in: Capsule())
+                    .overlay(Capsule().stroke(Palette.line, lineWidth: 0.8))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8).padding(.bottom, 4)
+                    .accessibilityAddTraits(.isHeader)
                 ForEach(Array(day.items.enumerated()), id: \.element.id) { offset, item in
                     if offset > 0 {
                         // No rule against the chosen row, which has a frame of its own.
