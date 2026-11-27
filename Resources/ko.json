@@ -742,7 +742,7 @@
  "Pause Clipboard History": "클립보드 기록 일시 정지",
  "Clipboard history": "클립보드 기록",
  "Keep what is copied": "복사한 항목 보관",
- "Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "이 Mac에서 복사한 텍스트, 이미지, 파일은 암호화하지 않은 채 이 Mac에 보관됩니다. Control + Option + C를 누르면 앞에 있는 앱 위에 표시되고, Return 키를 누르면 선택한 항목이 붙여넣어집니다. 복사한 파일은 선반에도 놓이며, ‘여러 Mac’의 Mac들이 함께 사용합니다.",
+ "Text, images and files copied on this Mac are kept on this Mac, unencrypted. While Work across Macs is on, your other Macs in Multiple Macs keep them too (files by name alone), and this Mac keeps what is copied on them. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "이 Mac에서 복사한 텍스트, 이미지, 파일은 암호화하지 않은 채 이 Mac에 보관됩니다. ‘여러 Mac에서 작업’이 켜져 있는 동안에는 ‘여러 Mac’의 다른 Mac에도 보관되고(파일은 이름만), 다른 Mac에서 복사한 항목도 이 Mac에 보관됩니다. Control + Option + C를 누르면 앞에 있는 앱 위에 표시되고, Return 키를 누르면 선택한 항목이 붙여넣어집니다. 복사한 파일은 선반에도 놓이며, ‘여러 Mac’의 Mac들이 함께 사용합니다.",
  "Keep up to": "최대 보관 수",
  "Keep for": "보관 기간",
  "Apps left out": "제외할 앱",
@@ -773,5 +773,15 @@
  "Remove every copied item but the pinned ones?": "고정한 항목을 제외하고 복사한 항목을 모두 제거할까요?",
  "Remove every voice record, and the audio waiting to be transcribed, from this Mac?": "이 Mac에서 모든 음성 기록과 변환을 기다리는 오디오를 제거할까요?",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "아직 아무것도 없습니다. 받아쓴 내용과, 클립보드 기록이 켜져 있는 동안 복사한 항목이 이 Mac에만, 여기에 보관됩니다. 복사한 파일은 선반에도 놓이며, ‘여러 Mac’의 Mac들이 함께 사용합니다.",
- "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "위아래 화살표로 항목을 선택하고, Return 키로 이전에 앞에 있던 앱에 붙여넣습니다(Shift + Return은 일반 텍스트로). Command + 1~9로 처음 9개 중 하나를 붙여넣습니다."
+ "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "위아래 화살표로 항목을 선택하고, Return 키로 이전에 앞에 있던 앱에 붙여넣습니다(Shift + Return은 일반 텍스트로). Command + 1~9로 처음 9개 중 하나를 붙여넣습니다.",
+ "Monitor helper": "Monitor 헬퍼",
+ "Not installed on this Mac": "이 Mac에 설치되어 있지 않음",
+ "Installed on this Mac, not running": "이 Mac에 설치됨, 실행 중이 아님",
+ "Installed on this Mac": "이 Mac에 설치됨",
+ "Installed on this Mac · %@": "이 Mac에 설치됨 · %@",
+ "Copied on %@. Only the file names are here.": "%@에서 복사됨. 여기에는 파일 이름만 있습니다.",
+ "Remove every item but the pinned ones, here and on your other Macs?": "고정한 항목을 제외하고 이 Mac과 다른 Mac에서 모두 제거할까요?",
+ "Remove every copied item but the pinned ones, here and on your other Macs?": "고정한 항목을 제외하고 복사한 항목을 이 Mac과 다른 Mac에서 모두 제거할까요?",
+ "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "이 Mac과 다른 Mac의 모든 음성 기록과, 이 Mac에서 변환을 기다리는 오디오를 제거할까요?",
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "아직 아무것도 없습니다. 받아쓴 내용과, 클립보드 기록이 켜져 있는 동안 복사한 항목은 여기와 ‘여러 Mac’의 다른 Mac에 보관되고, 다른 Mac의 항목도 여기에 보관됩니다(복사한 파일은 이름만). 복사한 파일은 선반에도 놓이며, 그 Mac들이 함께 사용합니다."
 }

@@ -742,7 +742,7 @@
  "Pause Clipboard History": "暫停剪貼簿記錄",
  "Clipboard history": "剪貼簿記錄",
  "Keep what is copied": "保留複製的內容",
- "Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "在這台 Mac 上複製的文字、圖片和檔案會以未加密形式保留在這台 Mac 上。按 Control + Option + C 可在前景 App 上方顯示它們，按 Return 鍵貼上所選內容。複製的檔案也會放入暫存區，由「多台 Mac」中的 Mac 共享。",
+ "Text, images and files copied on this Mac are kept on this Mac, unencrypted. While Work across Macs is on, your other Macs in Multiple Macs keep them too (files by name alone), and this Mac keeps what is copied on them. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "在這台 Mac 上複製的文字、圖片和檔案會以未加密形式保留在這台 Mac 上。開啟「跨裝置協同」時，「多台 Mac」中的其他 Mac 也會保留它們（檔案只保留檔案名稱），這台 Mac 也會保留在它們上面複製的內容。按 Control + Option + C 可在前景 App 上方顯示它們，按 Return 鍵貼上所選內容。複製的檔案也會放入暫存區，由「多台 Mac」中的 Mac 共享。",
  "Keep up to": "最多保留",
  "Keep for": "保留時間",
  "Apps left out": "排除的 App",
@@ -773,5 +773,15 @@
  "Remove every copied item but the pinned ones?": "移除釘選項目以外的所有複製內容？",
  "Remove every voice record, and the audio waiting to be transcribed, from this Mac?": "從這台 Mac 移除所有語音記錄，以及等待轉寫的音訊？",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "這裡還沒有內容。聽寫的內容，以及開啟剪貼簿記錄時複製的內容，都會保存在這裡，僅限這台 Mac。複製的檔案也會放入暫存區，由「多台 Mac」中的 Mac 共享。",
- "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "按 ↑ ↓ 選擇項目，按 Return 貼到先前在前景的 App（Shift + Return 以純文字貼上），按 Command + 1 到 9 貼上前九項之一。"
+ "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "按 ↑ ↓ 選擇項目，按 Return 貼到先前在前景的 App（Shift + Return 以純文字貼上），按 Command + 1 到 9 貼上前九項之一。",
+ "Monitor helper": "Monitor 監控程式",
+ "Not installed on this Mac": "這台 Mac 未安裝",
+ "Installed on this Mac, not running": "這台 Mac 已安裝，未執行",
+ "Installed on this Mac": "這台 Mac 已安裝",
+ "Installed on this Mac · %@": "這台 Mac 已安裝 · %@",
+ "Copied on %@. Only the file names are here.": "複製自 %@。這裡只有檔案名稱。",
+ "Remove every item but the pinned ones, here and on your other Macs?": "移除這台 Mac 和其他 Mac 上釘選項目以外的全部內容？",
+ "Remove every copied item but the pinned ones, here and on your other Macs?": "移除這台 Mac 和其他 Mac 上釘選項目以外的所有複製內容？",
+ "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "移除這台 Mac 和其他 Mac 上的所有語音記錄，以及這台 Mac 上等待轉寫的音訊？",
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "這裡還沒有內容。聽寫的內容，以及開啟剪貼簿記錄時複製的內容，會保存在這台 Mac 和「多台 Mac」中的其他 Mac 上，它們的內容也會保存在這裡（複製的檔案只有檔案名稱）。複製的檔案也會放入暫存區，由這些 Mac 共享。"
 }

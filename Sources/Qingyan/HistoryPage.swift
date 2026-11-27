@@ -193,7 +193,9 @@ struct HistoryPage: View {
                 }
             }
             if clipboard.entries.isEmpty && settings.history.isEmpty {
-                caption(tr("Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.")).padding(.top, 4)
+                caption(settings.sendsRemotely
+                        ? tr("Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.")
+                        : tr("Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.")).padding(.top, 4)
             } else if shown.isEmpty {
                 caption(tr("Nothing matches.")).padding(.top, 4)
             } else {
@@ -202,11 +204,13 @@ struct HistoryPage: View {
                     .padding(.top, 4)
             }
         }
-        .alert(tr("Remove every copied item but the pinned ones?"), isPresented: clearing(.copied)) {
+        .alert(settings.sendsRemotely ? tr("Remove every copied item but the pinned ones, here and on your other Macs?")
+               : tr("Remove every copied item but the pinned ones?"), isPresented: clearing(.copied)) {
             Button(tr("Cancel"), role: .cancel) {}
             Button(tr("Remove"), role: .destructive) { clipboard.clear() }
         }
-        .alert(tr("Remove every voice record, and the audio waiting to be transcribed, from this Mac?"), isPresented: clearing(.voice)) {
+        .alert(settings.sendsRemotely ? tr("Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?")
+               : tr("Remove every voice record, and the audio waiting to be transcribed, from this Mac?"), isPresented: clearing(.voice)) {
             Button(tr("Cancel"), role: .cancel) {}
             Button(tr("Remove"), role: .destructive) {
                 // A recording may have started being transcribed while this was asked.
@@ -286,6 +290,10 @@ struct HistoryPage: View {
                 Text(entry.app.isEmpty ? tr("Copied") : entry.app).lineLimit(1)
                 Text(verbatim: "·")
                 Text(ClipWords.when(entry.date)).lineLimit(1).layoutPriority(1)
+                if let from = controller.sourceLabel(entry.origin, entry.originName) {
+                    Text(verbatim: "·")
+                    Text(from).lineLimit(1)
+                }
                 if entry.kind == .image && entry.width > 0 {
                     Text(verbatim: "·")
                     Text(verbatim: "\(entry.width) × \(entry.height)").lineLimit(1).layoutPriority(1)
@@ -296,12 +304,17 @@ struct HistoryPage: View {
             }
             content(entry, chosen: chosen)
             if chosen {
+                if entry.namesOnly {
+                    caption(tr("Copied on %@. Only the file names are here.", controller.sourceLabel(entry.origin, entry.originName) ?? tr("Unnamed Mac")))
+                }
                 HStack(spacing: 6) {
                     Spacer(minLength: 0)
                     Button(entry.pinned ? tr("Unpin") : tr("Pin")) { clipboard.pin(entry.id, !entry.pinned) }.buttonStyle(QuietButton())
                     Button(tr("Remove")) { clipboard.remove(entry.id) }.buttonStyle(QuietButton())
-                    Button(tr("Copy")) { clipboard.put(entry) }.buttonStyle(QuietButton())
-                    Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }.buttonStyle(SolidButton())
+                    if !entry.namesOnly {
+                        Button(tr("Copy")) { clipboard.put(entry) }.buttonStyle(QuietButton())
+                        Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }.buttonStyle(SolidButton())
+                    }
                 }
                 .padding(.top, 2)
             }
@@ -312,11 +325,13 @@ struct HistoryPage: View {
         // (user 2026-11-27). The buttons in the row take their own clicks.
         .onTapGesture { if Self.second(entry.id, chosen: model.selection) { controller.pasteClip(entry, plain: false) } else { model.selection = entry.id } }
         .contextMenu {
-            Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }
-            if entry.kind != .image { Button(tr("Paste as Plain Text")) { controller.pasteClip(entry, plain: true) } }
-            Button(tr("Copy")) { clipboard.put(entry) }
-            Button(tr("Put on the Shelf")) { shelve(entry) }
-            Divider()
+            if !entry.namesOnly {
+                Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }
+                if entry.kind != .image { Button(tr("Paste as Plain Text")) { controller.pasteClip(entry, plain: true) } }
+                Button(tr("Copy")) { clipboard.put(entry) }
+                Button(tr("Put on the Shelf")) { shelve(entry) }
+                Divider()
+            }
             Button(entry.pinned ? tr("Unpin") : tr("Pin")) { clipboard.pin(entry.id, !entry.pinned) }
             Button(tr("Remove")) { clipboard.remove(entry.id) }
         }
@@ -334,6 +349,10 @@ struct HistoryPage: View {
                 Text(entry.mode.title).lineLimit(1)
                 Text(verbatim: "·")
                 Text(ClipWords.when(entry.date)).lineLimit(1).layoutPriority(1)
+                if let from = controller.sourceLabel(entry.origin, entry.originName) {
+                    Text(verbatim: "·")
+                    Text(from).lineLimit(1)
+                }
                 Text(verbatim: "·")
                 Text(verbatim: "\(max(1, Int(entry.seconds.rounded()))) s").lineLimit(1).layoutPriority(1)
                 if entry.state != .completed {

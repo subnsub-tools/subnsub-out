@@ -742,7 +742,7 @@
  "Pause Clipboard History": "クリップボード履歴を一時停止",
  "Clipboard history": "クリップボード履歴",
  "Keep what is copied": "コピーしたものを保持",
- "Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "このMacでコピーしたテキスト、画像、ファイルは、暗号化せずにこのMacに保持されます。Control + Option + Cで手前のアプリの上に表示し、returnキーで選んだものをペーストします。コピーしたファイルはシェルフにも置かれ、「複数のMac」のMacで共有されます。",
+ "Text, images and files copied on this Mac are kept on this Mac, unencrypted. While Work across Macs is on, your other Macs in Multiple Macs keep them too (files by name alone), and this Mac keeps what is copied on them. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "このMacでコピーしたテキスト、画像、ファイルは、暗号化せずにこのMacに保持されます。「複数のMacで使う」がオンのあいだは、「複数のMac」のほかのMacにも保持され（ファイルは名前だけ）、ほかのMacでコピーしたものもこのMacに保持されます。Control + Option + Cで手前のアプリの上に表示し、returnキーで選んだものをペーストします。コピーしたファイルはシェルフにも置かれ、「複数のMac」のMacで共有されます。",
  "Keep up to": "保持する件数",
  "Keep for": "保持期間",
  "Apps left out": "除外するアプリ",
@@ -773,5 +773,15 @@
  "Remove every copied item but the pinned ones?": "ピンで固定したもの以外のコピーした項目をすべて削除しますか？",
  "Remove every voice record, and the audio waiting to be transcribed, from this Mac?": "すべての音声の記録と、文字起こしを待っている音声をこのMacから削除しますか？",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "まだ何もありません。音声入力した内容と、クリップボード履歴がオンのときにコピーしたものは、このMacだけに、ここに保持されます。コピーしたファイルはシェルフにも置かれ、「複数のMac」のMacで共有されます。",
- "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "上下の矢印キーで項目を選び、Returnで直前に手前にあったアプリにペーストします（Shift + Returnでプレーンテキストとして）。Command + 1～9で最初の9件のいずれかをペーストします。"
+ "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "上下の矢印キーで項目を選び、Returnで直前に手前にあったアプリにペーストします（Shift + Returnでプレーンテキストとして）。Command + 1～9で最初の9件のいずれかをペーストします。",
+ "Monitor helper": "Monitorのヘルパー",
+ "Not installed on this Mac": "このMacにはインストールされていません",
+ "Installed on this Mac, not running": "このMacにインストール済み、動作していません",
+ "Installed on this Mac": "このMacにインストール済み",
+ "Installed on this Mac · %@": "このMacにインストール済み · %@",
+ "Copied on %@. Only the file names are here.": "%@ でコピーされました。ここにあるのはファイル名だけです。",
+ "Remove every item but the pinned ones, here and on your other Macs?": "ピンで固定したもの以外を、このMacとほかのMacからすべて削除しますか？",
+ "Remove every copied item but the pinned ones, here and on your other Macs?": "ピンで固定したもの以外のコピーした項目を、このMacとほかのMacからすべて削除しますか？",
+ "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "すべての音声の記録をこのMacとほかのMacから、文字起こしを待っている音声をこのMacから削除しますか？",
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "まだ何もありません。音声入力した内容と、クリップボード履歴がオンのときにコピーしたものは、ここと「複数のMac」のほかのMacに保持され、ほかのMacのものもここに保持されます（コピーしたファイルは名前だけ）。コピーしたファイルはシェルフにも置かれ、それらのMacで共有されます。"
 }

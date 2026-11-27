@@ -122,6 +122,8 @@ final class ClipboardPicker: NSObject, NSWindowDelegate {
     private func choose(_ entry: ClipEntry?, _ use: Use) {
         guard let entry else { NSSound.beep(); return }
         if use == .type && entry.kind == .image { NSSound.beep(); return }
+        // Files copied on another Mac: only their names are here.
+        if entry.namesOnly { NSSound.beep(); return }
         hide()
         switch use {
         case .copy:
@@ -180,6 +182,9 @@ final class ClipboardPickerModel: ObservableObject {
     let history: ClipboardHistory
     var choose: (ClipEntry?, ClipboardPicker.Use) -> Void = { _, _ in }
     var shelve: (ClipEntry) -> Void = { _ in }
+    /// Which Mac an entry is from, when that is shown; and whether History is in step with other Macs.
+    var source: (ClipEntry) -> String? = { _ in nil }
+    var syncing: () -> Bool = { false }
     var turnOn: () -> Void = {}
     private var watch: AnyCancellable?
     private var icons: [String: NSImage] = [:]
@@ -377,7 +382,7 @@ struct ClipboardPickerView: View {
             leading(entry).frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 1) {
                 Text(ClipWords.title(entry)).font(.system(size: 12.5)).lineLimit(1).truncationMode(.tail)
-                Text(entry.app.isEmpty ? ClipWords.when(entry.date) : entry.app + " · " + ClipWords.when(entry.date))
+                Text(([entry.app.isEmpty ? nil : entry.app, ClipWords.when(entry.date), model.source(entry)].compactMap { $0 }).joined(separator: " · "))
                     .font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
             }
             Spacer(minLength: 2)
@@ -408,14 +413,16 @@ struct ClipboardPickerView: View {
     }
 
     @ViewBuilder private func menu(_ entry: ClipEntry) -> some View {
-        Button(tr("Paste")) { model.choose(entry, .paste) }
-        if entry.kind != .image {
-            Button(tr("Paste as Plain Text")) { model.choose(entry, .plain) }
-            Button(tr("Type It Key by Key")) { model.choose(entry, .type) }
+        if !entry.namesOnly {
+            Button(tr("Paste")) { model.choose(entry, .paste) }
+            if entry.kind != .image {
+                Button(tr("Paste as Plain Text")) { model.choose(entry, .plain) }
+                Button(tr("Type It Key by Key")) { model.choose(entry, .type) }
+            }
+            Button(tr("Copy")) { model.choose(entry, .copy) }
+            Button(tr("Put on the Shelf")) { model.shelve(entry) }
+            Divider()
         }
-        Button(tr("Copy")) { model.choose(entry, .copy) }
-        Button(tr("Put on the Shelf")) { model.shelve(entry) }
-        Divider()
         Button(entry.pinned ? tr("Unpin") : tr("Pin")) { history.pin(entry.id, !entry.pinned) }
         Button(tr("Remove")) { history.remove(entry.id) }
     }
@@ -437,6 +444,18 @@ struct ClipboardPickerView: View {
                             Image(nsImage: picture).resizable().aspectRatio(contentMode: .fit)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else { Spacer() }
+                    case .files where entry.namesOnly:
+                        // Copied on another Mac: the names it sent.
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(Array(entry.preview.split(separator: "\n").map(String.init).enumerated()), id: \.offset) { _, name in
+                                    Text(name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                                }
+                                Text(tr("Copied on %@. Only the file names are here.", model.source(entry) ?? tr("Unnamed Mac")))
+                                    .font(.system(size: 10.5)).foregroundStyle(Palette.muted)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     case .files:
                         ScrollView {
                             VStack(alignment: .leading, spacing: 6) {
@@ -465,7 +484,7 @@ struct ClipboardPickerView: View {
     private var footer: some View {
         HStack(spacing: 12) {
             if model.confirmingClear {
-                Text(tr("Remove every item but the pinned ones?")).font(.system(size: 11.5))
+                Text(model.syncing() ? tr("Remove every item but the pinned ones, here and on your other Macs?") : tr("Remove every item but the pinned ones?")).font(.system(size: 11.5))
                 Spacer()
                 Button(tr("Cancel")) { model.confirmingClear = false }.buttonStyle(QuietButton())
                 Button(tr("Remove")) { history.clear(); model.confirmingClear = false }.buttonStyle(SolidButton())

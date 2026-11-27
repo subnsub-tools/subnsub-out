@@ -8,6 +8,11 @@ func check(_ condition: @autoclosure () throws -> Bool, _ message: String, line:
     guard try condition() else { throw VoiceError("Line \(line): \(message)") }
 }
 
+func unwrap<T>(_ value: T?, _ message: String, line: UInt = #line) throws -> T {
+    guard let value else { throw VoiceError("Line \(line): \(message)") }
+    return value
+}
+
 import CryptoKit
 
 enum Curve25519Key {
@@ -142,6 +147,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Trust: \(error.localizedDescription)") }
         do { try await shelfStore(); print("PASS Shelf on disk: text, image and file, restart, removal remembered, name safety, count limit, large items as cards, fetched copies let go by use") }
         catch { failed += 1; print("FAIL Shelf store: \(error.localizedDescription)") }
+        do { try await historySync(); print("PASS History between Macs over real TCP: text and multi-piece images whole, files by name, the same copy on two Macs one entry, origins kept through a third Mac, voice records, removal, pins, clearing copies (pinned stay) and voice records, a removal not undone by a Mac that was away") }
+        catch { failed += 1; print("FAIL History sync: \(error.localizedDescription)") }
         do { try await shelfSync(); print("PASS Shelf between Macs over real TCP: both directions, multi-frame file intact, removal, catching up, relay, large items as cards fetched on demand, resume, fetch through a third Mac, untrusted Mac, two Macs calling each other") }
         catch { failed += 1; print("FAIL Shelf sync: \(error.localizedDescription)") }
         do { try await links(); print("PASS Links through the helper: the helper says whether it can, a file goes whole and its link comes back, hosted already sends nothing, a card with no file, each refusal in words, taken down") }
@@ -1504,6 +1511,118 @@ struct Checks {
         try check(store.expire() == 0 && store.items.count == count, "nothing younger than thirty days goes")
         try check(store.expire(now: Date().addingTimeInterval(ShelfStore.lifetime + 60)) == count && store.items.isEmpty && removedByAge == count,
                   "after thirty days every item goes, and the other Macs are told")
+    }
+
+    /// History kept the same on three Macs (user 2026-11-27): the office receives, the laptop and the
+    /// tablet call it and never talk to each other directly.
+    @MainActor static func historySync() async throws {
+        let root = try scratch("history")
+        defer { try? FileManager.default.removeItem(at: root) }
+        func settle(_ what: String, seconds: Double = 8, _ done: () -> Bool) async throws { try await Self.settle(what, seconds: seconds, done) }
+        let port = 20000 + Int.random(in: 0..<19000)
+        struct Mac {
+            let shelf: ShelfSync
+            let clip: ClipboardHistory
+            let voice: DictationArchive
+            let history: HistorySync
+            let key: String
+        }
+        func mac(_ name: String, identity: DeviceIdentity? = nil) throws -> Mac {
+            let folder = root.appendingPathComponent(name)
+            let shelf = ShelfSync(store: try ShelfStore(directory: folder.appendingPathComponent("Shelf")), name: name)
+            if let identity { shelf.identity = identity }
+            let clip = ClipboardHistory(directory: folder.appendingPathComponent("Clipboard"), board: NSPasteboard(name: .init("out-check-\(UUID().uuidString)")))
+            let voice = try DictationArchive(directory: folder.appendingPathComponent("History"))
+            let history = HistorySync(shelf: shelf, clipboard: clip, voice: HistorySync.Voice(
+                entries: { voice.entries }, horizon: { voice.horizon },
+                take: { (try? voice.take($0)) ?? false }, drop: { try? voice.drop($0) }, dropCleared: { try? voice.drop(clearedAt: $0) }),
+                stateURL: folder.appendingPathComponent("history-sync.json"))
+            history.selfKey = shelf.identity.publicKey
+            history.selfName = name
+            return Mac(shelf: shelf, clip: clip, voice: voice, history: history, key: shelf.identity.publicKey)
+        }
+        func spoken(_ text: String, on mac: Mac, at date: Date) throws -> HistoryEntry {
+            var entry = HistoryEntry(text: text, mode: .dictate, seconds: 2)
+            entry.date = date; entry.updated = date
+            try mac.voice.add(entry)
+            mac.history.voiceChanged(.upsert(entry))
+            return entry
+        }
+        let receiver = RemoteReceiver()
+        let office = try mac("Office", identity: receiver.identity)
+        let laptop = try mac("Laptop"), tablet = try mac("Tablet")
+        receiver.shelf = office.shelf
+        let callers = [TrustedDevice(key: laptop.key, name: "Laptop", host: "", port: 30001),
+                       TrustedDevice(key: tablet.key, name: "Tablet", host: "", port: 30002)]
+        receiver.trusted = { key in callers.first { $0.key == key } }
+        receiver.start(port: port, probe: { (true, "ready") }, deliver: { _ in "" })
+        try await settle("receiver listens") { receiver.listening }
+        office.shelf.maintain(devices: callers)
+        let hub = TrustedDevice(key: receiver.identity.publicKey, name: "Office", host: "127.0.0.1", port: port)
+
+        // Before any link: the same text copied on the laptop and at the office, a picture larger
+        // than one piece and files on the laptop, a voice record on the laptop and one on the tablet.
+        let now = Date()
+        let text = [[NSPasteboard.PasteboardType.string.rawValue: Data("Copied on two Macs".utf8)]]
+        let onLaptop = try unwrap(laptop.clip.keep(text, app: ("com.apple.TextEdit", "TextEdit"), at: now.addingTimeInterval(-60)), "a text copy is kept")
+        let atOffice = try unwrap(office.clip.keep(text, app: ("com.apple.Terminal", "Terminal"), at: now.addingTimeInterval(-30)), "the same text is kept at the office")
+        let png = Data([0x89, 0x50, 0x4e, 0x47] + (0..<700_000).map { UInt8(($0 &* 7) % 251) })
+        let picture = try unwrap(laptop.clip.keep([[NSPasteboard.PasteboardType.png.rawValue: png]], app: ("com.apple.Preview", "Preview"), at: now.addingTimeInterval(-20)), "a picture is kept")
+        let files = try unwrap(laptop.clip.keep([[NSPasteboard.PasteboardType.fileURL.rawValue: Data("file:///Users/someone/Report.pdf".utf8)]],
+                                                app: ("com.apple.finder", "Finder"), at: now.addingTimeInterval(-10)), "a file copy is kept")
+        let spokenOnLaptop = try spoken("Spoken on the laptop", on: laptop, at: now.addingTimeInterval(-50))
+        let spokenOnTablet = try spoken("Spoken on the tablet", on: tablet, at: now.addingTimeInterval(-40))
+        laptop.shelf.maintain(devices: [hub]); tablet.shelf.maintain(devices: [hub])
+        try await settle("both links come up") { office.shelf.historyKeys.count == 2 && laptop.shelf.historyKeys.count == 1 && tablet.shelf.historyKeys.count == 1 }
+
+        let kept = min(onLaptop.id.uuidString, atOffice.id.uuidString)
+        func one(_ mac: Mac) -> Bool { mac.clip.entries.filter { $0.digest == onLaptop.digest }.map(\.id.uuidString) == [kept] }
+        try await settle("the same copy made on two Macs is one entry, under the smaller identifier, on all three") { one(laptop) && one(office) && one(tablet) }
+        try check(tablet.clip.entries.first { $0.digest == onLaptop.digest }?.originName == "Office", "named after the Mac it was copied on last")
+        try await settle("a picture larger than one piece reaches a Mac two links away") { tablet.clip.entries.contains { $0.id == picture.id } }
+        let arrived = try unwrap(tablet.clip.entries.first { $0.id == picture.id }, "the picture")
+        try check(tablet.clip.imageBytes(arrived) == png, "every byte of it")
+        try check(arrived.origin == laptop.key && arrived.originName == "Laptop", "and it says the Mac it was copied on, not the one that passed it on")
+        try check(laptop.clip.entries.first { $0.id == picture.id }?.origin == nil, "on that Mac it is its own")
+        try await settle("files arrive by name") { tablet.clip.entries.contains { $0.id == files.id } }
+        let names = try unwrap(tablet.clip.entries.first { $0.id == files.id }, "the file record")
+        try check(names.namesOnly && names.preview == "Report.pdf" && tablet.clip.storedCopy(files.id) == nil && !tablet.clip.put(names),
+                  "by name alone: nothing to paste")
+        try await settle("voice records reach every Mac") {
+            [laptop, office, tablet].allSatisfy { mac in Set(mac.voice.entries.map(\.id)).isSuperset(of: [spokenOnLaptop.id, spokenOnTablet.id]) }
+        }
+        try check(laptop.voice.entries.first { $0.id == spokenOnTablet.id }?.origin == tablet.key
+                  && laptop.voice.entries.first { $0.id == spokenOnLaptop.id }?.origin == nil, "each named after the Mac it was spoken on")
+
+        // Changes after linking.
+        tablet.clip.remove(picture.id)
+        try await settle("a removal on one Mac removes it on all") { !laptop.clip.entries.contains { $0.id == picture.id } && !office.clip.entries.contains { $0.id == picture.id } }
+        laptop.clip.pin(UUID(uuidString: kept)!, true)
+        try await settle("a pin on one Mac pins it on the others") { tablet.clip.entries.first { $0.id.uuidString == kept }?.pinned == true }
+        let later = try unwrap(laptop.clip.keep([[NSPasteboard.PasteboardType.string.rawValue: Data("Copied later".utf8)]], app: ("", ""), at: Date()), "a later copy")
+        try await settle("a later copy arrives") { tablet.clip.entries.contains { $0.id == later.id } }
+        laptop.clip.clear()
+        try await settle("clearing the copies on one Mac clears them on all, pinned ones aside") {
+            [laptop, office, tablet].allSatisfy { mac in mac.clip.entries.map(\.id.uuidString) == [kept] }
+        }
+        try office.voice.clear()
+        office.history.voiceChanged(.cleared(Date()))
+        try await settle("clearing the voice records on one Mac clears them on all") { laptop.voice.entries.isEmpty && tablet.voice.entries.isEmpty }
+
+        // A Mac away while something it has is removed: it is removed there when it is back, not brought back.
+        let note = try unwrap(laptop.clip.keep([[NSPasteboard.PasteboardType.string.rawValue: Data("Seen by the tablet".utf8)]], app: ("", ""), at: Date()), "a note")
+        try await settle("the note reaches the tablet") { tablet.clip.entries.contains { $0.id == note.id } }
+        tablet.shelf.maintain(devices: [])
+        try await settle("the tablet goes away") { office.shelf.historyKeys.count == 1 }
+        laptop.clip.remove(note.id)
+        try await settle("removed at the office") { !office.clip.entries.contains { $0.id == note.id } }
+        tablet.shelf.maintain(devices: [hub])
+        try await settle("the tablet comes back", seconds: 15) { office.shelf.historyKeys.count == 2 }
+        try await settle("and the note is removed there") { !tablet.clip.entries.contains { $0.id == note.id } }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        try check(!laptop.clip.entries.contains { $0.id == note.id } && !office.clip.entries.contains { $0.id == note.id }, "and not brought back anywhere")
+
+        laptop.shelf.stop(); tablet.shelf.stop(); office.shelf.stop(); receiver.stop()
     }
 
     @MainActor static func shelfSync() async throws {

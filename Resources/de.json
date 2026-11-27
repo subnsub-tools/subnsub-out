@@ -742,7 +742,7 @@
  "Pause Clipboard History": "Verlauf der Zwischenablage pausieren",
  "Clipboard history": "Verlauf der Zwischenablage",
  "Keep what is copied": "Kopiertes behalten",
- "Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "Auf diesem Mac kopierte Texte, Bilder und Dateien werden unverschlüsselt auf diesem Mac behalten. Control + Option + C zeigt sie über der App im Vordergrund an, und die Return-Taste setzt den gewählten Eintrag ein. Kopierte Dateien kommen außerdem in die Ablage, die die Macs unter „Mehrere Macs“ teilen.",
+ "Text, images and files copied on this Mac are kept on this Mac, unencrypted. While Work across Macs is on, your other Macs in Multiple Macs keep them too (files by name alone), and this Mac keeps what is copied on them. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "Auf diesem Mac kopierte Texte, Bilder und Dateien werden unverschlüsselt auf diesem Mac behalten. Solange „Mit mehreren Macs arbeiten“ aktiv ist, behalten Ihre anderen Macs unter „Mehrere Macs“ sie ebenfalls (Dateien nur mit ihren Namen), und dieser Mac behält, was auf ihnen kopiert wird. Control + Option + C zeigt sie über der App im Vordergrund an, und die Return-Taste setzt den gewählten Eintrag ein. Kopierte Dateien kommen außerdem in die Ablage, die die Macs unter „Mehrere Macs“ teilen.",
  "Keep up to": "Höchstens behalten",
  "Keep for": "Behalten für",
  "Apps left out": "Ausgenommene Apps",
@@ -773,5 +773,15 @@
  "Remove every copied item but the pinned ones?": "Alle kopierten Einträge außer den angehefteten entfernen?",
  "Remove every voice record, and the audio waiting to be transcribed, from this Mac?": "Alle Sprachaufnahmen und das Audio, das noch auf die Transkription wartet, von diesem Mac entfernen?",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here, on this Mac only. Copied files also go on the Shelf, which the Macs in Multiple Macs share.": "Noch nichts vorhanden. Was Sie diktieren und, solange der Verlauf der Zwischenablage aktiv ist, kopieren, wird hier aufbewahrt, nur auf diesem Mac. Kopierte Dateien kommen außerdem in die Ablage, die die Macs unter „Mehrere Macs“ teilen.",
- "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "Auf- und Abwärtspfeil wählen einen Eintrag, Return setzt ihn in die zuvor aktive App ein (Shift + Return als reinen Text), und Command + 1 bis 9 setzen einen der ersten neun ein."
+ "Up and Down choose an item, Return pastes it into the app that was in front (Shift + Return as plain text), and Command + 1 to 9 paste one of the first nine.": "Auf- und Abwärtspfeil wählen einen Eintrag, Return setzt ihn in die zuvor aktive App ein (Shift + Return als reinen Text), und Command + 1 bis 9 setzen einen der ersten neun ein.",
+ "Monitor helper": "Monitor-Helper",
+ "Not installed on this Mac": "Auf diesem Mac nicht installiert",
+ "Installed on this Mac, not running": "Auf diesem Mac installiert, läuft nicht",
+ "Installed on this Mac": "Auf diesem Mac installiert",
+ "Installed on this Mac · %@": "Auf diesem Mac installiert · %@",
+ "Copied on %@. Only the file names are here.": "Kopiert auf %@. Hier sind nur die Dateinamen.",
+ "Remove every item but the pinned ones, here and on your other Macs?": "Alle Einträge außer den angehefteten entfernen, hier und auf Ihren anderen Macs?",
+ "Remove every copied item but the pinned ones, here and on your other Macs?": "Alle kopierten Einträge außer den angehefteten entfernen, hier und auf Ihren anderen Macs?",
+ "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "Alle Sprachaufnahmen hier und auf Ihren anderen Macs sowie das Audio auf diesem Mac, das noch auf die Transkription wartet, entfernen?",
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "Noch nichts vorhanden. Was Sie diktieren und, solange der Verlauf der Zwischenablage aktiv ist, kopieren, wird hier und auf Ihren anderen Macs unter „Mehrere Macs“ aufbewahrt, und deren Einträge hier (kopierte Dateien nur mit ihren Namen). Kopierte Dateien kommen außerdem in die Ablage, die diese Macs teilen."
 }

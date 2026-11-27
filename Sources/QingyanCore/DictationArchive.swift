@@ -57,6 +57,14 @@ public struct HistoryEntry: Codable, Identifiable {
     /// How many attempts to turn this recording into text have failed in a row, the first one
     /// included. Kept with the entry, so a restart does not start the count again.
     public var failures: Int?
+    /// The Mac it was dictated on, when that is another of the owner's Macs (HistorySync), or the
+    /// Mac whose text this one received: its key in the list of Macs, and its name as that Mac gave
+    /// it. Nil: this Mac.
+    public var origin: String?
+    public var originName: String?
+    /// When it last changed on any Mac: of two Macs that differ, the later change is kept.
+    public var updated: Date?
+    public var changed: Date { updated ?? date }
     public var state: RecordingStatus { status ?? .completed }
     public var canRetry: Bool { request != nil && (state == .pending || state == .failed) }
 
@@ -173,12 +181,52 @@ public final class DictationArchive {
         try persist(bounded([entry] + entries))
     }
 
+    /// The last 100 finished records are kept.
+    public static let kept = 100
+
+    /// The oldest finished record that would still be kept here: one older goes at once once 100 are kept.
+    public var horizon: Date {
+        let finished = entries.filter { $0.state == .completed }
+        return finished.count >= Self.kept ? finished.map(\.date).min() ?? .distantPast : .distantPast
+    }
+
+    /// Takes a finished record from another Mac: a new one, or a later change of one here. A record
+    /// still being recorded, transcribed or waiting here is not replaced. Returns whether it is kept.
+    @discardableResult
+    public func take(_ entry: HistoryEntry) throws -> Bool {
+        guard entry.state == .completed else { return false }
+        var next = entries
+        if let index = next.firstIndex(where: { $0.id == entry.id }) {
+            guard next[index].state == .completed, entry.changed > next[index].changed else { return false }
+            next.remove(at: index)
+        } else if entry.date <= horizon {
+            return false
+        }
+        let place = next.firstIndex(where: { $0.date < entry.date }) ?? next.endIndex
+        next.insert(entry, at: place)
+        try persist(bounded(next))
+        return entries.contains { $0.id == entry.id }
+    }
+
+    /// Removes the finished records another Mac removed. Nothing waiting for transcription here goes.
+    public func drop(_ ids: Set<UUID>) throws {
+        let next = entries.filter { !(ids.contains($0.id) && $0.state == .completed) }
+        if next.count != entries.count { try persist(next) }
+    }
+
+    /// Removes what another Mac cleared: the finished records last changed by `moment`. A recording
+    /// here waiting to be transcribed stays: that Mac's confirmation spoke of its own audio alone.
+    public func drop(clearedAt moment: Date) throws {
+        let next = entries.filter { !($0.state == .completed && $0.changed <= moment) }
+        if next.count != entries.count { try persist(next) }
+    }
+
     private func bounded(_ items: [HistoryEntry]) -> [HistoryEntry] {
         var completed = 0
         return items.filter { item in
             guard item.state == .completed else { return true }
             completed += 1
-            return completed <= 100
+            return completed <= Self.kept
         }
     }
 

@@ -41,7 +41,7 @@ struct SettingsPage: View {
             ClipboardGroup(settings: settings, history: controller.clipboard)
             // Only where the Monitor helper is installed: the Dashboard reaches this Mac through it.
             if [.ready, .stopped, .noTunnel].contains(controller.helperState) { DashboardGroup(settings: settings) }
-            GeneralGroup(settings: settings, updater: controller.updater)
+            GeneralGroup(settings: settings, controller: controller, updater: controller.updater)
         }
         .disabled(controller.busy)
     }
@@ -518,7 +518,7 @@ private struct ClipboardGroup: View {
     var body: some View {
         let on = settings.preferences.clipHistory
         SettingsGroup(tr("Clipboard history"), detail: history.entries.isEmpty ? "" : history.entries.count == 1 ? tr("1 item") : tr("%ld items", history.entries.count)) {
-            Row(tr("Keep what is copied"), info: tr("Text, images and files copied on this Mac are kept on this Mac, unencrypted. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.")) {
+            Row(tr("Keep what is copied"), info: tr("Text, images and files copied on this Mac are kept on this Mac, unencrypted. While Work across Macs is on, your other Macs in Multiple Macs keep them too (files by name alone), and this Mac keeps what is copied on them. Control + Option + C shows them over the app in front, and Return pastes the one chosen. Copied files also go on the Shelf, which the Macs in Multiple Macs share.")) {
                 Toggle(tr("Keep what is copied"), isOn: $settings.preferences.clipHistory).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             if on {
@@ -554,7 +554,7 @@ private struct ClipboardGroup: View {
             Divider()
             HStack(spacing: 6) {
                 if confirming {
-                    hint(tr("Remove every item but the pinned ones?"))
+                    hint(settings.sendsRemotely ? tr("Remove every item but the pinned ones, here and on your other Macs?") : tr("Remove every item but the pinned ones?"))
                     Spacer(minLength: 2)
                     Button(tr("Cancel")) { confirming = false }.buttonStyle(QuietButton())
                     Button(tr("Remove")) { history.clear(); confirming = false }.buttonStyle(SolidButton())
@@ -614,10 +614,26 @@ private struct DashboardGroup: View {
 
 private struct GeneralGroup: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var controller: DictationController
     @ObservedObject var updater: Updater
+
+    /// Whether the Monitor helper is on this Mac, and its version (user 2026-11-27).
+    private var helper: String {
+        switch controller.helperState {
+        case .checking: return tr("Checking…")
+        case .missing: return tr("Not installed on this Mac")
+        case .stopped: return tr("Installed on this Mac, not running")
+        case .noTunnel, .ready:
+            return controller.helperVersion.isEmpty ? tr("Installed on this Mac") : tr("Installed on this Mac · %@", controller.helperVersion)
+        }
+    }
 
     var body: some View {
         SettingsGroup(tr("General")) {
+            Row(tr("Monitor helper")) {
+                Text(helper).font(.system(size: 12)).foregroundStyle(Palette.muted).lineLimit(1).truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
             Row(tr("Language")) {
                 GlassMenu(label: tr("Language"), selection: $settings.preferences.language,
                           // Each language by its own name, the same in every language.

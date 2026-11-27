@@ -28,6 +28,18 @@ public struct ClipEntry: Codable, Identifiable, Equatable, Sendable {
     public var pinned = false
     /// What it holds, hashed: copying the same again brings this entry up instead of adding one.
     public var digest: String
+    /// The Mac it was copied on, when that is another of the owner's Macs (HistorySync): its key
+    /// in the list of Macs, and its name as that Mac gave it. Nil: this Mac.
+    public var origin: String?
+    public var originName: String?
+    /// When it last changed on any Mac (copied again, pasted from the history, pinned): of two
+    /// Macs that differ, the later change is kept.
+    public var updated: Date?
+
+    /// When it last changed, for comparing two Macs' copies of it.
+    public var changed: Date { updated ?? date }
+    /// Files copied on another Mac: only their names are here.
+    public var namesOnly: Bool { kind == .files && origin != nil }
 }
 
 /// What was copied on this Mac: text (with the formats it came in), images and files, kept in
@@ -87,6 +99,17 @@ public final class ClipboardHistory: ObservableObject {
     /// Told of each copy kept from the clipboard, a new one or one brought up again, with its files
     /// if it is files; not of an entry put back from the history.
     public var onKept: (@MainActor (ClipEntry, [URL]) -> Void)?
+
+    /// A change made here, for the owner's other Macs (HistorySync): an entry new here (`fresh`,
+    /// its copy to be sent along) or changed (copied again, pasted, pinned), entries removed, or the
+    /// history cleared up to a moment (pinned entries stay). Not told: what the limits let go, and
+    /// what came from another Mac.
+    public enum Change {
+        case upsert(ClipEntry, fresh: Bool)
+        case removed([UUID])
+        case cleared(Date)
+    }
+    public var announce: (@MainActor (Change) -> Void)?
     /// The app in front, which is taken to be the one the copy was made in.
     public var frontApp: @MainActor () -> (bundle: String, name: String)? = {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
@@ -190,20 +213,27 @@ public final class ClipboardHistory: ObservableObject {
         if let index = entries.firstIndex(where: { $0.digest == entry.digest }) {
             var known = entries.remove(at: index)
             known.date = now
+            known.updated = now
             if !app.bundle.isEmpty || !app.name.isEmpty { known.app = app.name; known.bundle = app.bundle }
-            write(payload, for: known.id)
+            // Copied here again: it is this Mac's copy now, with this Mac's formats.
+            let fresh = known.origin != nil
+            known.origin = nil; known.originName = nil
+            write(payload, for: known.id, picture: fresh && known.kind == .image ? Self.imageData(payload) : nil)
             known.bytes = entry.bytes
             entries.insert(known, at: 0)
             saveIndex()
+            announce?(.upsert(known, fresh: fresh))
             return known
         }
         entry.date = now
+        entry.updated = now
         entry.app = app.name
         entry.bundle = app.bundle
         write(payload, for: entry.id, picture: entry.kind == .image ? Self.imageData(payload) : nil)
         entries.insert(entry, at: 0)
         prune(now: now)
         saveIndex()
+        if entries.contains(where: { $0.id == entry.id }) { announce?(.upsert(entry, fresh: true)) }
         return entry
     }
 
@@ -368,15 +398,20 @@ public final class ClipboardHistory: ObservableObject {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         var entry = entries.remove(at: index)
         entry.date = now
+        entry.updated = now
         entries.insert(entry, at: 0)
         saveIndex()
+        announce?(.upsert(entry, fresh: false))
     }
 
     public func pin(_ id: UUID, _ on: Bool) {
         guard let index = entries.firstIndex(where: { $0.id == id }), entries[index].pinned != on else { return }
         entries[index].pinned = on
+        entries[index].updated = Date()
+        let entry = entries[index]
         if !on { prune(now: Date()) }
         saveIndex()
+        announce?(.upsert(entry, fresh: false))
     }
 
     public func remove(_ id: UUID) {
@@ -384,15 +419,159 @@ public final class ClipboardHistory: ObservableObject {
         entries.remove(at: index)
         forget([id])
         saveIndex()
+        announce?(.removed([id]))
     }
 
     /// Removes every entry but the pinned ones, or every one.
-    public func clear(pinnedToo: Bool = false) {
+    public func clear(pinnedToo: Bool = false, at now: Date = Date()) {
         let gone = entries.filter { pinnedToo || !$0.pinned }.map(\.id)
         guard !gone.isEmpty else { return }
         entries.removeAll { pinnedToo || !$0.pinned }
         forget(gone)
         saveIndex()
+        announce?(pinnedToo ? .removed(gone) : .cleared(now))
+    }
+
+    // MARK: From the owner's other Macs (HistorySync)
+
+    /// What this Mac keeps of a copy, as it is stored: its formats. Nil for files copied on another
+    /// Mac, which are kept by name alone.
+    public func storedCopy(_ id: UUID) -> Data? {
+        let url = payloadURL(id)
+        return io.sync { try? Data(contentsOf: url) }
+    }
+
+    /// The same, opened to be read a piece at a time (for another Mac), and its size; once what is
+    /// being written of it is written.
+    public func storedCopyFile(_ id: UUID) -> (handle: FileHandle, size: Int)? {
+        let url = payloadURL(id)
+        return io.sync {
+            guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 0,
+                  let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            return (handle, size)
+        }
+    }
+
+    /// The oldest copy that would still be kept here, by its date: one older than this, unless it
+    /// is pinned, goes at once (the days, or the limit when it is reached).
+    public var horizon: Date {
+        let policy = lastPolicy ?? self.policy()
+        var oldest = Date.distantPast
+        if policy.days > 0 { oldest = Date().addingTimeInterval(-Double(policy.days) * 86_400) }
+        let unpinned = entries.filter { !$0.pinned }
+        if unpinned.count >= policy.limit, let last = unpinned.last { oldest = max(oldest, last.date) }
+        return oldest
+    }
+
+    /// What taking a copy from another Mac did here.
+    public enum Taken: Equatable {
+        /// Nothing: this Mac has it as it is, or a later change of it, or does not keep it.
+        case nothing
+        /// Kept, or changed as the other Mac changed it.
+        case kept(ClipEntry)
+        /// The same copy was here under another identifier: of the two, the one with the smaller
+        /// identifier is kept, on every Mac, and `dropped` is the other, to be removed everywhere.
+        case merged(ClipEntry, dropped: UUID)
+    }
+
+    /// Takes a copy made or changed on another Mac. `stored`: its formats as that Mac keeps them
+    /// (`storedCopy`), needed for one this Mac does not have yet, and not for files, which are kept
+    /// by name alone. A copy whose formats do not hold what its entry says is not kept.
+    public func take(_ incoming: ClipEntry, stored: Data?, now: Date = Date()) -> Taken {
+        var incoming = incoming
+        if incoming.kind == .files { incoming.preview = String(incoming.preview.prefix(Self.previewLength)) }
+        if let index = entries.firstIndex(where: { $0.id == incoming.id }) {
+            guard incoming.changed > entries[index].changed else { return .nothing }
+            var entry = entries.remove(at: index)
+            entry.date = incoming.date; entry.updated = incoming.updated; entry.pinned = incoming.pinned
+            entry.app = incoming.app; entry.bundle = incoming.bundle
+            // Copied again on another Mac: the label says that Mac. Files stay this Mac's if they are here.
+            if !(entry.kind == .files && entry.origin == nil) { entry.origin = incoming.origin; entry.originName = incoming.originName }
+            place(entry)
+            return entries.contains(where: { $0.id == entry.id }) ? .kept(entry) : .nothing
+        }
+        // Not kept here at all: past the days or the limit, or larger than this Mac keeps.
+        guard incoming.pinned || incoming.date > horizon, incoming.bytes <= Self.itemMax + (1 << 20) else { return .nothing }
+        if incoming.kind != .files, let index = entries.firstIndex(where: { $0.digest == incoming.digest && $0.kind == incoming.kind }) {
+            // The same copy made on two Macs: one entry, under the smaller identifier everywhere, with the
+            // later one's date, app and Mac (of two at the same moment, the smaller identifier's), and a
+            // version later than either, so that a Mac holding one of the two takes the merged one.
+            var known = entries.remove(at: index)
+            let later = incoming.changed > known.changed
+                || (incoming.changed == known.changed && incoming.id.uuidString < known.id.uuidString)
+            let keepsMine = known.id.uuidString < incoming.id.uuidString
+            let dropped = keepsMine ? incoming.id : known.id
+            if !keepsMine {
+                let old = known.id
+                known.id = incoming.id
+                move(from: old, to: known.id)
+            }
+            if later {
+                known.date = incoming.date; known.app = incoming.app; known.bundle = incoming.bundle
+                known.origin = incoming.origin; known.originName = incoming.originName
+            }
+            known.pinned = known.pinned || incoming.pinned
+            known.updated = max(known.changed, incoming.changed).addingTimeInterval(0.001)
+            place(known)
+            return .merged(known, dropped: dropped)
+        }
+        if incoming.kind == .files {
+            // Their names alone: the files are on the Mac they were copied on.
+            guard incoming.origin != nil else { return .nothing }
+            incoming.bytes = 0
+            place(incoming)
+            return entries.contains(where: { $0.id == incoming.id }) ? .kept(incoming) : .nothing
+        }
+        guard let stored, let payload = Self.decode(stored), let described = Self.describe(payload),
+              described.kind == incoming.kind, described.digest == incoming.digest else { return .nothing }
+        incoming.bytes = described.bytes
+        let url = payloadURL(incoming.id), small = thumbnailURL(incoming.id)
+        let picture = incoming.kind == .image ? Self.imageData(payload) : nil
+        io.async {
+            Self.save(stored, to: url)
+            if let picture, let thumbnail = Self.thumbnail(picture) { Self.save(thumbnail, to: small) }
+        }
+        place(incoming)
+        return entries.contains(where: { $0.id == incoming.id }) ? .kept(incoming) : .nothing
+    }
+
+    /// Removes entries another Mac removed. Nothing is told back.
+    public func drop(_ ids: Set<UUID>) {
+        let gone = entries.filter { ids.contains($0.id) }.map(\.id)
+        guard !gone.isEmpty else { return }
+        entries.removeAll { ids.contains($0.id) }
+        forget(gone)
+        saveIndex()
+    }
+
+    /// Removes what another Mac cleared: every entry but the pinned ones, last changed by `moment`
+    /// (one unpinned or copied again since stays).
+    public func drop(clearedAt moment: Date) {
+        let gone = entries.filter { !$0.pinned && $0.changed <= moment }.map(\.id)
+        guard !gone.isEmpty else { return }
+        entries.removeAll { !$0.pinned && $0.changed <= moment }
+        forget(gone)
+        saveIndex()
+    }
+
+    /// Puts an entry in its place by date, then lets go of what is past the limits.
+    private func place(_ entry: ClipEntry) {
+        entries.removeAll { $0.id == entry.id }
+        let index = entries.firstIndex(where: { $0.date < entry.date }) ?? entries.endIndex
+        entries.insert(entry, at: index)
+        prune(now: Date())
+        saveIndex()
+    }
+
+    /// An entry's kept copy and thumbnail, under another identifier.
+    private func move(from old: UUID, to new: UUID) {
+        let pairs = [(payloadURL(old), payloadURL(new)), (thumbnailURL(old), thumbnailURL(new))]
+        io.async {
+            for (from, to) in pairs where FileManager.default.fileExists(atPath: from.path) {
+                try? FileManager.default.removeItem(at: to)
+                try? FileManager.default.moveItem(at: from, to: to)
+            }
+        }
     }
 
     /// Lets go of what is past the limit, the days or the space; pinned entries stay.
@@ -465,7 +644,7 @@ public final class ClipboardHistory: ObservableObject {
         let files = FileManager.default
         let names = (try? files.contentsOfDirectory(atPath: directory.path)) ?? []
         if let data = try? Data(contentsOf: indexURL), let index = try? JSONDecoder().decode(Index.self, from: data) {
-            entries = index.entries.filter { files.fileExists(atPath: payloadURL($0.id).path) }.sorted { $0.date > $1.date }
+            entries = index.entries.filter { $0.namesOnly || files.fileExists(atPath: payloadURL($0.id).path) }.sorted { $0.date > $1.date }
         } else {
             entries = names.compactMap { name -> ClipEntry? in
                 guard (name as NSString).pathExtension == "clip", let id = UUID(uuidString: (name as NSString).deletingPathExtension),

@@ -332,6 +332,8 @@ public final class ShelfSync {
         /// The Mac at the other end reads the card flag (0.1.59 and later): an image or a file of
         /// any size goes to it as a card. One that does not gets a small one whole, as before.
         var takesCards = false
+        /// The Mac at the other end keeps History in step over this link too (HistorySync).
+        var takesHistory = false
         /// The file currently being sent for each item. A serve that is no longer the one listed
         /// here was cancelled or replaced, and stops at its next chunk.
         var serving: [UUID: Serve] = [:]
@@ -347,6 +349,17 @@ public final class ShelfSync {
     private enum Job {
         case item(ShelfItem), remove(UUID), availability
         case fetch(UUID, Int), cancel(UUID), refuse(UUID, String), serve(Serve)
+        case other(LinkWork)
+    }
+
+    /// Something another part of out sends over a link, a frame or a few at a time: `step` writes
+    /// what it has next and says whether there is more, and goes to the back of the queue between
+    /// steps, as a file being served does.
+    public final class LinkWork {
+        let step: @MainActor (_ write: @MainActor ([String: Any]) async throws -> Void) async throws -> Bool
+        public init(_ step: @escaping @MainActor (_ write: @MainActor ([String: Any]) async throws -> Void) async throws -> Bool) {
+            self.step = step
+        }
     }
     private struct Incoming {
         let item: ShelfItem
@@ -390,6 +403,13 @@ public final class ShelfSync {
     public var onTransfer: (() -> Void)?
     /// Why the last fetch of an item did not finish.
     public private(set) var failures: [UUID: String] = [:]
+    /// History over the same links (HistorySync): a link to a Mac that keeps it in step came up (by
+    /// that Mac's key), one went, and a History frame arrived on one.
+    public var onHistoryLink: ((String) -> Void)?
+    public var onHistoryUnlink: ((String) -> Void)?
+    public var onHistoryFrame: (([String: Any], String) -> Void)?
+    /// The Macs linked now that keep History in step, by key.
+    public var historyKeys: [String] { links.filter { $0.alive && $0.takesHistory }.map(\.key) }
 
     public init(store: ShelfStore, name: String) {
         self.store = store; self.name = name
@@ -411,7 +431,7 @@ public final class ShelfSync {
     }
 
     private func greeting() -> [String: Any] {
-        ["shelf": "hello", "have": store.items.map(\.id.uuidString), "gone": store.gone.map(\.uuidString), "cards": true]
+        ["shelf": "hello", "have": store.items.map(\.id.uuidString), "gone": store.gone.map(\.uuidString), "cards": true, "history": true]
     }
 
     private static func ids(_ value: Any?) -> Set<UUID> {
@@ -452,9 +472,11 @@ public final class ShelfSync {
         deadline.cancel()
         let link = Link(channel, dialled: true)
         link.takesCards = reply["cards"] as? Bool == true
+        link.takesHistory = reply["history"] as? Bool == true
         guard settle(link) else { return }
         listen(link)
         reconcile(link, have: Self.ids(reply["have"]), gone: Self.ids(reply["gone"]))
+        if link.takesHistory { onHistoryLink?(link.key) }
     }
 
     /// A trusted Mac called and said a shelf hello. Returns the reply; from then on the connection
@@ -464,12 +486,14 @@ public final class ShelfSync {
         reply["ok"] = true
         let link = Link(channel, dialled: false)
         link.takesCards = hello["cards"] as? Bool == true
+        link.takesHistory = hello["history"] as? Bool == true
         let have = Self.ids(hello["have"]), gone = Self.ids(hello["gone"])
         // After this turn, so that the reply is on the wire before anything else.
         Task { @MainActor [weak self] in
             guard let self, self.settle(link) else { return }
             self.listen(link)
             self.reconcile(link, have: have, gone: gone)
+            if link.takesHistory { self.onHistoryLink?(link.key) }
         }
         return reply
     }
@@ -550,6 +574,8 @@ public final class ShelfSync {
                     case .cancel(let id): try await self.write(link, ["shelf": "cancel", "id": id.uuidString])
                     case .refuse(let id, let message): try await self.write(link, ["shelf": "nofile", "id": id.uuidString, "message": message])
                     case .serve(let serve): try await self.serve(serve, over: link)
+                    case .other(let work):
+                        if try await work.step({ try await self.write(link, $0) }) { link.jobs.append(.other(work)) }
                     }
                 } catch { self.drop(link); return }
             }
@@ -602,7 +628,8 @@ public final class ShelfSync {
     private func listen(_ link: Link) {
         Task { @MainActor [weak self] in
             while link.alive, let body = try? await link.channel.readBody() {
-                guard let self else { return }
+                // A link replaced while it was reading: what it read is not the new link's.
+                guard let self, link.alive else { return }
                 if let (id, data) = RemoteWire.raw(body) { self.receive(data, of: id, from: link) }
                 else if let frame = try? RemoteWire.object(body) { self.handle(frame, from: link) }
             }
@@ -610,7 +637,21 @@ public final class ShelfSync {
         }
     }
 
+    /// Queues work for the link to the Mac with this key, if it keeps History in step. False when
+    /// there is no such link now.
+    @discardableResult
+    public func send(_ work: LinkWork, to key: String) -> Bool {
+        guard let link = links.first(where: { $0.key == key && $0.alive && $0.takesHistory }) else { return false }
+        link.jobs.append(.other(work))
+        pump(link)
+        return true
+    }
+
     private func handle(_ frame: [String: Any], from link: Link) {
+        if frame["history"] != nil {
+            if link.takesHistory { onHistoryFrame?(frame, link.key) }
+            return
+        }
         if frame["shelf"] as? String == "has" {
             link.holds = Self.ids(frame["holds"]); link.offers = Self.ids(frame["offers"])
             tellAvailability()
@@ -706,6 +747,7 @@ public final class ShelfSync {
         link.serving.removeAll()
         link.jobs.removeAll()
         links.removeAll { $0 === link }
+        if link.takesHistory { onHistoryUnlink?(link.key) }
         for (id, fetch) in fetches where fetch.link === link { fail(id, tr("The connection was interrupted. What arrived is kept; click to continue the transfer.")) }
         for id in Array(waitingForFetch.keys) { waitingForFetch[id]?.removeAll { $0.0 === link } }
         onStatus?()

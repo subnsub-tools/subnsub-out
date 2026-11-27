@@ -110,6 +110,21 @@ final class DictationController: ObservableObject {
     private var clock: Task<Void, Never>?
     private var audioFile: RecordedAudio?
     private var entry: HistoryEntry?
+    /// History in step with the owner's other Macs (HistorySync).
+    private var historySync: HistorySync?
+    /// The Monitor helper's version on this Mac, as it last said; empty when it is not answering.
+    @Published private(set) var helperVersion = ""
+
+    /// Which Mac a History record is from, for its row (user 2026-11-27: this Mac, or the other Mac by
+    /// name, after the time): shown while History is kept in step with other Macs, or when the
+    /// record came from one. Another Mac goes by its name on the Monitor page, else the one it gave.
+    func sourceLabel(_ origin: String?, _ name: String?) -> String? {
+        guard origin != nil || settings.sendsRemotely else { return nil }
+        // This Mac's own records, come back from another Mac before this one knew its own key.
+        guard let origin, origin != historySync?.selfKey else { return tr("This Mac") }
+        if let device = settings.preferences.devices.first(where: { $0.key == origin }) { return device.label }
+        return name.flatMap { $0.isEmpty ? nil : $0 } ?? tr("Unnamed Mac")
+    }
     private var connectionError: Error?
     private let network = NWPathMonitor()
     private var retryJob: Task<Void, Never>?
@@ -293,6 +308,21 @@ final class DictationController: ObservableObject {
         // helper knows them: they go before anything dials them.
         if !settings.preview { settings.preferences.devices.removeAll { HelperLink.agent(of: $0.host) == nil } }
         receiver.shelf = shelf.sync
+        // History in step on the owner's Macs, over the Shelf's links (user 2026-11-27).
+        if let sync = shelf.sync, !settings.preview {
+            let history = HistorySync(shelf: sync, clipboard: clipboard, voice: HistorySync.Voice(
+                entries: { [weak settings] in settings?.history ?? [] },
+                horizon: { [weak settings] in settings?.historyHorizon ?? .distantPast },
+                take: { [weak settings] entry in settings?.takeHistory(entry) ?? false },
+                drop: { [weak settings] ids in settings?.dropHistory(ids) },
+                dropCleared: { [weak settings] moment in settings?.dropHistory(clearedAt: moment) }),
+                stateURL: support.appendingPathComponent("history-sync.json"))
+            history.keepsCopies = { [weak settings] in settings?.preferences.clipHistory ?? false }
+            history.sharing = { [weak settings] in settings?.sendsRemotely ?? false }
+            history.selfName = deviceName
+            settings.historyChanged = { [weak history] change in history?.voiceChanged(change) }
+            historySync = history
+        }
         updater.isBusy = { [weak self] in self.map { $0.busy || $0.starting || $0.retryingID != nil } ?? false }
         // Whatever is a file in History is on the Shelf too (user 2026-11-27).
         clipboard.onKept = { [weak self] entry, files in
@@ -331,6 +361,8 @@ final class DictationController: ObservableObject {
         picker.isOn = { [weak settings] in settings?.preferences.clipHistory ?? false }
         picker.onTurnOn = { [weak settings] in settings?.preferences.clipHistory = true }
         picker.onType = { [weak self] in self?.typeClipboard(from: .shortcut) }
+        picker.model.source = { [weak self] entry in self?.sourceLabel(entry.origin, entry.originName) }
+        picker.model.syncing = { [weak settings] in settings?.sendsRemotely ?? false }
         picker.onShelf = { [weak self] entry in
             guard let self else { return }
             self.shelf.put(entry, from: self.clipboard)
@@ -432,6 +464,10 @@ final class DictationController: ObservableObject {
                 self.warnMicrophone(tr("The locked microphone “%@” was disconnected. out does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
             }
         }.store(in: &microphoneSubscriptions)
+        // The clipboard history turned on or off: the other Macs are told whether copies go both ways.
+        settings.$preferences.map(\.clipHistory).removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.historySync?.refresh() }
+        }.store(in: &microphoneSubscriptions)
         // A binding made or changed by hand starts from what is connected now.
         settings.$preferences.map(\.microphone).removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] uid in
             MainActor.assumeIsolated {
@@ -494,8 +530,9 @@ final class DictationController: ObservableObject {
         shelf.sync?.maintain(devices: settings.preferences.linkEnabled && identity != nil ? settings.preferences.devices : [])
         refreshHelper()
         clipboard.start()
-        historyFeed.start(entries: { [weak self] in self?.settings.history ?? [] },
-                          copies: { [weak self] in self?.clipboard.entries ?? [] },
+        // This Mac's own records: each Mac answers the Dashboard for itself, though History is in step.
+        historyFeed.start(entries: { [weak self] in self?.settings.history.filter { $0.origin == nil } ?? [] },
+                          copies: { [weak self] in self?.clipboard.entries.filter { $0.origin == nil } ?? [] },
                           shared: { [weak self] in self?.settings.preferences.showOnDashboard ?? false })
         retryQueued()
     }
@@ -546,8 +583,19 @@ final class DictationController: ObservableObject {
 
     private func receive(_ request: RemoteReceiver.Request) async throws -> DeliveryOutcome {
         if !request.text.isEmpty && request.field == nil {
-            do { try settings.addHistory(HistoryEntry(text: request.text, mode: request.mode, seconds: request.seconds)) }
-            catch { settings.historyMessage = tr("Text from another Mac was received but could not be saved to History on this Mac. Check the disk space.") }
+            // The sending Mac's record of it, under the same identifier and named after that Mac: with
+            // History in step, the two are one record.
+            var record = HistoryEntry(text: request.text, mode: request.mode, seconds: request.seconds)
+            if !request.fromKey.isEmpty { record.origin = request.fromKey; record.originName = request.from }
+            // That Mac's own record, which it keeps in step itself: this one stands in for it until it
+            // comes, dated as it is, and gives way to it.
+            let standIn = request.entry != nil
+            if let same = request.entry { record.id = same; record.date = request.entryDate ?? record.date; record.updated = record.date }
+            // Already here, from that Mac through History in step: not kept twice.
+            if !settings.history.contains(where: { $0.id == record.id }) {
+                do { try settings.addHistory(record, announce: !standIn) }
+                catch { settings.historyMessage = tr("Text from another Mac was received but could not be saved to History on this Mac. Check the disk space.") }
+            }
         }
         let id = UUID()
         // New text, not a field rewritten or a deletion: the panel's Received card, and this Mac's
@@ -661,7 +709,14 @@ final class DictationController: ObservableObject {
             self.helperAsking = false
             if let roster, !roster.tunnel { next = .noTunnel }
             if self.helperState != next { self.helperState = next }
-            if let roster { self.shelf.sync?.selfID = HelperLink.id(roster.agent) }
+            let version = roster?.version ?? ""
+            if self.helperVersion != version { self.helperVersion = version }
+            if let roster {
+                self.shelf.sync?.selfID = HelperLink.id(roster.agent)
+                // What the other Macs know this one by, so its own records coming back are its own.
+                self.historySync?.selfKey = HelperLink.id(roster.agent)
+                if !roster.name.isEmpty { self.historySync?.selfName = roster.name }
+            }
             // Without an answer the helper is not there to make a link either.
             self.shelf.helperSaid(linkable: roster?.host ?? false)
             // A helper that is down for a moment keeps the Macs it named; one that is not there has none.
@@ -1012,7 +1067,7 @@ final class DictationController: ObservableObject {
             let kind = field != nil ? "a field's new content" : replace != nil ? "a replacement for the last text" : "text"
             Trace.note("send: sending \(kind) to \(name), \(text.count) characters")
             let started = Date()
-            do { reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field, clipboardOnly: clipboardOnly) }
+            do { reply = try await session.send(to: target, text: text, mode: mode, seconds: seconds, replace: replace, field: field, clipboardOnly: clipboardOnly, entry: entry?.id, entryDate: entry?.date) }
             catch let refusal as RemoteRefusal {
                 Trace.note("send: \(name) did not type it (\(refusal.miss.rawValue)) after \(Trace.ms(since: started)) ms\(refusal.onClipboard ? ", on its clipboard" : "")")
                 throw refusal

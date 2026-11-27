@@ -665,29 +665,65 @@ final class SettingsStore: ObservableObject {
         return recording
     }
 
-    func addHistory(_ entry: HistoryEntry) throws {
+    /// Each change to the voice records made here, for the owner's other Macs (HistorySync).
+    var historyChanged: ((HistorySync.VoiceChange) -> Void)?
+
+    /// `announce`: told to the other Macs, stamped as changed now; not when it stands in for another
+    /// Mac's record of the same text, which that Mac keeps in step itself.
+    func addHistory(_ entry: HistoryEntry, announce: Bool = true) throws {
         guard let archive else { throw VoiceError(tr("The local history folder is not available.")) }
+        var entry = entry
+        if announce { entry.updated = Date() }
         defer { history = archive.entries }
         try archive.add(entry)
+        if announce { historyChanged?(.upsert(entry)) }
     }
 
     func updateHistory(_ entry: HistoryEntry) throws {
         guard let archive else { throw VoiceError(tr("The local history folder is not available.")) }
+        var entry = entry
+        if entry.state == .completed { entry.updated = Date() }
         defer { history = archive.entries }
         try archive.update(entry)
+        if entry.state == .completed { historyChanged?(.upsert(entry)) }
     }
 
     func clearHistory() {
         guard let archive else { return }
+        let moment = Date()
         do { try archive.clear(); historyMessage = "" }
         catch { historyMessage = tr("Some records or audio could not be removed. Check file permissions and try again.") }
         history = archive.entries
+        historyChanged?(.cleared(moment))
     }
 
     func removeHistory(id: UUID) {
         guard let archive else { return }
         do { try archive.remove(id); historyMessage = "" }
-        catch { historyMessage = tr("This record could not be deleted. Check file permissions and try again.") }
+        catch { historyMessage = tr("This record could not be deleted. Check file permissions and try again."); history = archive.entries; return }
+        history = archive.entries
+        historyChanged?(.removed(id))
+    }
+
+    // MARK: From the owner's other Macs (HistorySync): nothing is told back.
+
+    var historyHorizon: Date { archive?.horizon ?? .distantPast }
+
+    func takeHistory(_ entry: HistoryEntry) -> Bool {
+        guard let archive else { return false }
+        defer { history = archive.entries }
+        return (try? archive.take(entry)) ?? false
+    }
+
+    func dropHistory(_ ids: Set<UUID>) {
+        guard let archive else { return }
+        try? archive.drop(ids)
+        history = archive.entries
+    }
+
+    func dropHistory(clearedAt moment: Date) {
+        guard let archive else { return }
+        try? archive.drop(clearedAt: moment)
         history = archive.entries
     }
 

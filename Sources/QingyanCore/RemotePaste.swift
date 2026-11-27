@@ -839,9 +839,14 @@ public final class RemoteSession {
     /// `replace`: the text this Mac sent there last, which the new text takes the place of.
     /// `field`: the whole content of that Mac's text field as it was read; `text` is its new content.
     /// `clipboardOnly`: for that Mac's clipboard, not typed (no Mac claimed the knock; `fallback`).
+    /// `entry`: this Mac's History record of the dictation, whose identifier the other Mac gives its
+    /// own record of it, so that the two are one when History is kept in step (HistorySync).
     public func send(to index: Int, text: String, mode: WritingMode, seconds: Double, replace: String? = nil,
-                     field: String? = nil, clipboardOnly: Bool = false, timeout: TimeInterval = 8) async throws -> SendReply {
+                     field: String? = nil, clipboardOnly: Bool = false, entry: UUID? = nil, entryDate: Date? = nil,
+                     timeout: TimeInterval = 8) async throws -> SendReply {
         var request: [String: Any] = ["text": text, "mode": mode.rawValue, "seconds": seconds]
+        if let entry { request["entry"] = entry.uuidString }
+        if let entryDate, entryDate.timeIntervalSince1970.isFinite { request["entryAt"] = entryDate.timeIntervalSince1970 }
         if let replace { request["replace"] = replace }
         if let field { request["field"] = field }
         if clipboardOnly {
@@ -950,6 +955,11 @@ public final class RemoteReceiver {
         public var from = ""
         /// For the clipboard here alone, not typed: no Mac claimed the sender's knock.
         public var clipboardOnly = false
+        /// The sending Mac's key in the list of Macs, and its History record of this text (with when
+        /// it was recorded).
+        public var fromKey = ""
+        public var entry: UUID?
+        public var entryDate: Date?
     }
 
     /// Another Mac asks to be trusted. Shown to the user, who calls `answer` once.
@@ -1423,8 +1433,12 @@ public final class RemoteReceiver {
                               // As the capsule names it (knocked).
                               from: !device.name.isEmpty ? device.name : channel.peerName.isEmpty ? device.label : channel.peerName,
                               clipboardOnly: clipboardOnly)
+        var sent = request
+        sent.fromKey = device.key
+        sent.entry = (object["entry"] as? String).flatMap(UUID.init(uuidString:))
+        sent.entryDate = (object["entryAt"] as? Double).flatMap { $0.isFinite ? Date(timeIntervalSince1970: $0) : nil }
         do {
-            let outcome = try await deliver?(request) ?? ""
+            let outcome = try await deliver?(sent) ?? ""
             Trace.note("receive: \(outcome.miss.map { "not typed (\($0.rawValue))" } ?? "typed") after \(Trace.ms(since: started)) ms\(outcome.onClipboard ? ", on the clipboard" : "")")
             // Said either way, so that the sending Mac never has to guess from the words.
             var reply: [String: Any] = ["ok": true, "message": outcome.message, "clipboard": outcome.onClipboard]
