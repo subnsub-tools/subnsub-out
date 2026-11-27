@@ -948,7 +948,9 @@ struct MainView: View {
 
     private var header: some View {
         // Buttons alone: no name and no dot (user 2026-11-23). The first shrinks the panel into the
-        // bar; a window going to a corner, not a pin, since the bar is what it is for.
+        // bar; a window going to a corner, not a pin, since the bar is what it is for. One gap between
+        // all four, the row's own (user 2026-11-27): extra space left before two of them by buttons
+        // since removed made the gaps 11, 8 and 5.
         HStack(spacing: 5) {
             Spacer(minLength: 4)
             HeaderIconButton(
@@ -968,8 +970,6 @@ struct MainView: View {
                 controller.typeClipboard(from: .panel)
             }
             .disabled(controller.busy)
-            .padding(.leading, 3)
-            .padding(.leading, 3)
             HeaderIconButton(
                 symbol: PanelSection.history.symbol,
                 active: settings.historyOpen,
@@ -978,7 +978,6 @@ struct MainView: View {
             ) {
                 settings.toggleHistory()
             }
-            .padding(.leading, 3)
             HeaderIconButton(
                 symbol: "gearshape",
                 active: settings.page == .settings,
