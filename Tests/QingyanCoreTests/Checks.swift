@@ -122,6 +122,8 @@ struct Checks {
         }
         do { try clipboard(); print("PASS Native pasteboard: rich content, rapid pastes, newer user copy, text kept for ⌘V") }
         catch { failed += 1; print("FAIL Clipboard: \(error.localizedDescription)") }
+        do { try await copiesFromHistory(); print("PASS Copies from History: a copy leaves the order as it is, text out copies from History is not kept (also once a waiting paste is settled), a copy made right after it is") }
+        catch { failed += 1; print("FAIL Copies from History: \(error.localizedDescription)") }
         do { try clipboardHistory(); print("PASS Clipboard history: kept with its app, the same again brought up, concealed / transient / password managers / apps named / paused / out's own left out, the source an app names, copied just before resuming, turning on or switching apps, links told apart, pictures and files, limit and days with pinned ones kept, search, back in all formats or as plain text, restart, an index that cannot be read, Clear") }
         catch { failed += 1; print("FAIL Clipboard history: \(error.localizedDescription)") }
         do { try await watchedClipboard(); print("PASS Watched paste: an app that takes the text confirms it and the clipboard comes back; not taken, the text stays; a newer copy is left alone") }
@@ -2310,6 +2312,46 @@ struct Checks {
     }
 
     /// The clipboard history, on a clipboard of its own and a folder of its own.
+    /// Text out copies from History itself is not kept as a copy, whenever it reaches the clipboard,
+    /// and a copy made right after it is (user 2026-11-27: copying from History changes nothing there).
+    @MainActor static func copiesFromHistory() async throws {
+        let board = NSPasteboard(name: .init("local.hopo.qingyan.test.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("qy-clip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let lease = PasteboardLease(board: board)
+        let history = ClipboardHistory(directory: folder, board: board)
+        history.frontApp = { ("com.apple.Notes", "Notes") }
+        history.isOwn = { lease.isTemporary($0) }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var tick = 0.0
+        func look() { tick += 1; history.check(now: start.addingTimeInterval(tick)) }
+        func copy(_ text: String) { board.clearContents(); board.setString(text, forType: .string) }
+        copy("Older note"); look()
+        copy("Newer note"); look()
+        let order = history.entries.map(\.id)
+        let older = try unwrap(history.entries.last, "the older note")
+        try check(history.put(older, bringUp: false), "the older note goes on the clipboard")
+        look()
+        try check(history.entries.map(\.id) == order, "copied from History, it stays where it is")
+        lease.keep("Words spoken earlier", unrecorded: true)
+        look()
+        try check(history.entries.map(\.id) == order && board.string(forType: .string) == "Words spoken earlier",
+                  "a voice record's text copied in History is on the clipboard and not kept as a copy")
+        copy("Copied right after"); look()
+        try check(history.entries.first?.preview == "Copied right after", "a copy made right after it is kept")
+        // Copied while an earlier paste waits for an app to take its text: written once that paste is
+        // settled, and still not kept.
+        let count = history.entries.count
+        let waiting = Task { @MainActor in await lease.supplyWatched("Being pasted", wait: 0.3) {} }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        lease.keep("Words spoken later", unrecorded: true)
+        _ = await waiting.value
+        look()
+        try check(board.string(forType: .string) == "Words spoken later" && history.entries.count == count,
+                  "text kept while a paste waited is written after it, and not kept as a copy")
+    }
+
     @MainActor static func clipboardHistory() throws {
         let board = NSPasteboard(name: .init("local.hopo.qingyan.test.\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
@@ -2438,6 +2480,12 @@ struct Checks {
         try check(history.put(files, plain: true, at: start.addingTimeInterval(16))
                   && (board.string(forType: .string) ?? "").components(separatedBy: "\n").map { ($0 as NSString).lastPathComponent } == ["a.txt", "b.pdf"],
                   "files as plain text: their paths")
+        // Copied from History or its window: on the clipboard, and left where it is (user 2026-11-27).
+        let order = history.entries.map(\.id)
+        let last = try unwrap(history.entries.last, "an entry at the bottom")
+        try check(history.put(last, bringUp: false, at: start.addingTimeInterval(16.5)), "a copy goes on the clipboard")
+        history.check(now: start.addingTimeInterval(16.5))
+        try check(history.entries.map(\.id) == order, "and nothing moves")
         // Days, then a restart: what is kept is read back, a file no entry names is let go.
         policy.days = 1
         history.check(now: start.addingTimeInterval(86_400 + 13.5))

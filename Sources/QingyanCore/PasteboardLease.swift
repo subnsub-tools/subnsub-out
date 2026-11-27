@@ -11,7 +11,7 @@ public final class PasteboardLease {
     /// While a watched paste waits for an app to take its text: the clipboard's change count then,
     /// and text that `keep` was given meanwhile, which waits until that paste is settled.
     private var watched: Int?
-    private var keptDuring: String?
+    private var keptDuring: (text: String, unrecorded: Bool)?
     /// The clipboard's change counts after out put something there for a moment (a paste's text,
     /// what comes back after it), newest last: the clipboard history leaves those out.
     private var temporary: [Int] = []
@@ -103,7 +103,7 @@ public final class PasteboardLease {
         if promise.taken {
             // Text kept meanwhile comes back in place of what the clipboard held, as `keep` does;
             // else, for a keeping paste, its own text.
-            if let kept { snapshot = [[(.string, Data(kept.utf8))]] } else if keep { snapshot = [[(.string, Data(text.utf8))]] }
+            if let kept { snapshot = [Self.values(kept.text, unrecorded: kept.unrecorded)] } else if keep { snapshot = [[(.string, Data(text.utf8))]] }
             let left = max(0, hold - Date().timeIntervalSince(start))
             restoration = Task { [weak self] in
                 do { try await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000)) } catch { return }
@@ -112,8 +112,8 @@ public final class PasteboardLease {
             return .taken
         }
         snapshot = nil; writtenCount = nil
-        board.clearContents()
-        board.setString(kept ?? text, forType: .string)
+        if let kept { write(kept.text, unrecorded: kept.unrecorded) }
+        else { board.clearContents(); board.setString(text, forType: .string) }
         return kept == nil ? .left : .superseded
     }
 
@@ -124,17 +124,35 @@ public final class PasteboardLease {
     /// so ⌘V has to produce it. What the clipboard held before is not brought back.
     /// No keystroke follows this one — so while an earlier paste is still on its way, the
     /// clipboard is left to it, and `text` takes the place of what would have come back.
-    public func keep(_ text: String) {
+    /// `unrecorded`: written with `unrecordedType`, so that out's clipboard history does not keep it
+    /// as a copy (a voice record's text copied in History, user 2026-11-27: copying from History
+    /// changes nothing there), whenever it is written: now, or once an earlier paste is settled.
+    public func keep(_ text: String, unrecorded: Bool = false) {
         // A watched paste is waiting for an app to take its text: the clipboard is its until then.
-        if let watched, board.changeCount == watched { keptDuring = text; return }
+        if let watched, board.changeCount == watched { keptDuring = (text, unrecorded); return }
         if restoration != nil, snapshot != nil, board.changeCount == writtenCount {
-            snapshot = [[(.string, Data(text.utf8))]]
+            snapshot = [Self.values(text, unrecorded: unrecorded)]
             return
         }
         restoration?.cancel(); restoration = nil
         snapshot = nil; writtenCount = nil
+        write(text, unrecorded: unrecorded)
+    }
+
+    /// Marks what out writes that its clipboard history is not to keep (ClipboardHistory leaves out
+    /// every copy holding it). Private to out: other apps see the text alone.
+    public static let unrecordedType = NSPasteboard.PasteboardType("local.hopo.qingyan.unrecorded")
+
+    private static func values(_ text: String, unrecorded: Bool) -> [(NSPasteboard.PasteboardType, Data)] {
+        unrecorded ? [(.string, Data(text.utf8)), (unrecordedType, Data())] : [(.string, Data(text.utf8))]
+    }
+
+    private func write(_ text: String, unrecorded: Bool) {
         board.clearContents()
-        board.setString(text, forType: .string)
+        guard unrecorded else { board.setString(text, forType: .string); return }
+        let item = NSPasteboardItem()
+        for (type, data) in Self.values(text, unrecorded: true) { item.setData(data, forType: type) }
+        board.writeObjects([item])
     }
 
     public func restore() {

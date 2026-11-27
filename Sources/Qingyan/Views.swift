@@ -66,9 +66,10 @@ enum Motion {
 /// Shared clipboard helper for instant click-to-copy across all text surfaces.
 @MainActor
 enum ClipboardCopy {
-    static func copy(_ text: String) {
+    /// `unrecorded`: not kept by out's clipboard history (copied from History itself).
+    static func copy(_ text: String, unrecorded: Bool = false) {
         guard !text.isEmpty else { return }
-        PasteboardLease.general.keep(text)
+        PasteboardLease.general.keep(text, unrecorded: unrecorded)
     }
 }
 

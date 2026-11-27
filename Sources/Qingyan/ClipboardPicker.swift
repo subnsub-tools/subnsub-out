@@ -127,7 +127,8 @@ final class ClipboardPicker: NSObject, NSWindowDelegate {
         hide()
         switch use {
         case .copy:
-            history.put(entry)
+            // A copy leaves it where it is; a paste brings it up.
+            history.put(entry, bringUp: false)
         case .paste, .plain:
             guard history.put(entry, plain: use == .plain) else { NSSound.beep(); return }
             Self.pasteIntoFront()

@@ -42,12 +42,26 @@ final class HistoryPageModel: ObservableObject {
     /// Whether the search field has the keyboard: the keys that choose and paste are read then.
     var searchFocused = false
     @Published var clearing: Clearing?
+    /// The row whose item was just copied, which says so for a moment.
+    @Published private(set) var copied: UUID?
+    private var copiedToken = UUID()
     let clipboard: ClipboardHistory
     private var icons: [String: NSImage] = [:]
     private var thumbnails: [UUID: NSImage] = [:]
     private var fileIcons: [String: NSImage] = [:]
 
     init(clipboard: ClipboardHistory) { self.clipboard = clipboard }
+
+    func showCopied(_ id: UUID) {
+        let token = UUID()
+        copiedToken = token
+        withAnimation(Motion.quick) { copied = id }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            guard let self, self.copiedToken == token else { return }
+            withAnimation(Motion.quick) { self.copied = nil }
+        }
+    }
 
     /// The pinned copies first, then everything else newest first, as the search and the kind
     /// leave them.
@@ -263,19 +277,33 @@ struct HistoryPage: View {
         .animation(Motion.standard, value: model.selection)
     }
 
-    /// The second click of a double-click on a row the first one chose, as the system counts clicks.
-    private static func second(_ id: UUID, chosen: UUID?) -> Bool {
-        chosen == id && (NSApp.currentEvent?.clickCount ?? 1) >= 2
+    /// A click on a row opens it; a click on the open row copies its item (user 2026-11-27), which
+    /// stays where it is in the list.
+    private func copy(_ entry: ClipEntry) {
+        guard !entry.namesOnly, clipboard.put(entry, bringUp: false) else { NSSound.beep(); return }
+        model.showCopied(entry.id)
     }
 
-    private func meta<Leading: View>(number: Int, pinned: Bool = false, @ViewBuilder _ leading: () -> Leading) -> some View {
+    private func copy(_ entry: HistoryEntry) {
+        guard !entry.text.isEmpty else { NSSound.beep(); return }
+        // Not kept as a new copy, whenever it reaches the clipboard: the list stays as it is.
+        ClipboardCopy.copy(entry.text, unrecorded: true)
+        model.showCopied(entry.id)
+    }
+
+    private func meta<Leading: View>(number: Int, pinned: Bool = false, copied: Bool = false, @ViewBuilder _ leading: () -> Leading) -> some View {
         HStack(spacing: 5) {
             leading()
             Spacer(minLength: 4)
             if pinned {
                 Image(systemName: "pin.fill").font(.system(size: 9, weight: .semibold)).foregroundStyle(Palette.accent)
             }
-            if number < 9 { Text(verbatim: "⌘\(number + 1)").monospacedDigit().foregroundStyle(Palette.muted.opacity(0.8)) }
+            if copied {
+                Label(tr("Copied"), systemImage: "checkmark").labelStyle(.titleAndIcon).foregroundStyle(Palette.accent).lineLimit(1)
+                    .transition(.opacity)
+            } else if number < 9 {
+                Text(verbatim: "⌘\(number + 1)").monospacedDigit().foregroundStyle(Palette.muted.opacity(0.8))
+            }
         }
         .font(.system(size: 10.5)).foregroundStyle(Palette.muted)
     }
@@ -283,7 +311,7 @@ struct HistoryPage: View {
     private func copiedRow(_ entry: ClipEntry, number: Int) -> some View {
         let chosen = entry.id == model.selection
         return VStack(alignment: .leading, spacing: 6) {
-            meta(number: number, pinned: entry.pinned) {
+            meta(number: number, pinned: entry.pinned, copied: model.copied == entry.id) {
                 if let icon = model.icon(entry) {
                     Image(nsImage: icon).resizable().interpolation(.high).frame(width: 14, height: 14)
                 }
@@ -312,7 +340,7 @@ struct HistoryPage: View {
                     Button(entry.pinned ? tr("Unpin") : tr("Pin")) { clipboard.pin(entry.id, !entry.pinned) }.buttonStyle(QuietButton())
                     Button(tr("Remove")) { clipboard.remove(entry.id) }.buttonStyle(QuietButton())
                     if !entry.namesOnly {
-                        Button(tr("Copy")) { clipboard.put(entry) }.buttonStyle(QuietButton())
+                        Button(tr("Copy")) { copy(entry) }.buttonStyle(QuietButton())
                         Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }.buttonStyle(SolidButton())
                     }
                 }
@@ -320,15 +348,14 @@ struct HistoryPage: View {
             }
         }
         .modifier(HistoryRowChrome(chosen: chosen, ground: chosenGround))
-        // A click chooses at once and the second click of a double-click pastes. Two tap gestures
-        // one after the other made every click wait for the double-click interval before choosing
-        // (user 2026-11-27). The buttons in the row take their own clicks.
-        .onTapGesture { if Self.second(entry.id, chosen: model.selection) { controller.pasteClip(entry, plain: false) } else { model.selection = entry.id } }
+        // A click opens the row at once; a click on the open row copies (user 2026-11-27: one click
+        // opens it, the next copies). The buttons in the row take their own clicks.
+        .onTapGesture { if model.selection == entry.id { copy(entry) } else { model.selection = entry.id } }
         .contextMenu {
             if !entry.namesOnly {
                 Button(tr("Paste")) { controller.pasteClip(entry, plain: false) }
                 if entry.kind != .image { Button(tr("Paste as Plain Text")) { controller.pasteClip(entry, plain: true) } }
-                Button(tr("Copy")) { clipboard.put(entry) }
+                Button(tr("Copy")) { copy(entry) }
                 Button(tr("Put on the Shelf")) { shelve(entry) }
                 Divider()
             }
@@ -342,7 +369,7 @@ struct HistoryPage: View {
         let placeholder = entry.state == .recording ? tr("Recording. The audio is being saved on this Mac…") : tr("The audio is saved on this Mac, waiting to be transcribed.")
         let busy = entry.state == .recording || entry.state == .processing
         return VStack(alignment: .leading, spacing: 6) {
-            meta(number: number) {
+            meta(number: number, copied: model.copied == entry.id) {
                 Image(systemName: entry.mode.symbol).font(.system(size: 9.5, weight: .bold)).foregroundStyle(Palette.accent)
                     .frame(width: 14, height: 14)
                     .background(Palette.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
@@ -379,7 +406,7 @@ struct HistoryPage: View {
                         if entry.text.isEmpty { retry.buttonStyle(SolidButton()) } else { retry.buttonStyle(QuietButton()) }
                     }
                     if !entry.text.isEmpty {
-                        CopyActionButton(text: entry.text)
+                        Button(tr("Copy")) { copy(entry) }.buttonStyle(QuietButton())
                         Button(tr("Paste")) { controller.pasteText(entry.text) }.buttonStyle(SolidButton())
                     }
                 }
@@ -387,14 +414,11 @@ struct HistoryPage: View {
             }
         }
         .modifier(HistoryRowChrome(chosen: chosen, ground: chosenGround))
-        .onTapGesture {
-            if Self.second(entry.id, chosen: model.selection) { if !entry.text.isEmpty { controller.pasteText(entry.text) } }
-            else { model.selection = entry.id }
-        }
+        .onTapGesture { if model.selection == entry.id { copy(entry) } else { model.selection = entry.id } }
         .contextMenu {
             if !entry.text.isEmpty {
                 Button(tr("Paste")) { controller.pasteText(entry.text) }
-                Button(tr("Copy")) { ClipboardCopy.copy(entry.text) }
+                Button(tr("Copy")) { copy(entry) }
             }
             if entry.canRetry { Button(tr("Retry")) { controller.retry(entry.id) }.disabled(!canRetry(entry)) }
             Divider()
