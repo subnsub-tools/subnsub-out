@@ -1350,12 +1350,17 @@ struct Checks {
         let asked = helper.asked
         let again = try await HelperLink.host(id: id, name: "Screen Shot.png", size: bytes.count, file: nil)
         try check(again == link && helper.asked == asked + 1, "an item hosted already gives its link, from a Mac that holds only its card too")
-        func refused(_ what: String, _ sentence: String, _ call: () async throws -> String) async throws {
+        func refused(_ what: String, _ sentence: String, code: String? = nil, _ call: () async throws -> String) async throws {
             do { _ = try await call() }
-            catch let error as VoiceError { try check(error.message == sentence, "\(what): \(error.message)"); return }
+            catch {
+                try check(error.localizedDescription == sentence, "\(what): \(error.localizedDescription)")
+                if let code { try check((error as? HelperLink.HostRefusal)?.code == code, "\(what): told apart by its code") }
+                return
+            }
             try check(false, "\(what): a link was given")
         }
-        try await refused("a card whose file is on no Mac here", HelperLink.hostRefusal("not-hosted")) {
+        // Told apart by its code: Copy link on that Mac then fetches the file and sends it itself.
+        try await refused("a card whose file is on no Mac here", HelperLink.hostRefusal("not-hosted"), code: "not-hosted") {
             try await HelperLink.host(id: UUID(), name: "Card.mov", size: 5, file: nil)
         }
         for code in ["no-primary", "unreachable", "no-tailnet", "full", "off", "not-allowed", "unknown-op", "something-new"] {

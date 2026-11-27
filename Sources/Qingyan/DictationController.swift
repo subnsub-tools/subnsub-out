@@ -468,7 +468,7 @@ final class DictationController: ObservableObject {
         }.store(in: &microphoneSubscriptions)
         // Each screenshot macOS saves goes on the Shelf too, as a copied file does, while the switch after
         // the Shelf's title is on (user 2026-11-27); the file stays where macOS put it.
-        screenshots.onScreenshot = { [weak self] url in self?.shelf.shelveCopied([url]) }
+        screenshots.onScreenshot = { [weak self] url in self?.shelf.shelveScreenshot(url) }
         settings.$preferences.map(\.shelveScreenshots).removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
             MainActor.assumeIsolated {
                 guard let self, !self.settings.preview else { return }

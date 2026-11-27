@@ -59,12 +59,24 @@ final class ShelfModel: ObservableObject {
     private var snippets: [UUID: String] = [:]
     /// Items the user clicked before their bytes were here: copy them once they arrive.
     private var copyWhenHere: Set<UUID> = []
+    /// Copy link asked on a Mac that holds only the item's card, for an item the primary helper does
+    /// not keep yet: fetched from the Mac that holds it, then sent there, then its link copied.
+    private var linkWhenHere: [UUID: Int] = [:]
+    /// Asked again after the fetch for a link did not finish: the primary helper may have it by now
+    /// (its Mac sent it there); if not, there is no link yet, and no second fetch.
+    private var linkWithoutFetch: Set<UUID> = []
+    /// Counts the user's asks for the clipboard (copy an item, copy a link): a link or a file that
+    /// arrives later goes on the clipboard only if no ask came after its own.
+    private var clipboardTurn = 0
+    /// Screenshots being put on the Shelf by a copy of their file at the same time: kept on the
+    /// primary helper once added.
+    private var keepWhenAdded: Set<String> = []
     /// Items asked to be downloaded to this Mac: shown in the Finder once they arrive.
     private var revealWhenHere: Set<UUID> = []
     private var expiryChecked = Date.distantPast
     private var peeks: [UUID: NSImage] = [:]
     /// Clicked while its link was still being made for it, as it was put on the Shelf: copied when it comes.
-    private var copyWhenLinked: Set<UUID> = []
+    private var copyWhenLinked: [UUID: Int] = [:]
     /// This Mac's own images and files not yet kept on the primary helper, and when to try again.
     private var hostAgain: [UUID: (at: Date, wait: TimeInterval)] = [:]
     /// The images and files on the Shelf at the last look: any one of them that leaves it is taken
@@ -211,12 +223,23 @@ final class ShelfModel: ObservableObject {
     /// cannot be read stays in History alone. The files are looked at off the main thread: one may
     /// be on a slow disk or a network volume.
     func shelveCopied(_ files: [URL]) {
+        shelveQuietly(files, keep: false)
+    }
+
+    /// A screenshot macOS saved (Shelf Automation, ScreenshotWatcher): put on the Shelf quietly as a
+    /// copied file is, and kept on the primary helper at once, so that Copy link on any Mac copies its
+    /// link (user 2026-11-27: what is on the Shelf is on the primary helper).
+    func shelveScreenshot(_ file: URL) {
+        shelveQuietly([file], keep: true)
+    }
+
+    private func shelveQuietly(_ files: [URL], keep: Bool) {
         guard let store, !files.isEmpty, files.count <= Self.quietCopyMost else { return }
         let home = store.directory
         Task { [weak self] in
             let found = await Task.detached(priority: .utility) { files.compactMap { Self.copied($0, home: home) } }.value
             guard let self else { return }
-            for file in found { self.addQuietly(file) }
+            for file in found { self.addQuietly(file, keep: keep) }
         }
     }
 
@@ -248,16 +271,23 @@ final class ShelfModel: ObservableObject {
                       modified: values.contentModificationDate, image: values.contentType?.conforms(to: .image) == true)
     }
 
-    private func addQuietly(_ file: Copied) {
+    private func addQuietly(_ file: Copied, keep: Bool = false) {
         let name = ShelfStore.cleanName(file.name)
-        guard let store, !shelving.contains(file.token),
-              !items.contains(where: { $0.kind != .text && $0.name == name && $0.size == file.size && $0.modified == file.modified }) else { return }
+        guard let store else { return }
+        // The same file put on by a copy of it too (a screenshot copied from the Finder): one item,
+        // kept on the primary helper if either asks it.
+        if shelving.contains(file.token) { if keep { keepWhenAdded.insert(file.token) }; return }
+        if let existing = items.first(where: { $0.kind != .text && $0.name == name && $0.size == file.size && $0.modified == file.modified }) {
+            if keep, quiet.remove(existing.id) != nil { saveLinks(); self.keep(existing) }
+            return
+        }
         shelving.insert(file.token)
         Task { [weak self] in
             guard let self else { return }
-            defer { self.shelving.remove(file.token) }
+            defer { self.shelving.remove(file.token); self.keepWhenAdded.remove(file.token) }
             let thumbnail = await Self.quickLook(file.url)
             guard let item = try? await store.add(copying: file.url, kind: file.image ? .image : .file, origin: self.name, thumbnail: thumbnail) else { return }
+            if keep || self.keepWhenAdded.contains(file.token) { self.keep(item); return }
             // Remembered across restarts: the primary helper gets it only when its link is asked for.
             self.quiet.insert(item.id)
             self.saveLinks()
@@ -532,7 +562,10 @@ final class ShelfModel: ObservableObject {
         if let failure = sync.failures[item.id] { say(failure, for: 4, mark: .problem) }
     }
 
-    func cancelFetch(_ item: ShelfItem) { copyWhenHere.remove(item.id); revealWhenHere.remove(item.id); sync?.cancel(item.id) }
+    func cancelFetch(_ item: ShelfItem) {
+        copyWhenHere.remove(item.id); revealWhenHere.remove(item.id); linkWhenHere[item.id] = nil
+        sync?.cancel(item.id)
+    }
 
     /// A click on a tile copies the item itself, an image, a file or text; one that is not on this Mac
     /// is downloaded first and copied once it is here. Its link is Copy link in the right-click menu
@@ -661,6 +694,17 @@ final class ShelfModel: ObservableObject {
                 if let failure = sync.failures[id] { say(tr("Could not fetch “%@”: %@", item.name, failure), for: 5, mark: .problem) }
             }
         }
+        for (id, turn) in linkWhenHere {
+            guard let item = store.item(id) else { linkWhenHere[id] = nil; continue }
+            if store.isPresent(id) { linkWhenHere[id] = nil; link(item, turn: turn) }
+            else if sync.progress(id) == nil {
+                // The fetch did not finish (its Mac went away, or the disk): the primary helper is asked
+                // again, as that Mac may have sent it there meanwhile; nothing is fetched a second time.
+                linkWhenHere[id] = nil
+                linkWithoutFetch.insert(id)
+                link(item, turn: turn)
+            }
+        }
         for id in copyWhenHere {
             guard let item = store.item(id) else { copyWhenHere.remove(id); continue }
             if store.isPresent(id) { copyWhenHere.remove(id); copy(item) }
@@ -684,6 +728,7 @@ final class ShelfModel: ObservableObject {
 
     /// Puts the item on the system clipboard, in the forms other apps expect.
     func copy(_ item: ShelfItem) {
+        clipboardTurn += 1
         guard let store else {
             if item.kind == .text {
                 PasteboardLease.general.keep(snippet(item))
@@ -828,11 +873,22 @@ final class ShelfModel: ObservableObject {
     /// Copies the item's link. The primary helper keeps the item and gives the address it opens at
     /// on the tailnet; a link this Mac was given before is copied at once and checked afterwards.
     /// `copying: false`: the item is only kept on the primary helper (as it is put on the Shelf).
-    func link(_ item: ShelfItem, copying: Bool = true) {
+    /// `turn`: the ask this continues (a fetch for the link finished); nil: a new ask of the user's.
+    func link(_ item: ShelfItem, copying: Bool = true, turn: Int? = nil) {
+        if copying && turn == nil { clipboardTurn += 1 }
+        let ask = turn ?? clipboardTurn
+        if copying, linkWhenHere[item.id] != nil {
+            // Being fetched for its link already: one fetch, and the link goes on the clipboard if this is still the last ask.
+            linkWhenHere[item.id] = ask
+            say(tr("Getting “%@” from %@ for its link. The link is copied when it is ready.", title(item), item.origin), for: 4)
+            return
+        }
         if linkTasks[item.id] != nil {
             // Being made already (as it was put on the Shelf): its link is copied when it comes.
-            if copying, copyWhenLinked.insert(item.id).inserted {
-                say(tr("Sending “%@” to the primary helper. Its link is copied when it arrives.", title(item)), for: 4)
+            if copying {
+                let first = copyWhenLinked[item.id] == nil
+                copyWhenLinked[item.id] = ask
+                if first { say(tr("Sending “%@” to the primary helper. Its link is copied when it arrives.", title(item)), for: 4) }
             }
             return
         }
@@ -851,14 +907,14 @@ final class ShelfModel: ObservableObject {
         let called = unlinking.remove(id) != nil
         let sending = known == nil && file != nil && maybeLinked.insert(id).inserted
         if called || sending { saveLinks() }
-        linkTasks[id] = ask(id) { [weak self] in await self?.makeLink(item, known: known, file: file, copying: copying) }
+        linkTasks[id] = self.ask(id) { [weak self] in await self?.makeLink(item, known: known, file: file, copying: copying, turn: ask) }
     }
 
     private func progress(for id: UUID) -> @Sendable (Double) -> Void {
         { [weak self] fraction in self?.sent(id, fraction) }
     }
 
-    private func makeLink(_ item: ShelfItem, known: String?, file: URL?, copying: Bool) async {
+    private func makeLink(_ item: ShelfItem, known: String?, file: URL?, copying: Bool, turn: Int) async {
         let id = item.id
         var made: String?
         var failure: Error?
@@ -876,17 +932,46 @@ final class ShelfModel: ObservableObject {
             takeDown(now: true)
             return
         }
-        let wanted = copyWhenLinked.remove(id) != nil
+        let wantedTurn = copyWhenLinked.removeValue(forKey: id)
+        let wanted = wantedTurn != nil
+        // On the clipboard only if nothing was asked of the clipboard after this ask.
+        let latest = (copying && turn == clipboardTurn) || wantedTurn == clipboardTurn
         if let made {
             hostAgain[id] = nil
             let changed = links[id] != made
             if changed || maybeLinked.contains(id) { links[id] = made; maybeLinked.remove(id); saveLinks() }
-            if known == nil, copying || wanted { place(made, for: item) }
+            linkWithoutFetch.remove(id)
+            if known == nil, copying || wanted, latest { place(made, for: item) }
             else if changed, let known, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(made) }
         } else if let failure, known == nil, !copying, !wanted, !(failure is CancellationError) {
             // Kept on the primary helper as it was put on the Shelf, and that did not go: tried again later.
             let wait = min((hostAgain[id]?.wait ?? 30) * 2, 3600)
             hostAgain[id] = (Date().addingTimeInterval(wait), wait)
+        } else if let failure, known == nil, file == nil, copying || wanted,
+                  (failure as? HelperLink.HostRefusal)?.code == "not-hosted", let store, store.has(id) {
+            // The primary helper does not keep it yet, and this Mac had only its card: it is fetched
+            // from the Mac that holds it, then sent there, then its link is copied (user 2026-11-27:
+            // no "fetch it first").
+            let ask = wantedTurn.map { max($0, turn) } ?? turn
+            if store.isPresent(id) {
+                // Its bytes came meanwhile (another fetch): sent from here now.
+                link(item, turn: ask)
+            } else if linkWithoutFetch.remove(id) != nil {
+                say(tr("No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.", title(item), item.origin), for: 6, mark: .problem)
+            } else {
+                linkWhenHere[id] = ask
+                fetch(item)
+                switch stage(item) {
+                case .fetching, .here:
+                    say(tr("Getting “%@” from %@ for its link. The link is copied when it is ready.", title(item), item.origin), for: 6)
+                default:
+                    linkWhenHere[id] = nil
+                    // A Mac holds it but it could not be fetched (fetch said why), or none is online.
+                    if sync?.isAvailable(id) != true {
+                        say(tr("No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.", title(item), item.origin), for: 6, mark: .problem)
+                    }
+                }
+            }
         } else if let failure, known == nil, copying || wanted, !(failure is CancellationError) {
             // A link copied already stays as it is; only a first try says why it failed.
             say(failure.localizedDescription, for: 6, mark: .problem)
@@ -1080,23 +1165,29 @@ struct ShelfBar: View {
             HStack(spacing: 6) {
                 Image(systemName: "tray").font(.system(size: 11)).frame(width: 15)
                 Text(tr("Shelf")).font(.system(size: 12, weight: .semibold))
-                HStack(spacing: 3) {
-                    Image(systemName: "camera.viewfinder").font(.system(size: 10.5))
-                        .foregroundStyle(screenshots ? Palette.ink : Palette.muted)
-                        .accessibilityHidden(true)
-                    Toggle(tr("Put new screenshots on the Shelf"), isOn: $screenshots)
-                        .toggleStyle(.switch).labelsHidden().controlSize(.mini)
-                }
-                .help(tr("Put new screenshots on the Shelf"))
-                .padding(.leading, 2)
                 // How many Macs it is shared with is Multiple Macs' to say; here only that it is not.
                 if shelf.linked == 0 {
                     Text(tr("This Mac only")).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
+                        .truncationMode(.tail).layoutPriority(-1)
                 }
                 Spacer(minLength: 4)
-                Button(tr("Paste")) { shelf.addClipboard() }.buttonStyle(QuietButton()).help(tr("Put what is on the clipboard on the Shelf"))
-                if !shelf.items.isEmpty { Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton()) }
+                // Each on one line, whatever the language: what gives way is the note before them.
+                Button(tr("Paste")) { shelf.addClipboard() }.buttonStyle(QuietButton()).fixedSize().help(tr("Put what is on the clipboard on the Shelf"))
+                if !shelf.items.isEmpty { Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton()).fixedSize() }
                 expandButton
+            }
+            // What goes on the Shelf by itself (user 2026-11-27: a button called Shelf Automation, so that
+            // more than screenshots can go there later, with its explanation beside it), on a line of its
+            // own: beside the title it pushed Paste and Clear off their one line.
+            HStack(spacing: 4) {
+                Menu {
+                    Toggle(tr("Screenshots"), isOn: $screenshots)
+                } label: {
+                    Text(tr("Shelf Automation")).lineLimit(1)
+                }
+                .menuStyle(.button).buttonStyle(QuietButton()).menuIndicator(.hidden).fixedSize()
+                Info(text: tr("Shelf Automation puts things on the Shelf by itself. Screenshots: each screenshot macOS saves goes on the Shelf too, and on the primary helper, so that its link can be copied on any of your Macs; the file stays where macOS saved it. The first time, macOS asks whether out may look in that folder."))
+                Spacer(minLength: 0)
             }
             if shelf.items.isEmpty {
                 Text(tr("Drop files, images or text here to keep them on the Shelf, in sync with your other Macs."))

@@ -146,6 +146,13 @@ public enum HelperLink {
     /// tailnet (the helper's host.go). The helper on this Mac asks the primary first, and the bytes
     /// go only when it has none. file is nil where this Mac holds only the item's card: the link
     /// is then given only if the item was hosted from another Mac before.
+    /// The primary helper said no to keeping an item, with its reason's code ("not-hosted": it does not
+    /// have the item, and this Mac has only its card).
+    public struct HostRefusal: LocalizedError, Sendable {
+        public let code: String
+        public var errorDescription: String? { HelperLink.hostRefusal(code) }
+    }
+
     public static func host(id: UUID, name: String, size: Int, file: URL?,
                             progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let connection: NWConnection
@@ -159,7 +166,7 @@ public enum HelperLink {
                 return try await readLine(connection)
             }
             if answer["ok"] as? Bool == true, answer["send"] as? Bool == true {
-                guard let file else { throw VoiceError(hostRefusal("not-hosted")) }
+                guard let file else { throw HostRefusal(code: "not-hosted") }
                 try await withTaskCancellationHandler {
                     try await send(file, size: size, over: connection, progress: progress)
                 } onCancel: { connection.cancel() }
@@ -168,10 +175,11 @@ public enum HelperLink {
             }
             guard answer["ok"] as? Bool == true, let link = answer["url"] as? String,
                   link.hasPrefix("http://") || link.hasPrefix("https://") else {
-                throw VoiceError(hostRefusal(answer["error"] as? String ?? ""))
+                throw HostRefusal(code: answer["error"] as? String ?? "")
             }
             return link
-        } catch let error as VoiceError { throw error }
+        } catch let error as HostRefusal { throw error }
+        catch let error as VoiceError { throw error }
         catch {
             if Task.isCancelled { throw CancellationError() }
             throw VoiceError(tr("The helper on this Mac stopped answering. Check that it is running."))

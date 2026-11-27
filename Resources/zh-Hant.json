@@ -784,5 +784,9 @@
  "Remove every copied item but the pinned ones, here and on your other Macs?": "移除這台 Mac 和其他 Mac 上釘選項目以外的所有複製內容？",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "移除這台 Mac 和其他 Mac 上的所有語音記錄，以及這台 Mac 上等待轉寫的音訊？",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "這裡還沒有內容。聽寫的內容，以及開啟剪貼簿記錄時複製的內容，會保存在這台 Mac 和「多台 Mac」中的其他 Mac 上，它們的內容也會保存在這裡（複製的檔案只有檔案名稱）。複製的檔案也會放入暫存區，由這些 Mac 共享。",
- "Put new screenshots on the Shelf": "新截圖放入暫存區"
+ "Shelf Automation": "自動化暫存",
+ "Screenshots": "截圖",
+ "Shelf Automation puts things on the Shelf by itself. Screenshots: each screenshot macOS saves goes on the Shelf too, and on the primary helper, so that its link can be copied on any of your Macs; the file stays where macOS saved it. The first time, macOS asks whether out may look in that folder.": "「自動化暫存」會自動把內容放入暫存區。截圖：macOS 儲存的每張截圖都會同時放入暫存區和主監控程式，因此在任何一台 Mac 上都能拷貝它的連結；檔案仍留在 macOS 儲存的位置。第一次使用時，macOS 會詢問是否允許 out 查看該資料夾。",
+ "Getting “%@” from %@ for its link. The link is copied when it is ready.": "正在取回「%@」（來自 %@）以產生連結，完成後會自動拷貝連結。",
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "存有「%@」的 Mac 都不在線上，主監控程式上也還沒有這個檔案，因此沒有連結。請在 %@ 開機後重試。"
 }
