@@ -159,6 +159,18 @@ final class ShelfModel: ObservableObject {
         }
     }
 
+    /// What a click on the Shelf's title says, for a second (user 2026-11-27): new screenshots go on
+    /// the Shelf from now, or no longer do.
+    func saidScreenshots(on: Bool) {
+        say(on ? tr("New screenshots go on the Shelf") : tr("New screenshots no longer go on the Shelf"), for: 1, mark: on ? .done : .none)
+    }
+
+    /// The title is on and the folder macOS saves screenshots in cannot be looked in (macOS was told
+    /// not to allow it): said once each time it is turned on, so that the sign does not promise in silence.
+    func saidScreenshotsUnreadable() {
+        say(tr("out may not look in the folder screenshots are saved in. Allow out in System Settings."), for: 6, mark: .problem)
+    }
+
     // MARK: Putting things on
 
     /// A drop on the panel. Each provider becomes one item: a file, an image, or text.
@@ -226,7 +238,7 @@ final class ShelfModel: ObservableObject {
         shelveQuietly(files, keep: false)
     }
 
-    /// A screenshot macOS saved (Shelf Automation, ScreenshotWatcher): put on the Shelf quietly as a
+    /// A screenshot macOS saved (the Shelf's title turned on, ScreenshotWatcher): put on the Shelf quietly as a
     /// copied file is, and kept on the primary helper at once, so that Copy link on any Mac copies its
     /// link (user 2026-11-27: what is on the Shelf is on the primary helper).
     func shelveScreenshot(_ file: URL) {
@@ -1156,15 +1168,42 @@ enum ShelfRows {
 /// click a tile to copy it, drag a tile out to use it. The same shelf shows on every paired Mac.
 struct ShelfBar: View {
     @ObservedObject var shelf: ShelfModel
-    /// Whether each screenshot macOS saves goes on the Shelf too: the switch after its title.
+    /// Whether each screenshot macOS saves goes on the Shelf too: a click on its title turns it on or off.
     @Binding var screenshots: Bool
     @State private var confirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
-                Image(systemName: "tray").font(.system(size: 11)).frame(width: 15)
-                Text(tr("Shelf")).font(.system(size: 12, weight: .semibold))
+                // The title is the button for new screenshots (user 2026-11-27: no Shelf Automation line; a
+                // click on the title says for a second that new screenshots go on the Shelf, and from then
+                // its sign is the tray with an A for Auto). Nothing looks in the folder macOS saves
+                // screenshots in before that click.
+                Button {
+                    screenshots.toggle()
+                    shelf.saidScreenshots(on: screenshots)
+                } label: {
+                    HStack(spacing: 6) {
+                        Group {
+                            if screenshots {
+                                AutoTraySign(size: 17).foregroundStyle(Palette.accent)
+                            } else {
+                                Image(systemName: "tray").font(.system(size: 11))
+                            }
+                        }
+                        .frame(width: 15, height: 14)
+                        Text(tr("Shelf")).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    }
+                    // The title's own width matters to the row: Paste and Clear stay on one line after it.
+                    .padding(.horizontal, -3)
+                }
+                .buttonStyle(QuietButton()).fixedSize()
+                .help(screenshotsHint)
+                // Read as the switch it is: what it turns on, and whether it is on.
+                .accessibilityLabel(tr("New screenshots go on the Shelf"))
+                .accessibilityValue(screenshots ? tr("On") : tr("Off"))
+                .accessibilityAddTraits(.isToggle)
+                .accessibilityHint(screenshotsHint)
                 // How many Macs it is shared with is Multiple Macs' to say; here only that it is not.
                 if shelf.linked == 0 {
                     Text(tr("This Mac only")).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)
@@ -1175,19 +1214,6 @@ struct ShelfBar: View {
                 Button(tr("Paste")) { shelf.addClipboard() }.buttonStyle(QuietButton()).fixedSize().help(tr("Put what is on the clipboard on the Shelf"))
                 if !shelf.items.isEmpty { Button(tr("Clear")) { confirm = true }.buttonStyle(QuietButton()).fixedSize() }
                 expandButton
-            }
-            // What goes on the Shelf by itself (user 2026-11-27: a button called Shelf Automation, so that
-            // more than screenshots can go there later, with its explanation beside it), on a line of its
-            // own: beside the title it pushed Paste and Clear off their one line.
-            HStack(spacing: 4) {
-                Menu {
-                    Toggle(tr("Screenshots"), isOn: $screenshots)
-                } label: {
-                    Text(tr("Shelf Automation")).lineLimit(1)
-                }
-                .menuStyle(.button).buttonStyle(QuietButton()).menuIndicator(.hidden).fixedSize()
-                Info(text: tr("Shelf Automation puts things on the Shelf by itself. Screenshots: each screenshot macOS saves goes on the Shelf too, and on the primary helper, so that its link can be copied on any of your Macs; the file stays where macOS saved it. The first time, macOS asks whether out may look in that folder."))
-                Spacer(minLength: 0)
             }
             if shelf.items.isEmpty {
                 Text(tr("Drop files, images or text here to keep them on the Shelf, in sync with your other Macs."))
@@ -1227,6 +1253,12 @@ struct ShelfBar: View {
         }
     }
 
+    private var screenshotsHint: String {
+        screenshots
+            ? tr("Each new screenshot goes on the Shelf. Click to turn this off.")
+            : tr("Click to have each new screenshot go on the Shelf, and on the primary helper, so that its link can be copied on any of your Macs. macOS may ask whether out may look in the folder screenshots are saved in.")
+    }
+
     /// The items in their rows, each with its width.
     private var rows: [[(item: ShelfItem, cells: Int)]] {
         let items = shelf.items
@@ -1251,6 +1283,63 @@ struct ShelfBar: View {
         .buttonStyle(QuietButton())
         .help(title)
         .accessibilityLabel(title)
+    }
+}
+
+/// The Shelf's sign while new screenshots go on it by themselves (user 2026-11-27: one sign drawn
+/// from the tray and the letter A, for Auto, chosen from four): the tray seen from the front, its
+/// back edge a line, its front solid with the A cut out of it. Drawn on a 16-point grid, in the
+/// foreground style.
+struct AutoTraySign: View {
+    var size: CGFloat = 16
+
+    var body: some View {
+        let unit = size / 16
+        ZStack {
+            AutoTrayPart(part: .back).stroke(style: StrokeStyle(lineWidth: 1.25 * unit, lineCap: .round, lineJoin: .round))
+            AutoTrayPart(part: .front).fill()
+            AutoTrayPart(part: .letter).stroke(style: StrokeStyle(lineWidth: 1.2 * unit, lineCap: .round, lineJoin: .round))
+                .blendMode(.destinationOut)
+        }
+        // The letter is cut out of this sign alone, not out of what is behind it.
+        .compositingGroup()
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct AutoTrayPart: Shape {
+    enum Part { case back, front, letter }
+    let part: Part
+
+    func path(in rect: CGRect) -> Path {
+        let unit = rect.width / 16
+        func at(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * unit, y: rect.minY + y * unit) }
+        var path = Path()
+        switch part {
+        case .back:
+            path.move(to: at(2.6, 5.6))
+            path.addLine(to: at(3.9, 3.4))
+            path.addQuadCurve(to: at(5, 2.7), control: at(4.3, 2.7))
+            path.addLine(to: at(11, 2.7))
+            path.addQuadCurve(to: at(12.1, 3.4), control: at(11.7, 2.7))
+            path.addLine(to: at(13.4, 5.6))
+        case .front:
+            path.move(to: at(1.9, 5.5))
+            path.addLine(to: at(14.1, 5.5))
+            path.addLine(to: at(14.1, 12.1))
+            path.addQuadCurve(to: at(12.7, 13.5), control: at(14.1, 13.5))
+            path.addLine(to: at(3.3, 13.5))
+            path.addQuadCurve(to: at(1.9, 12.1), control: at(1.9, 13.5))
+            path.closeSubpath()
+        case .letter:
+            path.move(to: at(5.9, 12.1))
+            path.addLine(to: at(8, 6.9))
+            path.addLine(to: at(10.1, 12.1))
+            path.move(to: at(6.7, 10.5))
+            path.addLine(to: at(9.3, 10.5))
+        }
+        return path
     }
 }
 

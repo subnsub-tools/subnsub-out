@@ -784,9 +784,11 @@
  "Remove every copied item but the pinned ones, here and on your other Macs?": "고정한 항목을 제외하고 복사한 항목을 이 Mac과 다른 Mac에서 모두 제거할까요?",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "이 Mac과 다른 Mac의 모든 음성 기록과, 이 Mac에서 변환을 기다리는 오디오를 제거할까요?",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "아직 아무것도 없습니다. 받아쓴 내용과, 클립보드 기록이 켜져 있는 동안 복사한 항목은 여기와 ‘여러 Mac’의 다른 Mac에 보관되고, 다른 Mac의 항목도 여기에 보관됩니다(복사한 파일은 이름만). 복사한 파일은 선반에도 놓이며, 그 Mac들이 함께 사용합니다.",
- "Shelf Automation": "선반 자동화",
- "Screenshots": "스크린샷",
- "Shelf Automation puts things on the Shelf by itself. Screenshots: each screenshot macOS saves goes on the Shelf too, and on the primary helper, so that its link can be copied on any of your Macs; the file stays where macOS saved it. The first time, macOS asks whether out may look in that folder.": "선반 자동화는 항목을 알아서 선반에 놓습니다. 스크린샷: macOS가 저장하는 스크린샷은 선반과 주 헬퍼에도 놓이므로, 어느 Mac에서든 링크를 복사할 수 있습니다. 파일은 macOS가 저장한 위치에 그대로 남습니다. 처음에는 out이 그 폴더를 봐도 되는지 macOS가 묻습니다.",
+ "New screenshots go on the Shelf": "새 스크린샷을 선반에 놓습니다",
+ "New screenshots no longer go on the Shelf": "새 스크린샷을 더 이상 선반에 놓지 않습니다",
+ "Click to have each new screenshot go on the Shelf, and on the primary helper, so that its link can be copied on any of your Macs. macOS may ask whether out may look in the folder screenshots are saved in.": "클릭하면 새 스크린샷이 선반과 주 헬퍼에 놓여, 어느 Mac에서든 링크를 복사할 수 있습니다. 스크린샷이 저장되는 폴더를 out이 봐도 되는지 macOS가 물을 수 있습니다.",
+ "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "out이 스크린샷이 저장되는 폴더를 볼 수 없습니다. 시스템 설정에서 out을 허용하세요.",
+ "Each new screenshot goes on the Shelf. Click to turn this off.": "새 스크린샷이 선반에 놓입니다. 클릭하면 꺼집니다.",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "링크를 만들기 위해 ‘%@’을(를) %@에서 가져오는 중입니다. 준비되면 링크가 복사됩니다.",
  "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "‘%@’을(를) 가진 Mac이 온라인 상태가 아니고 주 헬퍼에도 아직 없어서 링크가 없습니다. %@이(가) 켜지면 다시 시도하십시오."
 }

@@ -784,9 +784,11 @@
  "Remove every copied item but the pinned ones, here and on your other Macs?": "ピンで固定したもの以外のコピーした項目を、このMacとほかのMacからすべて削除しますか？",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "すべての音声の記録をこのMacとほかのMacから、文字起こしを待っている音声をこのMacから削除しますか？",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "まだ何もありません。音声入力した内容と、クリップボード履歴がオンのときにコピーしたものは、ここと「複数のMac」のほかのMacに保持され、ほかのMacのものもここに保持されます（コピーしたファイルは名前だけ）。コピーしたファイルはシェルフにも置かれ、それらのMacで共有されます。",
- "Shelf Automation": "シェルフの自動化",
- "Screenshots": "スクリーンショット",
- "Shelf Automation puts things on the Shelf by itself. Screenshots: each screenshot macOS saves goes on the Shelf too, and on the primary helper, so that its link can be copied on any of your Macs; the file stays where macOS saved it. The first time, macOS asks whether out may look in that folder.": "「シェルフの自動化」は、ものを自動でシェルフに置きます。スクリーンショット：macOSが保存するスクリーンショットは、シェルフとプライマリヘルパーにも置かれるので、どのMacでもリンクをコピーできます。ファイルはmacOSが保存した場所に残ります。初回は、outがそのフォルダを見てよいかmacOSが確認します。",
+ "New screenshots go on the Shelf": "新しいスクリーンショットをシェルフに置きます",
+ "New screenshots no longer go on the Shelf": "新しいスクリーンショットをシェルフに置かなくなりました",
+ "Click to have each new screenshot go on the Shelf, and on the primary helper, so that its link can be copied on any of your Macs. macOS may ask whether out may look in the folder screenshots are saved in.": "クリックすると、新しいスクリーンショットがシェルフとプライマリヘルパーに置かれるようになり、どのMacでもリンクをコピーできます。スクリーンショットの保存先フォルダをoutが見てよいか、macOSが確認することがあります。",
+ "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "outはスクリーンショットの保存先フォルダを見ることができません。システム設定でoutを許可してください。",
+ "Each new screenshot goes on the Shelf. Click to turn this off.": "新しいスクリーンショットはシェルフに置かれます。クリックするとオフになります。",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "リンクを作るため、「%@」を%@から取得しています。準備ができるとリンクがコピーされます。",
  "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "「%@」を持つMacがオンラインになく、プライマリヘルパーにもまだないため、リンクはありません。%@がオンになってからもう一度お試しください。"
 }

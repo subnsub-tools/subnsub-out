@@ -2,6 +2,6 @@
 "NSMicrophoneUsageDescription" = "O out só grava depois que você pressiona o atalho, e transforma o áudio em texto neste Mac ou pelo serviço de reconhecimento que você escolheu. A gravação para quando você pressiona de novo ou Esc.";
 "NSSpeechRecognitionUsageDescription" = "O out reconhece a fala neste Mac apenas quando Este Mac está escolhido para o reconhecimento de fala.";
 "NSLocalNetworkUsageDescription" = "O out passa o texto reconhecido entre dois Macs: você fala em um e ele é digitado no outro. Usado apenas depois que você ativa Vários Macs.";
-"NSDesktopFolderUsageDescription" = "O out olha esta pasta só para colocar arquivos na Estante: as capturas de tela que o macOS salva aqui, enquanto “Capturas de tela” está ativado em “Automação da Estante”, e os arquivos que você copia dela.";
-"NSDocumentsFolderUsageDescription" = "O out olha esta pasta só para colocar arquivos na Estante: as capturas de tela que o macOS salva aqui, enquanto “Capturas de tela” está ativado em “Automação da Estante”, e os arquivos que você copia dela.";
-"NSDownloadsFolderUsageDescription" = "O out olha esta pasta só para colocar arquivos na Estante: as capturas de tela que o macOS salva aqui, enquanto “Capturas de tela” está ativado em “Automação da Estante”, e os arquivos que você copia dela.";
+"NSDesktopFolderUsageDescription" = "O out olha esta pasta só para colocar arquivos na Estante: as capturas de tela que o macOS salva aqui, enquanto as novas capturas vão para a Estante, e os arquivos que você copia dela.";
+"NSDocumentsFolderUsageDescription" = "O out olha esta pasta só para colocar arquivos na Estante: as capturas de tela que o macOS salva aqui, enquanto as novas capturas vão para a Estante, e os arquivos que você copia dela.";
+"NSDownloadsFolderUsageDescription" = "O out olha esta pasta só para colocar arquivos na Estante: as capturas de tela que o macOS salva aqui, enquanto as novas capturas vão para a Estante, e os arquivos que você copia dela.";

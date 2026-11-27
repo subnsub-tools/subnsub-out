@@ -1160,6 +1160,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         try await panel("panel-shelf-toast-dark", dark: true)
         controller.shelf.previewSay(tr("Could not fetch “%@”: %@", "Backup.dmg", tr("Connection lost")), mark: .problem)
         try await panel("panel-shelf-toast-problem")
+        // The Shelf's title clicked: what it says for a second, and its sign as the tray with an A.
+        settings.preferences.screenshotsToShelf = true
+        controller.shelf.previewSay(tr("New screenshots go on the Shelf"))
+        try await panel("panel-shelf-auto")
+        try await panel("panel-shelf-auto-dark", dark: true)
+        settings.preferences.screenshotsToShelf = false
         controller.shelf.previewQuiet()
         controller.shelf.targeted = true
         try await panel("panel-shelf-drop")

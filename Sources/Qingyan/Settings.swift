@@ -87,9 +87,11 @@ struct Preferences: Codable, Equatable {
     /// Let the Dashboard's Clipboard tab list this Mac's History and clipboard history, through the
     /// Monitor helper here (HistoryFeed): off until it is turned on.
     var showOnDashboard = false
-    /// Each screenshot macOS saves goes on the Shelf too (ScreenshotWatcher), from the switch after
-    /// the Shelf's title: on until it is turned off (user 2026-11-27).
-    var shelveScreenshots = true
+    /// Each screenshot macOS saves goes on the Shelf too (ScreenshotWatcher), from a click on the
+    /// Shelf's title: off until then, so that macOS asks for the folder screenshots are saved in only
+    /// after the user asked for this (user 2026-11-27). Under a name of its own: shelveScreenshots,
+    /// which an earlier version kept as on without anyone turning it on, is not read.
+    var screenshotsToShelf = false
 
     init() {}
 
@@ -127,7 +129,7 @@ struct Preferences: Codable, Equatable {
         clipDays = try values.decodeIfPresent(Int.self, forKey: .clipDays) ?? clipDays
         clipIgnored = try values.decodeIfPresent([IgnoredApp].self, forKey: .clipIgnored) ?? clipIgnored
         showOnDashboard = try values.decodeIfPresent(Bool.self, forKey: .showOnDashboard) ?? showOnDashboard
-        shelveScreenshots = try values.decodeIfPresent(Bool.self, forKey: .shelveScreenshots) ?? shelveScreenshots
+        screenshotsToShelf = try values.decodeIfPresent(Bool.self, forKey: .screenshotsToShelf) ?? screenshotsToShelf
         // Settings saved before the app had English were made in Chinese: they keep it.
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? Localization.Language.simplifiedChinese.rawValue
         if remotePeers.isEmpty && remoteRole == "send" && !remoteHost.isEmpty {

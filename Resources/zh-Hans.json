@@ -838,9 +838,11 @@
  "Remove every copied item but the pinned ones, here and on your other Macs?": "移除本机和其他 Mac 上除已固定以外的所有复制内容？",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "移除本机和其他 Mac 上的所有语音记录，以及本机等待转写的音频？",
  "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "这里还没有内容。听写的内容，以及开启剪贴板历史时复制的内容，会保存在本机和「多台 Mac」中的其他 Mac 上，它们的内容也会保存在这里（复制的文件只有文件名）。复制的文件也会放入暂存，由这些 Mac 共享。",
- "Shelf Automation": "自动化暂存",
- "Screenshots": "截图",
- "Shelf Automation puts things on the Shelf by itself. Screenshots: each screenshot macOS saves goes on the Shelf too, and on the primary helper, so that its link can be copied on any of your Macs; the file stays where macOS saved it. The first time, macOS asks whether out may look in that folder.": "「自动化暂存」会自动把内容放入暂存。截图：macOS 保存的每张截图都会同时放入暂存和主探针，因此在任何一台 Mac 上都能复制它的链接；文件仍留在 macOS 保存的位置。第一次使用时，macOS 会询问是否允许 out 查看该文件夹。",
+ "New screenshots go on the Shelf": "自动暂存新截图",
+ "New screenshots no longer go on the Shelf": "不再自动暂存新截图",
+ "Click to have each new screenshot go on the Shelf, and on the primary helper, so that its link can be copied on any of your Macs. macOS may ask whether out may look in the folder screenshots are saved in.": "点击后，每张新截图都会自动放入暂存和主探针，因此在任何一台 Mac 上都能复制它的链接。macOS 可能会询问是否允许 out 查看截图保存到的文件夹。",
+ "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "out 无法查看截图保存到的文件夹，请在系统设置中授权 out。",
+ "Each new screenshot goes on the Shelf. Click to turn this off.": "每张新截图都会自动放入暂存。点击可关闭。",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "正在取回「%@」（来自 %@）以生成链接，完成后自动复制链接。",
  "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "存有「%@」的 Mac 都不在线，主探针上也还没有这个文件，因此没有链接。请在 %@ 开机后重试。"
 }

@@ -12,6 +12,9 @@ import UniformTypeIdentifiers
 @MainActor
 public final class ScreenshotWatcher {
     public var onScreenshot: ((URL) -> Void)?
+    /// Told once each time it is turned on, when the folder cannot be opened or listed (macOS was
+    /// told not to let the app look there, or it is gone). It is tried again at every look all the same.
+    public var onUnreadable: ((URL) -> Void)?
     /// Where to watch in place of where macOS saves screenshots (the checks).
     public var folderOverride: URL?
     public private(set) var folder: URL?
@@ -33,6 +36,9 @@ public final class ScreenshotWatcher {
     private var newSince = Date()
     /// When the folder watched was last seen to be where screenshots go.
     private var checked = Date()
+    /// When it was turned on: nothing made before that is new, whatever the leeway.
+    private var turnedOn = Date()
+    private var saidUnreadable = false
     /// New images not marked yet, with when each was first seen: looked at again for 10 seconds,
     /// in case the mark comes after the file.
     private var unmarked: [String: Date] = [:]
@@ -54,7 +60,7 @@ public final class ScreenshotWatcher {
 
     public func set(on: Bool) {
         if on, handles.timer == nil {
-            newSince = Date(); checked = newSince; told = []
+            newSince = Date(); checked = newSince; turnedOn = newSince; told = []; saidUnreadable = false
             let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.look() }
             }
@@ -102,7 +108,7 @@ public final class ScreenshotWatcher {
         detach()
         folder = target
         newSince = from
-        guard descriptor >= 0 else { return }
+        guard descriptor >= 0 else { unreadable(target); return }
         let generation = self.generation
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .link, .rename, .delete, .revoke], queue: .main)
         source.setEventHandler { [weak self, weak source] in
@@ -121,6 +127,12 @@ public final class ScreenshotWatcher {
         handles.source = source
         source.resume()
         scan()
+    }
+
+    private func unreadable(_ folder: URL) {
+        guard !saidUnreadable else { return }
+        saidUnreadable = true
+        onUnreadable?(folder)
     }
 
     private func detach() {
@@ -145,7 +157,7 @@ public final class ScreenshotWatcher {
         guard let folder else { return }
         if scanning { again = true; return }
         scanning = true
-        let generation = self.generation, known = self.known, since = newSince, waiting = Set(unmarked.keys)
+        let generation = self.generation, known = self.known, since = newSince, floor = turnedOn, waiting = Set(unmarked.keys)
         Task.detached(priority: .utility) {
             let listing = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
             var names = Set<String>()
@@ -154,7 +166,7 @@ public final class ScreenshotWatcher {
                 names = Set(listing.filter { !$0.hasPrefix(".") })
                 for name in names.subtracting(known).union(waiting.intersection(names)).sorted() {
                     let url = folder.appendingPathComponent(name)
-                    switch Self.seen(url, since: since) {
+                    switch Self.seen(url, since: since, notBefore: floor) {
                     case .screenshot(let identity): found.append((url, identity))
                     case .unmarkedImage: unmarkedNow.append(name)
                     case .other: break
@@ -165,7 +177,7 @@ public final class ScreenshotWatcher {
             await MainActor.run { [weak self] in
                 guard let self, self.generation == generation else { return }
                 self.scanning = false
-                guard listed else { return }
+                guard listed else { self.unreadable(folder); return }
                 self.known = seenNames
                 self.listed = true
                 let now = Date()
@@ -192,11 +204,13 @@ public final class ScreenshotWatcher {
     }
 
     /// A screenshot made since `since` (a moment of leeway: an older one moved into the folder is not
-    /// new), with the file's device and inode; an image of that age not marked (yet); or anything else.
-    nonisolated private static func seen(_ url: URL, since: Date) -> Seen {
+    /// new) and not before `notBefore`, when it was turned on (no leeway: one made a second before the
+    /// user asked is not sent anywhere), with the file's device and inode; an image of that age not
+    /// marked (yet); or anything else.
+    nonisolated private static func seen(_ url: URL, since: Date, notBefore: Date) -> Seen {
         guard let values = try? url.resourceValues(forKeys: [.contentTypeKey, .creationDateKey, .isRegularFileKey]),
               values.isRegularFile == true, values.contentType?.conforms(to: .image) == true,
-              (values.creationDate ?? .distantPast) >= since.addingTimeInterval(-2) else { return .other }
+              let made = values.creationDate, made >= since.addingTimeInterval(-2), made >= notBefore else { return .other }
         guard isScreenCapture(url) else { return .unmarkedImage }
         var status = stat()
         guard lstat(url.path, &status) == 0 else { return .other }

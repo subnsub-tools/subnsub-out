@@ -1657,6 +1657,8 @@ struct Checks {
         }
         try arrive("Before.png", mark: mark, made: Date().addingTimeInterval(-3600))
         try check(ScreenshotWatcher.isScreenCapture(folder.appendingPathComponent("Before.png")), "the mark is read")
+        // Made a second before it is turned on: within the leeway, and still not new.
+        try arrive("Just before.png", mark: mark, made: Date().addingTimeInterval(-1))
         let watcher = ScreenshotWatcher()
         watcher.folderOverride = folder
         var told: [String] = []
@@ -1677,11 +1679,21 @@ struct Checks {
         try FileManager.default.moveItem(at: folder.appendingPathComponent("Screenshot 1.png"), to: folder.appendingPathComponent("Renamed.png"))
         try await Task.sleep(nanoseconds: 1_500_000_000)
         try check(told.sorted() == ["Early.png", "Late.png", "Screenshot 1.png"],
-                  "those alone, each once: not one there before, unmarked, hidden, not an image, wrongly marked, or renamed (told: \(told))")
+                  "those alone, each once: not one there before, one made a second before it was turned on, unmarked, hidden, not an image, wrongly marked, or renamed (told: \(told))")
         watcher.set(on: false)
         try arrive("Screenshot 2.png", mark: mark)
         try await Task.sleep(nanoseconds: 600_000_000)
         try check(!told.contains("Screenshot 2.png"), "nothing once turned off")
+        // A folder that cannot be looked in is said, once each time it is turned on.
+        let blind = ScreenshotWatcher()
+        blind.folderOverride = root.appendingPathComponent("Gone")
+        var unreadable = 0
+        blind.onUnreadable = { _ in unreadable += 1 }
+        blind.set(on: true)
+        try await settle("a folder that cannot be looked in is said") { unreadable == 1 }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try check(unreadable == 1, "and said once")
+        blind.set(on: false)
     }
 
     @MainActor static func shelfSync() async throws {

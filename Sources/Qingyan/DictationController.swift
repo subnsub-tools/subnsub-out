@@ -466,10 +466,12 @@ final class DictationController: ObservableObject {
                 self.warnMicrophone(tr("The locked microphone “%@” was disconnected. out does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
             }
         }.store(in: &microphoneSubscriptions)
-        // Each screenshot macOS saves goes on the Shelf too, as a copied file does, while the switch after
-        // the Shelf's title is on (user 2026-11-27); the file stays where macOS put it.
+        // Each screenshot macOS saves goes on the Shelf too, as a copied file does, once a click on the
+        // Shelf's title turned that on (user 2026-11-27); the file stays where macOS put it. Off, the
+        // watcher is not started and the folder is not opened.
         screenshots.onScreenshot = { [weak self] url in self?.shelf.shelveScreenshot(url) }
-        settings.$preferences.map(\.shelveScreenshots).removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
+        screenshots.onUnreadable = { [weak self] _ in self?.shelf.saidScreenshotsUnreadable() }
+        settings.$preferences.map(\.screenshotsToShelf).removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
             MainActor.assumeIsolated {
                 guard let self, !self.settings.preview else { return }
                 self.screenshots.set(on: on)

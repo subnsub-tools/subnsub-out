@@ -17,9 +17,9 @@
     <key>NSMicrophoneUsageDescription</key><string>out records only after you press the shortcut, and turns the audio into text on this Mac or through the recognition service you chose. Recording stops when you press it again or Esc.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>out recognizes speech on this Mac only when This Mac is chosen for speech recognition.</string>
     <key>NSLocalNetworkUsageDescription</key><string>out passes recognized text between two Macs: you speak on one and it is typed on the other. Used only after you turn on Multiple Macs.</string>
-    <key>NSDesktopFolderUsageDescription</key><string>out looks in this folder only for files to put on the Shelf: the screenshots macOS saves here, while Screenshots is on under Shelf Automation, and the files you copy from it.</string>
-    <key>NSDocumentsFolderUsageDescription</key><string>out looks in this folder only for files to put on the Shelf: the screenshots macOS saves here, while Screenshots is on under Shelf Automation, and the files you copy from it.</string>
-    <key>NSDownloadsFolderUsageDescription</key><string>out looks in this folder only for files to put on the Shelf: the screenshots macOS saves here, while Screenshots is on under Shelf Automation, and the files you copy from it.</string>
+    <key>NSDesktopFolderUsageDescription</key><string>out looks in this folder only for files to put on the Shelf: the screenshots macOS saves here, while new screenshots go on the Shelf, and the files you copy from it.</string>
+    <key>NSDocumentsFolderUsageDescription</key><string>out looks in this folder only for files to put on the Shelf: the screenshots macOS saves here, while new screenshots go on the Shelf, and the files you copy from it.</string>
+    <key>NSDownloadsFolderUsageDescription</key><string>out looks in this folder only for files to put on the Shelf: the screenshots macOS saves here, while new screenshots go on the Shelf, and the files you copy from it.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/><key>NSExceptionDomains</key><dict><key>ts.net</key><dict><key>NSIncludesSubdomains</key><true/><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict></dict></dict>
 </dict></plist>
