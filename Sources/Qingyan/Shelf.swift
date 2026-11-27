@@ -1505,8 +1505,10 @@ struct ShelfTile: View {
     }
 
     /// In the tile's top left corner, inside it (user 2026-11-25: the mark stood out past the tile and
-    /// the Shelf's edge cut it off): how far the file has got while its link is being made, and a
-    /// small mark on an item that has a link.
+    /// the Shelf's edge cut it off): how far the file has got while its link is being made, and,
+    /// under the pointer, the button that copies the item's link. It comes and goes with the × at the
+    /// top right (user 2026-11-27: the link mark was always there and did nothing; it shows with the
+    /// ×, and a click on it copies the link).
     @ViewBuilder private var linkControl: some View {
         if let progress = shelf.linking[item.id] {
             Button { shelf.cancelLink(item) } label: {
@@ -1517,14 +1519,17 @@ struct ShelfTile: View {
                 }
                 .frame(width: 16, height: 16).frame(width: 22, height: 22).contentShape(Rectangle())
             }.buttonStyle(.plain).help(tr("Sending to the primary helper. Click to stop.")).accessibilityLabel(tr("Stop sending %@", item.name))
-        } else if shelf.hasLink(item) {
-            Image(systemName: "link").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
-                .frame(width: 14, height: 14)
-                .background(.regularMaterial, in: Circle())
-                .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
-                .padding(4)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+        } else if hovered, shelf.canLink(item) {
+            // The × button's size and ground, in the opposite corner.
+            Button { shelf.link(item) } label: {
+                Image(systemName: "link").font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.ink)
+                    .frame(width: 16, height: 16)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).help(tr("Copy link")).accessibilityLabel(tr("Copy link"))
+                .transition(Motion.pop)
         }
     }
 
