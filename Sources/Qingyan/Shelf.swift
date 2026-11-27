@@ -1071,6 +1071,8 @@ enum ShelfRows {
 /// click a tile to copy it, drag a tile out to use it. The same shelf shows on every paired Mac.
 struct ShelfBar: View {
     @ObservedObject var shelf: ShelfModel
+    /// Whether each screenshot macOS saves goes on the Shelf too: the switch after its title.
+    @Binding var screenshots: Bool
     @State private var confirm = false
 
     var body: some View {
@@ -1078,6 +1080,15 @@ struct ShelfBar: View {
             HStack(spacing: 6) {
                 Image(systemName: "tray").font(.system(size: 11)).frame(width: 15)
                 Text(tr("Shelf")).font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 3) {
+                    Image(systemName: "camera.viewfinder").font(.system(size: 10.5))
+                        .foregroundStyle(screenshots ? Palette.ink : Palette.muted)
+                        .accessibilityHidden(true)
+                    Toggle(tr("Put new screenshots on the Shelf"), isOn: $screenshots)
+                        .toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+                .help(tr("Put new screenshots on the Shelf"))
+                .padding(.leading, 2)
                 // How many Macs it is shared with is Multiple Macs' to say; here only that it is not.
                 if shelf.linked == 0 {
                     Text(tr("This Mac only")).font(.system(size: 10.5)).foregroundStyle(Palette.muted).lineLimit(1)

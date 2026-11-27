@@ -112,6 +112,8 @@ final class DictationController: ObservableObject {
     private var entry: HistoryEntry?
     /// History in step with the owner's other Macs (HistorySync).
     private var historySync: HistorySync?
+    /// The screenshots macOS saves, for the Shelf.
+    private let screenshots = ScreenshotWatcher()
     /// The Monitor helper's version on this Mac, as it last said; empty when it is not answering.
     @Published private(set) var helperVersion = ""
 
@@ -462,6 +464,15 @@ final class DictationController: ObservableObject {
                 guard self.boundWasPresent == true, !present, !self.busy else { return }
                 let name = MicrophoneBinding.displayLabel(boundName: self.settings.preferences.microphoneName, uid: uid)
                 self.warnMicrophone(tr("The locked microphone “%@” was disconnected. out does not switch to another microphone and records nothing until it is reconnected. Another one can be chosen under Microphone in the panel.", name))
+            }
+        }.store(in: &microphoneSubscriptions)
+        // Each screenshot macOS saves goes on the Shelf too, as a copied file does, while the switch after
+        // the Shelf's title is on (user 2026-11-27); the file stays where macOS put it.
+        screenshots.onScreenshot = { [weak self] url in self?.shelf.shelveCopied([url]) }
+        settings.$preferences.map(\.shelveScreenshots).removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
+            MainActor.assumeIsolated {
+                guard let self, !self.settings.preview else { return }
+                self.screenshots.set(on: on)
             }
         }.store(in: &microphoneSubscriptions)
         // The clipboard history turned on or off: the other Macs are told whether copies go both ways.

@@ -837,5 +837,6 @@
  "Remove every item but the pinned ones, here and on your other Macs?": "移除本机和其他 Mac 上除已固定项目以外的全部内容？",
  "Remove every copied item but the pinned ones, here and on your other Macs?": "移除本机和其他 Mac 上除已固定以外的所有复制内容？",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "移除本机和其他 Mac 上的所有语音记录，以及本机等待转写的音频？",
- "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "这里还没有内容。听写的内容，以及开启剪贴板历史时复制的内容，会保存在本机和「多台 Mac」中的其他 Mac 上，它们的内容也会保存在这里（复制的文件只有文件名）。复制的文件也会放入暂存，由这些 Mac 共享。"
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "这里还没有内容。听写的内容，以及开启剪贴板历史时复制的内容，会保存在本机和「多台 Mac」中的其他 Mac 上，它们的内容也会保存在这里（复制的文件只有文件名）。复制的文件也会放入暂存，由这些 Mac 共享。",
+ "Put new screenshots on the Shelf": "新截图放入暂存"
 }

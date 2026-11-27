@@ -783,5 +783,6 @@
  "Remove every item but the pinned ones, here and on your other Macs?": "고정한 항목을 제외하고 이 Mac과 다른 Mac에서 모두 제거할까요?",
  "Remove every copied item but the pinned ones, here and on your other Macs?": "고정한 항목을 제외하고 복사한 항목을 이 Mac과 다른 Mac에서 모두 제거할까요?",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "이 Mac과 다른 Mac의 모든 음성 기록과, 이 Mac에서 변환을 기다리는 오디오를 제거할까요?",
- "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "아직 아무것도 없습니다. 받아쓴 내용과, 클립보드 기록이 켜져 있는 동안 복사한 항목은 여기와 ‘여러 Mac’의 다른 Mac에 보관되고, 다른 Mac의 항목도 여기에 보관됩니다(복사한 파일은 이름만). 복사한 파일은 선반에도 놓이며, 그 Mac들이 함께 사용합니다."
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "아직 아무것도 없습니다. 받아쓴 내용과, 클립보드 기록이 켜져 있는 동안 복사한 항목은 여기와 ‘여러 Mac’의 다른 Mac에 보관되고, 다른 Mac의 항목도 여기에 보관됩니다(복사한 파일은 이름만). 복사한 파일은 선반에도 놓이며, 그 Mac들이 함께 사용합니다.",
+ "Put new screenshots on the Shelf": "새 스크린샷을 선반에 놓기"
 }

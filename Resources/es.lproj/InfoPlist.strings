@@ -2,3 +2,6 @@
 "NSMicrophoneUsageDescription" = "out solo graba después de que pulses el atajo, y convierte el audio en texto en este Mac o a través del servicio de reconocimiento que elegiste. La grabación se detiene cuando lo vuelves a pulsar o pulsas Esc.";
 "NSSpeechRecognitionUsageDescription" = "out reconoce la voz en este Mac solo cuando se elige Este Mac para el reconocimiento de voz.";
 "NSLocalNetworkUsageDescription" = "out pasa el texto reconocido entre dos Mac: hablas en uno y se escribe en el otro. Solo se usa después de activar Varios Mac.";
+"NSDesktopFolderUsageDescription" = "out mira en esta carpeta solo para poner archivos en el Estante: las capturas de pantalla que macOS guarda aquí, mientras el interruptor de capturas del Estante está activado, y los archivos que copias de ella.";
+"NSDocumentsFolderUsageDescription" = "out mira en esta carpeta solo para poner archivos en el Estante: las capturas de pantalla que macOS guarda aquí, mientras el interruptor de capturas del Estante está activado, y los archivos que copias de ella.";
+"NSDownloadsFolderUsageDescription" = "out mira en esta carpeta solo para poner archivos en el Estante: las capturas de pantalla que macOS guarda aquí, mientras el interruptor de capturas del Estante está activado, y los archivos que copias de ella.";

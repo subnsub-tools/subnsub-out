@@ -2,3 +2,6 @@
 "NSMicrophoneUsageDescription" = "out 只在按下快速鍵後錄音，在這台 Mac 上或經所選的辨識平台將聲音轉成文字；再次按下或按 Esc 後停止。";
 "NSSpeechRecognitionUsageDescription" = "只有在「語音辨識」選用「這台 Mac」時，out 才會在這台 Mac 上辨識語音。";
 "NSLocalNetworkUsageDescription" = "out 在兩台 Mac 之間傳遞辨識出的文字：在一台說話，另一台輸入。只在開啟「多台 Mac」後使用。";
+"NSDesktopFolderUsageDescription" = "out 只為放入暫存區而查看此資料夾：開啟暫存區的截圖開關時 macOS 儲存在這裡的截圖，以及從這裡複製的檔案。";
+"NSDocumentsFolderUsageDescription" = "out 只為放入暫存區而查看此資料夾：開啟暫存區的截圖開關時 macOS 儲存在這裡的截圖，以及從這裡複製的檔案。";
+"NSDownloadsFolderUsageDescription" = "out 只為放入暫存區而查看此資料夾：開啟暫存區的截圖開關時 macOS 儲存在這裡的截圖，以及從這裡複製的檔案。";

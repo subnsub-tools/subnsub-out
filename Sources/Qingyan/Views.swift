@@ -911,7 +911,7 @@ struct MainView: View {
     private var column: some View {
         VStack(spacing: 0) {
             if windowed { scroller } else { header; content.modifier(UnderShelf(expanded: shelf.expanded)) }
-            ShelfBar(shelf: shelf)
+            ShelfBar(shelf: shelf, screenshots: $settings.preferences.shelveScreenshots)
                 .background(GeometryReader { Color.clear.preference(key: ShelfHeightKey.self, value: $0.size.height) })
                 .onPreferenceChange(ShelfHeightKey.self) { next in
                     if abs(shelfHeight - next) > 0.5 { shelfHeight = next; report() }

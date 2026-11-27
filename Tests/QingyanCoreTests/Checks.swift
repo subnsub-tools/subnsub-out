@@ -149,6 +149,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Shelf store: \(error.localizedDescription)") }
         do { try await historySync(); print("PASS History between Macs over real TCP: text and multi-piece images whole, files by name, the same copy on two Macs one entry, origins kept through a third Mac, voice records, removal, pins, clearing copies (pinned stay) and voice records, a removal not undone by a Mac that was away") }
         catch { failed += 1; print("FAIL History sync: \(error.localizedDescription)") }
+        do { try await screenshots(); print("PASS Screenshots for the Shelf: a new file marked as a screen capture is told once, also one arriving as it is turned on and one marked late; one there before, unmarked, wrongly marked, not an image, hidden, renamed, or made after turning off is not") }
+        catch { failed += 1; print("FAIL Screenshots: \(error.localizedDescription)") }
         do { try await shelfSync(); print("PASS Shelf between Macs over real TCP: both directions, multi-frame file intact, removal, catching up, relay, large items as cards fetched on demand, resume, fetch through a third Mac, untrusted Mac, two Macs calling each other") }
         catch { failed += 1; print("FAIL Shelf sync: \(error.localizedDescription)") }
         do { try await links(); print("PASS Links through the helper: the helper says whether it can, a file goes whole and its link comes back, hosted already sends nothing, a card with no file, each refusal in words, taken down") }
@@ -1623,6 +1625,56 @@ struct Checks {
         try check(!laptop.clip.entries.contains { $0.id == note.id } && !office.clip.entries.contains { $0.id == note.id }, "and not brought back anywhere")
 
         laptop.shelf.stop(); tablet.shelf.stop(); office.shelf.stop(); receiver.stop()
+    }
+
+    /// Screenshots go on the Shelf (user 2026-11-27): the files macOS marks, arriving in the folder
+    /// watched, as macOS moves a finished screenshot in.
+    @MainActor static func screenshots() async throws {
+        let root = try scratch("screenshots")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Desktop"), staging = root.appendingPathComponent("staging")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let mark = try PropertyListSerialization.data(fromPropertyList: true, format: .binary, options: 0)
+        func setMark(_ file: URL, _ value: Data) throws {
+            let result = value.withUnsafeBytes { setxattr(file.path, "com.apple.metadata:kMDItemIsScreenCapture", $0.baseAddress, value.count, 0, 0) }
+            try check(result == 0, "the mark can be written")
+        }
+        // As macOS does: the finished file, marked, moved into the folder.
+        func arrive(_ name: String, mark value: Data?, made: Date? = nil) throws {
+            let file = staging.appendingPathComponent(name)
+            try Data([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).write(to: file)
+            if let made { try FileManager.default.setAttributes([.creationDate: made], ofItemAtPath: file.path) }
+            if let value { try setMark(file, value) }
+            try FileManager.default.moveItem(at: file, to: folder.appendingPathComponent(name))
+        }
+        try arrive("Before.png", mark: mark, made: Date().addingTimeInterval(-3600))
+        try check(ScreenshotWatcher.isScreenCapture(folder.appendingPathComponent("Before.png")), "the mark is read")
+        let watcher = ScreenshotWatcher()
+        watcher.folderOverride = folder
+        var told: [String] = []
+        watcher.onScreenshot = { told.append($0.lastPathComponent) }
+        watcher.set(on: true)
+        // Before the first look at the folder has finished.
+        try arrive("Early.png", mark: mark)
+        try await settle("a screenshot made as it was turned on is told") { told.contains("Early.png") }
+        try arrive("Plain.png", mark: nil)
+        try arrive(".Hidden.png", mark: mark)
+        try arrive("Note.txt", mark: mark)
+        try arrive("Junk.png", mark: Data([1, 2, 3]))
+        try arrive("Late.png", mark: nil)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        try setMark(folder.appendingPathComponent("Late.png"), mark)
+        try arrive("Screenshot 1.png", mark: mark)
+        try await settle("a new screenshot is told, and one whose mark came after it") { told.contains("Screenshot 1.png") && told.contains("Late.png") }
+        try FileManager.default.moveItem(at: folder.appendingPathComponent("Screenshot 1.png"), to: folder.appendingPathComponent("Renamed.png"))
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try check(told.sorted() == ["Early.png", "Late.png", "Screenshot 1.png"],
+                  "those alone, each once: not one there before, unmarked, hidden, not an image, wrongly marked, or renamed (told: \(told))")
+        watcher.set(on: false)
+        try arrive("Screenshot 2.png", mark: mark)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        try check(!told.contains("Screenshot 2.png"), "nothing once turned off")
     }
 
     @MainActor static func shelfSync() async throws {

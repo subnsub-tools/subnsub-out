@@ -783,5 +783,6 @@
  "Remove every item but the pinned ones, here and on your other Macs?": "ピンで固定したもの以外を、このMacとほかのMacからすべて削除しますか？",
  "Remove every copied item but the pinned ones, here and on your other Macs?": "ピンで固定したもの以外のコピーした項目を、このMacとほかのMacからすべて削除しますか？",
  "Remove every voice record here and on your other Macs, and the audio waiting to be transcribed on this Mac?": "すべての音声の記録をこのMacとほかのMacから、文字起こしを待っている音声をこのMacから削除しますか？",
- "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "まだ何もありません。音声入力した内容と、クリップボード履歴がオンのときにコピーしたものは、ここと「複数のMac」のほかのMacに保持され、ほかのMacのものもここに保持されます（コピーしたファイルは名前だけ）。コピーしたファイルはシェルフにも置かれ、それらのMacで共有されます。"
+ "Nothing here yet. What you dictate, and what you copy while the clipboard history is on, is kept here and on your other Macs in Multiple Macs, and what is dictated or copied on them is kept here (copied files by name alone). Copied files also go on the Shelf, which those Macs share.": "まだ何もありません。音声入力した内容と、クリップボード履歴がオンのときにコピーしたものは、ここと「複数のMac」のほかのMacに保持され、ほかのMacのものもここに保持されます（コピーしたファイルは名前だけ）。コピーしたファイルはシェルフにも置かれ、それらのMacで共有されます。",
+ "Put new screenshots on the Shelf": "新しいスクリーンショットをシェルフに置く"
 }
