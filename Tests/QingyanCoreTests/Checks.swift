@@ -154,6 +154,8 @@ struct Checks {
         catch { failed += 1; print("FAIL Corners: \(error.localizedDescription)") }
         do { try await remoteKnock(); print("PASS Knock over real TCP: only the Mac that saw the knock claims, text reaches it alone, field read and edit, untrusted/unready never arm, per-Mac permissions, the Mac that saw the knock told whose text is on the way and when it is not coming; the Mac a remote desktop's title names is tried first, the others only if it does not claim, the ones not reached last time last") }
         catch { failed += 1; print("FAIL Remote knock: \(error.localizedDescription)") }
+        do { try await remoteLayoutHold(); print("PASS Keyboard layout over real TCP: held only for the Mac whose knock was seen here, kept until it releases or its connection ends, the closing knock seen after the keys; an out that cannot hold is never asked") }
+        catch { failed += 1; print("FAIL Remote layout hold: \(error.localizedDescription)") }
         do { try await remoteWorked(); print("PASS Which Mac is being worked over real TCP: told by what each says of its input when it arms, no knock, the chosen Mac told whose text is on the way, the text reaches it; a Mac that says nothing leaves it to the knock") }
         catch { failed += 1; print("FAIL Remote worked: \(error.localizedDescription)") }
         do { try await platformCalls(); print("PASS Other platforms over real HTTP: nothing sent until the recording ends, upload and reply, hint only where taken, no key no header, short and cancelled recordings, tidying through chat and through Responses, cut-off replies refused, model list, errors without the reply's text") }
@@ -1679,6 +1681,98 @@ struct Checks {
         let fromWest = try west.add(Data("Put up in the west".utf8), kind: .text, name: "Note.txt", origin: "West")
         try await settle("and it carries both ways") { west.has(fromEast.id) && east.has(fromWest.id) }
         eastSync.stop(); westSync.stop(); eastEar.stop(); westEar.stop()
+    }
+
+    /// Type the Clipboard into a remote desktop: the Mac it shows types the keys with a keyboard
+    /// layout while they come (user 2026-11-27: letters went into an input method there).
+    @MainActor static func remoteLayoutHold() async throws {
+        let base = 20000 + Int.random(in: 0..<19000)
+        let office = RemoteReceiver(), older = RemoteReceiver()
+        office.name = "Office"; older.name = "Older"
+        var held = 0, released = 0, canHold = true
+        office.holdLayout = { held += 1; return canHold }
+        office.releaseLayout = { released += 1 }
+        var atOlder: [RemoteReceiver.Request] = []
+        let me = DeviceIdentity()
+        let card = TrustedDevice(key: me.publicKey, name: "Laptop", host: "", port: 30001)
+        office.trusted = { $0 == me.publicKey ? card : nil }
+        older.trusted = { $0 == me.publicKey ? card : nil }
+        office.start(port: base, probe: { (true, "ready") }, deliver: { _ in "Pasted" })
+        older.start(port: base + 1, probe: { (true, "ready") }, deliver: { atOlder.append($0); return "Pasted" })
+        try await settle("both listen") { office.listening && older.listening }
+        let peers = [TrustedDevice(key: office.identity.publicKey, name: "", host: "127.0.0.1", port: base),
+                     TrustedDevice(key: older.identity.publicKey, name: "", host: "127.0.0.1", port: base + 1)]
+
+        let session = RemoteSession(devices: peers, identity: me, name: "Laptop", listening: 30001)
+        await session.arm(timeout: 2)
+        try check(session.armedCount == 2, "both Macs arm")
+        let early = await session.holdLayout(at: 0, seconds: 1)
+        try check(!early && held == 0, "no layout is held for a Mac whose knock was not seen there")
+        session.choose(0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let chosen = await session.holdLayout(at: 0, seconds: 1)
+        try check(!chosen && held == 0, "nor for one told by its input alone, with no knock")
+        let found = await session.locate { office.knocked(session.nonce) }
+        try check(found == 0, "the Mac that saw the knock claims it")
+        let holding = await session.holdLayout(at: 0, seconds: 1)
+        try check(holding && held == 1, "the Mac whose knock was seen there holds a layout")
+        let caught = await session.caughtUp(0, within: 2) { closing in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            office.knocked(closing)
+        }
+        try check(caught, "the closing knock, a combination of its own, is seen")
+        let lost = await session.caughtUp(0, within: 0.3) { _ in }
+        try check(!lost, "a closing knock that never arrives is not taken for one")
+        let stale = await session.caughtUp(0, within: 0.3) { _ in office.knocked(session.nonce) }
+        try check(!stale, "nor is a late answer to a knock of the search")
+        await session.releaseLayout(at: 0)
+        try check(released == 1, "the release puts the input source back")
+        await session.releaseLayout(at: 0)
+        try check(released == 1, "a second release changes nothing")
+        let again = await session.holdLayout(at: 0, seconds: 1)
+        try check(again && held == 2, "held again")
+        session.close()
+        try await settle("the end of the connection puts the input source back") { released == 2 }
+
+        // Two Macs at once: the one asking while the other holds is told no.
+        let first = RemoteSession(devices: [peers[0]], identity: me, name: "Laptop", listening: 30001)
+        let tablet = DeviceIdentity()
+        let tabletCard = TrustedDevice(key: tablet.publicKey, name: "Tablet", host: "", port: 30003)
+        office.trusted = { $0 == me.publicKey ? card : $0 == tablet.publicKey ? tabletCard : nil }
+        var other = Knock.newNonce()
+        while other == first.nonce { other = Knock.newNonce() }
+        let second = RemoteSession(devices: [peers[0]], identity: tablet, name: "Tablet", listening: 30003, nonce: other)
+        await first.arm(timeout: 2); await second.arm(timeout: 2)
+        _ = await first.locate { office.knocked(first.nonce) }
+        _ = await second.locate { office.knocked(second.nonce) }
+        let firstHolds = await first.holdLayout(at: 0, seconds: 1)
+        let secondHolds = await second.holdLayout(at: 0, seconds: 1)
+        try check(firstHolds && !secondHolds && held == 3, "one Mac holds the layout at a time")
+        second.close(); first.close()
+        try await settle("the holder's end puts the input source back") { released == 3 }
+        office.trusted = { $0 == me.publicKey ? card : nil }
+
+        // A Mac that finds no layout: told no, and nothing to put back when its connection ends.
+        canHold = false
+        let refused = RemoteSession(devices: [peers[0]], identity: me, name: "Laptop", listening: 30001)
+        await refused.arm(timeout: 2)
+        _ = await refused.locate { office.knocked(refused.nonce) }
+        let none = await refused.holdLayout(at: 0, seconds: 1)
+        try check(!none && held == 4, "a Mac that selects no layout says no")
+        refused.close()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try check(released == 3, "and puts nothing back")
+
+        // An out that cannot hold (an earlier version, or none set): never asked, and its link stays usable.
+        let toOlder = RemoteSession(devices: [peers[1]], identity: me, name: "Laptop", listening: 30001)
+        await toOlder.arm(timeout: 2)
+        _ = await toOlder.locate { older.knocked(toOlder.nonce) }
+        let asked = await toOlder.holdLayout(at: 0, seconds: 1)
+        try check(!asked && !toOlder.canHoldLayout(at: 0), "an out that cannot hold is not asked")
+        _ = try await toOlder.send(to: 0, text: "Still here", mode: .dictate, seconds: 1)
+        try check(atOlder.map(\.text) == ["Still here"], "and its link still takes text")
+        toOlder.close()
+        office.stop(); older.stop()
     }
 
     @MainActor static func remoteKnock() async throws {

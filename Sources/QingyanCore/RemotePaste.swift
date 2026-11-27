@@ -551,6 +551,10 @@ public final class RemoteSession {
         var caret = false
         /// Its out takes text for the clipboard alone (`clipboardOnly`); an earlier one would type it.
         var takesClipboard = false
+        /// Its out selects a keyboard layout while keys come through a remote desktop (`holdLayout`).
+        var holdsLayout = false
+        /// When each knock combination was last said to be seen, from an out that says which.
+        var seenNonce: [Int: Date] = [:]
         var elapsed: TimeInterval = 0
         var reply: Once<[String: Any]>?
         /// Arming was tried, and whether a channel to the Mac opened at all.
@@ -754,6 +758,7 @@ public final class RemoteSession {
                 }
                 link.name = reply["name"] as? String ?? channel.peerName
                 link.takesClipboard = reply["clipboardOnly"] as? Bool == true
+                link.holdsLayout = reply["layout"] as? Bool == true
                 if let idle = (reply["idle"] as? NSNumber)?.doubleValue, idle.isFinite, idle >= 0 {
                     link.idle = idle; link.idleAt = Date(); link.caret = reply["caret"] as? Bool == true
                 }
@@ -773,7 +778,10 @@ public final class RemoteSession {
     private func listen(_ link: Link, _ channel: Channel) {
         Task { @MainActor in
             while let frame = try? await channel.readObject() {
-                if frame["seen"] as? Bool == true { link.seen = Date() }
+                if frame["seen"] as? Bool == true {
+                    link.seen = Date()
+                    if let nonce = frame["nonce"] as? Int { link.seenNonce[nonce] = Date() }
+                }
                 else { link.reply?.resume(.success(frame)); link.reply = nil }
             }
             link.armed = false
@@ -877,6 +885,49 @@ public final class RemoteSession {
         return (before, after)
     }
 
+    /// Whether the out of the Mac at `index` can hold a keyboard layout (`holdLayout`): an earlier
+    /// one cannot, and is never asked.
+    public func canHoldLayout(at index: Int) -> Bool { links.indices.contains(index) && links[index].holdsLayout }
+
+    /// Whether the Mac at `index` is still connected: a layout it holds goes back when it is not.
+    public func isArmed(_ index: Int) -> Bool { !closed && links.indices.contains(index) && links[index].armed }
+
+    /// Asks the Mac at `index`, whose knock was seen there, to type the keys coming through the remote
+    /// desktop for about `seconds` with a keyboard layout (an input method there would take letters in
+    /// as a composition), until `releaseLayout` or the end of the connection. Whether it does: false
+    /// for an out that cannot (`canHoldLayout`), that found no layout to select, or that did not answer.
+    public func holdLayout(at index: Int, seconds: Double, timeout: TimeInterval = 3) async -> Bool {
+        guard canHoldLayout(at: index) else { return false }
+        let reply = try? await exchange(index, ["layout": "hold", "seconds": max(0, seconds)], timeout: timeout)
+        return reply?["ok"] as? Bool == true
+    }
+
+    /// The Mac at `index` puts its input source back (a moment later, for its last keys).
+    public func releaseLayout(at index: Int, timeout: TimeInterval = 3) async {
+        guard canHoldLayout(at: index) else { return }
+        _ = try? await exchange(index, ["layout": "release"], timeout: timeout)
+    }
+
+    /// After keys typed through the remote desktop to the Mac at `index`, which holds a layout: a knock
+    /// of a new combination, which that Mac sees only once every key typed before it has come in.
+    /// Waits up to `within` for that Mac to say it saw that combination (an answer to an earlier knock
+    /// of the search, arriving late, is not taken for it). False when it did not say so in time.
+    public func caughtUp(_ index: Int, within: TimeInterval, knock: @MainActor (Int) async -> Void) async -> Bool {
+        guard isArmed(index) else { return false }
+        var closing = Knock.newNonce()
+        while closing == nonce { closing = Knock.newNonce() }
+        guard let reply = try? await exchange(index, ["layout": "sync", "nonce": closing], timeout: 3), reply["ok"] as? Bool == true else { return false }
+        let started = Date()
+        await knock(closing)
+        let deadline = Date().addingTimeInterval(within)
+        while isArmed(index) {
+            if (links[index].seenNonce[closing] ?? .distantPast) >= started { return true }
+            guard Date() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return false
+    }
+
     public func close() {
         closed = true
         for link in links { link.channel?.close() }
@@ -958,6 +1009,19 @@ public final class RemoteReceiver {
     public var microphoneAnswer: ((_ key: String, _ from: String, _ again: Bool) async -> MicrophoneAnswer)?
     /// The connections of the Macs whose text is on the way, the latest knock last.
     private var incoming: [(connection: NWConnection, from: String)] = []
+    /// Another Mac types the clipboard through a remote desktop into the app in front here, and asks,
+    /// once its knock was seen here, for a keyboard layout while the keys come (an input method would
+    /// take letters in as a composition): `holdLayout` selects one and says whether one is in use;
+    /// `releaseLayout` puts the input source back. Not set: such a Mac is told no.
+    public var holdLayout: (() async -> Bool)?
+    public var releaseLayout: (() -> Void)?
+    /// The connection the layout is held for; its end puts the input source back.
+    private var layoutHolder: ObjectIdentifier?
+    /// Connections whose knock was seen here (not those told by input alone, `chosen`): only they
+    /// type through the remote desktop in front, and only they may ask for a layout.
+    private var knockedHere = Set<ObjectIdentifier>()
+    /// The longest hold: the most text Type the Clipboard types (20,000 line breaks at 60 ms), and room.
+    private static let longestHold: TimeInterval = 1_500
 
     private var listener: NWListener?
     private var port = 0
@@ -1086,7 +1150,9 @@ public final class RemoteReceiver {
     /// comes here.
     public func knocked(_ nonce: Int) {
         guard let channel = armed[nonce] else { Trace.note("receive: a knock was typed here that no Mac is waiting on"); return }
-        channel.post(["seen": true])
+        // Which combination: a Mac that knocks again to learn its keys are all in tells them apart.
+        channel.post(["seen": true, "nonce": nonce])
+        knockedHere.insert(ObjectIdentifier(channel.connection))
         Trace.note("receive: knock seen; \(sender(channel)) is told its text comes here")
         expect(channel)
     }
@@ -1144,6 +1210,12 @@ public final class RemoteReceiver {
         defer {
             expire(connection, after: nil)
             timedOut.remove(ObjectIdentifier(connection))
+            knockedHere.remove(ObjectIdentifier(connection))
+            if layoutHolder == ObjectIdentifier(connection) {
+                layoutHolder = nil
+                Trace.note("receive: the connection that held the keyboard layout ended; the input source goes back")
+                releaseLayout?()
+            }
             armed = armed.filter { $0.value.connection !== connection }
             if let index = incoming.firstIndex(where: { $0.connection === connection }) {
                 let named = index == incoming.count - 1
@@ -1271,7 +1343,8 @@ public final class RemoteReceiver {
             armed[nonce] = channel
             expire(channel.connection, after: Self.armedLifetime)
             // It takes text for the clipboard alone, which the sender sends when no Mac claims its knock.
-            var reply: [String: Any] = ["ok": true, "message": "armed", "name": name, "clipboardOnly": true]
+            var reply: [String: Any] = ["ok": true, "message": "armed", "name": name, "clipboardOnly": true,
+                                        "layout": holdLayout != nil]
             if let activity = activity?() {
                 reply["idle"] = min(max(0, activity.idle), 86_400 * 365); reply["caret"] = activity.caret
             }
@@ -1287,6 +1360,43 @@ public final class RemoteReceiver {
             return ([:], .quiet)
         }
         let stays: Next = armed.values.contains(where: { $0 === channel }) ? .keep : .close
+        if let step = object["layout"] as? String {
+            let mine = ObjectIdentifier(channel.connection)
+            // Only for the Mac whose knock was seen here: its keys are the ones coming in.
+            guard knockedHere.contains(mine) else { return (["ok": false], stays) }
+            switch step {
+            case "hold":
+                guard let holdLayout, layoutHolder == nil || layoutHolder == mine else { return (["ok": false], .keep) }
+                // Taken before the switch, which waits: another Mac asking meanwhile is told no.
+                let again = layoutHolder == mine
+                layoutHolder = mine
+                let held = await holdLayout()
+                Trace.note("receive: \(sender(channel)) types through a remote desktop; \(held ? "a keyboard layout is selected while its keys come" : "no keyboard layout could be selected")")
+                guard held else {
+                    if layoutHolder == mine { layoutHolder = nil; if again { releaseLayout?() } }
+                    return (["ok": false], .keep)
+                }
+                // Held no longer than the typing takes, with room for a slow remote desktop.
+                let seconds = (object["seconds"] as? NSNumber)?.doubleValue ?? 0
+                expire(channel.connection, after: min(Self.longestHold, (seconds.isFinite ? max(0, seconds) : 0) + 15))
+                return (["ok": true], .keep)
+            case "sync":
+                // The knock that tells that Mac its keys are all in: a combination of its own.
+                guard layoutHolder == mine, let nonce = object["nonce"] as? Int, Knock.validNonce(nonce),
+                      armed[nonce] == nil || armed[nonce] === channel else { return (["ok": false], .keep) }
+                armed[nonce] = channel
+                return (["ok": true], .keep)
+            case "release":
+                if layoutHolder == mine {
+                    layoutHolder = nil
+                    Trace.note("receive: \(sender(channel)) finished typing; the input source goes back")
+                    releaseLayout?()
+                }
+                return (["ok": true], .keep)
+            default:
+                return (["ok": false], .keep)
+            }
+        }
         if object["context"] as? Bool == true {
             guard device.canRead else { return (["ok": false, "message": tr("The other Mac does not allow reading its text field.")], stays) }
             guard let field = context?() else { return (["ok": false, "message": tr("Could not read the text field on the other Mac.")], stays) }

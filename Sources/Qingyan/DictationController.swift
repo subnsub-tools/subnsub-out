@@ -315,6 +315,11 @@ final class DictationController: ObservableObject {
             Task { @MainActor in TextTarget.prepareFront() }
         }
         shortcut.onTypeClipboard = { [weak self] in Task { @MainActor in self?.typeClipboard(from: .shortcut) } }
+        // Where the keyboard was in the app a click on out's panel or menu takes it from.
+        shortcut.onClickHere = { [weak self] in
+            self?.clickedHere = Date()
+            self?.focusLeft = FocusReturn.capture()
+        }
         shortcut.onClipboardHistory = { [weak self] in Task { @MainActor in self?.picker.toggle() } }
         clipboard.policy = { [weak settings] in
             guard let prefs = settings?.preferences else { return ClipboardHistory.Policy(record: false) }
@@ -332,10 +337,22 @@ final class DictationController: ObservableObject {
         }
         // Where the panel's Type the Clipboard types into: the last app in front other than this one.
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() { lastOtherApp = front }
+        // out in front with no click on it (⌘Tab, the Dock): where the app it came from had the keyboard,
+        // read as it has just let go. Not after a click on out whose reading found nothing: what that
+        // app shows once it is no longer in front is not taken in its place.
+        ownActivationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.focusLeft == nil, let app = self.lastOtherApp,
+                      Date().timeIntervalSince(self.clickedHere ?? .distantPast) > 1 else { return }
+                self.focusLeft = FocusReturn.capture(of: app)
+            }
+        }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.processIdentifier != getpid() else { return }
             MainActor.assumeIsolated {
                 self?.lastOtherApp = app
+                // Back in an app, the user may move its keyboard: where it was is no longer known.
+                self?.focusLeft = nil
                 // Another app in front: the keys pressed from now on are meant for it.
                 if self?.recordingShortcut == true { self?.endShortcutRecording() }
             }
@@ -367,6 +384,10 @@ final class DictationController: ObservableObject {
             self.screen.serveRemote(connection, key: key, viewer: viewer)
         }
         receiver.onIncomingEnded = { [weak self] in self?.receivingEnded() }
+        // Another Mac types its clipboard here through a remote desktop: letters must not go into an
+        // input method's composition (user 2026-11-27).
+        receiver.holdLayout = { await LayoutHold.begin() }
+        receiver.releaseLayout = { LayoutHold.end() }
         // Another Mac's microphone, to come out here as out Mic (user 2026-11-27).
         receiver.onMicrophone = { [weak self] input in
             Task { @MainActor in
@@ -1657,7 +1678,12 @@ final class DictationController: ObservableObject {
     }
     private var typingJob: Task<Void, Never>?
     private var lastOtherApp: NSRunningApplication?
+    /// Where the keyboard was in `lastOtherApp` when a click on out's window took it away.
+    private var focusLeft: FocusReturn?
+    /// When a click last landed on out's window while another app was in front.
+    private var clickedHere: Date?
     private var activationObserver: NSObjectProtocol?
+    private var ownActivationObserver: NSObjectProtocol?
 
     /// Puts a copied item back and pastes it into the app in front, from History. Clicked there,
     /// out is in front: the app that was in front before it gets the paste.
@@ -1757,6 +1783,7 @@ final class DictationController: ObservableObject {
         let front = NSWorkspace.shared.frontmostApplication
         let target = front.flatMap { $0.processIdentifier == getpid() ? nil : $0 } ?? (origin == .shortcut ? nil : lastOtherApp)
         guard let target else { showTypingProblem(tr("Click the field you want to type into first.")); return }
+        let returning = focusLeft?.pid == target.processIdentifier ? focusLeft : nil
         let id = UUID()
         sessionID = id
         result = ""; partial = ""; latency = nil; message = ""
@@ -1765,7 +1792,8 @@ final class DictationController: ObservableObject {
         presentOverlay?()
         typingJob = Task { @MainActor [weak self] in
             do {
-                let count = try await ClipboardTyper.type(text, into: target, from: origin,
+                let count = try await ClipboardTyper.type(text, into: target, from: origin, returning: returning,
+                                                          farSide: { [weak self] seconds in await self?.holdFarLayout(seconds: seconds) ?? .none },
                                                           userInputs: { [weak self] in self?.shortcut.userInputs ?? 0 }) { done, total in
                     guard let self, self.sessionID == id else { return }
                     self.typedCount = done; self.typingTotal = total
@@ -1788,6 +1816,45 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Type the Clipboard into a remote desktop: the knock tells which of the owner's Macs it shows,
+    /// and that Mac's out is asked to type with a keyboard layout for about `seconds` while the keys
+    /// come. `.none` when cross-Mac typing is off, no Mac claims the knock (another computer, or one
+    /// without out), or that Mac's out cannot (an earlier version): the keys are typed anyway.
+    /// `.refused` when it can but did not.
+    private func holdFarLayout(seconds: Double) async -> FarSide {
+        let devices = settings.preferences.devices.filter(\.reachable)
+        guard let identity, settings.sendsRemotely, !settings.preview, !devices.isEmpty else { return .none }
+        let session = RemoteSession(devices: devices, identity: identity, name: deviceName, listening: settings.preferences.remotePort)
+        let mark = FocusMark.current()
+        let first = session.index(namedIn: mark?.title ?? "", learned: armedNames)
+        Trace.note("type: a remote desktop (\(Self.frontApp)) is in front; knocking to find the Mac it shows")
+        let found = await session.find(first: first, doubtful: unopened, timeout: 1.5, dial: Self.scoutDial) {
+            // Every knock goes into the window the typing is for, and none once the typing is cancelled.
+            guard !Task.isCancelled, let mark, mark.same(as: FocusMark.current()) else { return false }
+            await KnockKeys.post(nonce: session.nonce)
+            return true
+        }
+        armedNames.merge(session.names) { _, new in new }
+        guard !Task.isCancelled else { session.close(); return .none }
+        guard let found else {
+            Trace.note("type: no Mac claimed the knock (\(Self.readiness(session))); typing without asking any")
+            session.close(); return .none
+        }
+        guard session.canHoldLayout(at: found) else {
+            Trace.note("type: \(session.name(found)) claimed the knock; its out is an earlier one, typing without a layout there")
+            session.close(); return .none
+        }
+        let held = await session.holdLayout(at: found, seconds: seconds)
+        guard held, !Task.isCancelled else {
+            if !held { Trace.note("type: \(session.name(found)) selected no keyboard layout; nothing is typed") }
+            let name = session.name(found)
+            session.close()
+            return held ? .none : .refused(name)
+        }
+        Trace.note("type: \(session.name(found)) types with a keyboard layout while the keys come")
+        return .held(FarLayout(session: session, index: found))
+    }
+
     private func showTypingProblem(_ problem: String) {
         let id = UUID()
         sessionID = id
@@ -1804,6 +1871,7 @@ final class DictationController: ObservableObject {
     /// Sleep/quit preserve unfinished work; only an explicit Cancel discards it.
     func suspend() {
         if typingJob != nil { stopTyping() }
+        LayoutHold.end(now: true)
         stopRetry()
         endRemote("this Mac sleeps or out quits")
         // A recording still starting is dropped; nothing has reached History yet.

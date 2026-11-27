@@ -122,6 +122,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--typing-selftest"), CommandLine.arguments.count > index + 1 {
+            let report = CommandLine.arguments[index + 1]
+            Task { @MainActor in exit(await TypingSelfTest.run(report: report) ? 0 : 1) }
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--typing-target"), CommandLine.arguments.count > index + 1 {
+            TypingTestTarget.run(state: CommandLine.arguments[index + 1])
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--render-previews"), CommandLine.arguments.count > index + 1 {
             Task { @MainActor in
                 do { try await renderPreviews(to: CommandLine.arguments[index + 1]); NSApp.terminate(nil) }

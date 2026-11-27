@@ -85,6 +85,9 @@ final class GlobalShortcut {
     var onHoldReleased: ((_ stop: Bool) -> Void)?
     /// A key or click soon after a held Fn started a recording: the press was a key combination.
     var onHoldBroken: (() -> Void)?
+    /// A click on one of this app's windows while another app is in front: told before the click
+    /// arrives, while that app still has the keyboard where the user left it (FocusReturn).
+    var onClickHere: (() -> Void)?
     /// How many keys and clicks of the user's have come in (not this app's own): Type the Clipboard
     /// stops when one comes in between, since it may have moved the focus.
     private(set) var userInputs = 0
@@ -187,6 +190,9 @@ final class GlobalShortcut {
         // Keys this app posts itself (the paste, the knock) are not the user's and must not disturb the gesture.
         if event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return pass }
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            if let onClickHere, NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), Self.landsHere(event.location) {
+                onClickHere()
+            }
             touched = true
             userInputs &+= 1
             // A click with the shortcut's modifier held is a chord, not a tap.
@@ -290,6 +296,14 @@ final class GlobalShortcut {
             }
         }
         return pass
+    }
+
+    /// Whether a click at this point (the event's, from the top left of the main display) lands on one
+    /// of this app's windows: the panel, the bar, a menu-bar item's.
+    private static func landsHere(_ location: CGPoint) -> Bool {
+        guard let height = NSScreen.screens.first?.frame.height else { return false }
+        let number = NSWindow.windowNumber(at: NSPoint(x: location.x, y: height - location.y), belowWindowWithWindowNumber: 0)
+        return number > 0 && NSApp.window(withWindowNumber: number) != nil
     }
 
     /// Another key, modifier or click: a chord, not a tap; soon after a held Fn started a recording,
