@@ -62,6 +62,7 @@ jobs:
       - name: Checks
         run: |
           swift run QingyanChecks
+          bash Tests/check-shelf-import.sh
           sh -n install.sh
 
       - name: Build number

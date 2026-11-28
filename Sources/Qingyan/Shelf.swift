@@ -29,8 +29,8 @@ final class ShelfModel: ObservableObject {
     /// date), for what an earlier version put there without keeping it.
     private var changedDates: [UUID: Date] = [:]
     private var icons: [UUID: NSImage] = [:]
-    /// Copied files on their way onto the Shelf, so that one copied twice in a row goes on once.
-    private var shelving: Set<String> = []
+    /// Only one import at a time per Shelf name; a waiter checks the bytes that actually arrived.
+    private var shelving: [String: Task<Bool, Error>] = [:]
     /// Put on the Shelf by a copy: kept on the primary helper only once their link is asked for.
     private var quiet: Set<UUID> = []
     /// The items this Mac was given a link for, and the link.
@@ -68,9 +68,6 @@ final class ShelfModel: ObservableObject {
     /// Counts the user's asks for the clipboard (copy an item, copy a link): a link or a file that
     /// arrives later goes on the clipboard only if no ask came after its own.
     private var clipboardTurn = 0
-    /// Screenshots being put on the Shelf by a copy of their file at the same time: kept on the
-    /// primary helper once added.
-    private var keepWhenAdded: Set<String> = []
     /// Items asked to be downloaded to this Mac: shown in the Finder once they arrive.
     private var revealWhenHere: Set<UUID> = []
     private var expiryChecked = Date.distantPast
@@ -225,13 +222,7 @@ final class ShelfModel: ObservableObject {
         guard store != nil else { return }
         switch entry.kind {
         case .files:
-            // A file copied on this Mac is on the Shelf already, or on its way there, put there quietly:
-            // kept on the primary helper now, for its link, rather than put there twice. A folder, an
-            // empty file and a large one from another disk go the usual way.
-            let home = store?.directory ?? URL(fileURLWithPath: "/")
-            for url in history.files(entry) {
-                if let file = Self.copied(url, home: home) { addQuietly(file, keep: true) } else { addFile(url) }
-            }
+            history.files(entry).forEach(addFile)
         case .image: if let data = history.imageBytes(entry) { addImage(data) }
         case .text: if let text = history.text(entry) { addText(text) }
         }
@@ -257,9 +248,9 @@ final class ShelfModel: ObservableObject {
         guard let store, !files.isEmpty, files.count <= Self.quietCopyMost else { return }
         let home = store.directory
         Task { [weak self] in
-            let found = await Task.detached(priority: .utility) { files.compactMap { Self.copied($0, home: home) } }.value
+            let found = await Task.detached(priority: .utility) { files.compactMap { try? Self.copied($0, home: home, automatic: true) } }.value
             guard let self else { return }
-            for file in found { self.addQuietly(file, keep: keep) }
+            for file in found { _ = try? await self.shelve(file, in: store, keep: keep) }
         }
     }
 
@@ -276,14 +267,17 @@ final class ShelfModel: ObservableObject {
         let size: Int
         let modified: Date?
         let image: Bool
-        var token: String { "\(name)\u{0}\(size)\u{0}\(modified?.timeIntervalSince1970 ?? 0)" }
     }
 
-    nonisolated private static func copied(_ url: URL, home: URL) -> Copied? {
-        guard url.isFileURL, !url.standardizedFileURL.path.hasPrefix(home.standardizedFileURL.path),
-              let values = try? url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .isDirectoryKey, .contentModificationDateKey, .volumeIdentifierKey]),
-              values.isDirectory != true, let size = values.fileSize, size > 0 else { return nil }
-        if size > quietCopyLimit {
+    nonisolated private static func copied(_ url: URL, home: URL, automatic: Bool) throws -> Copied? {
+        guard url.isFileURL else { throw VoiceError(tr("Cannot read this file.")) }
+        let path = url.standardizedFileURL.path, directory = home.standardizedFileURL.path
+        guard path != directory, !path.hasPrefix(directory + "/") else { return nil }
+        let values = try url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .isDirectoryKey, .contentModificationDateKey, .volumeIdentifierKey])
+        guard values.isDirectory != true else { throw VoiceError(tr("Folders cannot be dragged in yet. Compress the folder into a single file first.")) }
+        guard let size = values.fileSize else { throw VoiceError(tr("Cannot read this file.")) }
+        guard size > 0 else { throw VoiceError(tr("The file is empty and was not added to the Shelf.")) }
+        if automatic, size > quietCopyLimit {
             let shelfDisk = (try? home.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
             guard let disk = values.volumeIdentifier as? NSObject, let shelfDisk, disk.isEqual(shelfDisk) else { return nil }
         }
@@ -291,46 +285,69 @@ final class ShelfModel: ObservableObject {
                       modified: values.contentModificationDate, image: values.contentType?.conforms(to: .image) == true)
     }
 
-    private func addQuietly(_ file: Copied, keep: Bool = false) {
-        let name = ShelfStore.cleanName(file.name)
-        guard let store else { return }
-        // The same file put on by a copy of it too (a screenshot copied from the Finder): one item,
-        // kept on the primary helper if either asks it.
-        if shelving.contains(file.token) { if keep { keepWhenAdded.insert(file.token) }; return }
-        if let existing = items.first(where: { $0.kind != .text && $0.name == name && $0.size == file.size && $0.modified == file.modified }) {
-            if keep, quiet.remove(existing.id) != nil { saveLinks(); self.keep(existing) }
-            return
-        }
-        shelving.insert(file.token)
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.shelving.remove(file.token); self.keepWhenAdded.remove(file.token) }
+    /// Matching metadata narrows the search; only equal, readable bytes make an import redundant.
+    nonisolated private static func sameBytes(_ file: URL, _ stored: URL, size: Int) -> Bool {
+        do {
+            let source = try FileHandle(forReadingFrom: file)
+            defer { try? source.close() }
+            let copy = try FileHandle(forReadingFrom: stored)
+            defer { try? copy.close() }
+            var remaining = size
+            while true {
+                let matched = try autoreleasepool { () -> Int? in
+                    let a = try source.read(upToCount: 256 << 10) ?? Data()
+                    let b = try copy.read(upToCount: 256 << 10) ?? Data()
+                    return a == b ? a.count : nil
+                }
+                guard let matched, matched <= remaining else { return false }
+                if matched == 0 { return remaining == 0 }
+                remaining -= matched
+            }
+        } catch { return false }
+    }
+
+    private func shelve(_ file: Copied, in store: ShelfStore, keep: Bool) async throws -> Bool {
+        let cleanName = ShelfStore.cleanName(file.name)
+        while let previous = shelving[cleanName] { _ = await previous.result }
+        let pending = Task {
+            defer { shelving[cleanName] = nil }
+            for item in store.items where item.kind != .text && item.name == cleanName && item.size == file.size
+                && item.modified == file.modified && store.isPresent(item.id) {
+                let local = store.url(item)
+                let equal = await Task.detached { Self.sameBytes(file.url, local, size: file.size) }.value
+                guard equal, store.isPresent(item.id) else { continue }
+                if keep, quiet.remove(item.id) != nil { saveLinks(); self.keep(item) }
+                return false
+            }
             let thumbnail = await Self.quickLook(file.url)
-            guard let item = try? await store.add(copying: file.url, kind: file.image ? .image : .file, origin: self.name, thumbnail: thumbnail) else { return }
-            if keep || self.keepWhenAdded.contains(file.token) { self.keep(item); return }
-            // Remembered across restarts: the primary helper gets it only when its link is asked for.
-            self.quiet.insert(item.id)
-            self.saveLinks()
+            let item = try await store.add(copying: file.url, kind: file.image ? .image : .file, origin: name, thumbnail: thumbnail)
+            if keep { self.keep(item) } else { quiet.insert(item.id); saveLinks() }
+            return true
         }
+        shelving[cleanName] = pending
+        return try await pending.value
     }
 
     private func addFile(_ url: URL) {
-        guard let store else { return }
-        guard !url.standardizedFileURL.path.hasPrefix(store.directory.standardizedFileURL.path) else { return }
-        let values = try? url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey])
-        let image = values?.contentType?.conforms(to: .image) == true
-        let large = (values?.fileSize ?? 0) > ShelfStore.eagerBytes
-        if large { say(tr("Adding “%@”…", url.lastPathComponent), for: 60) }
-        Task { [weak self] in
-            guard let self else { return }
-            // Every file and image is a card on the other Macs: each has its thumbnail.
-            let thumbnail = await Self.quickLook(url)
-            do {
-                let item = try await store.add(copying: url, kind: image ? .image : .file, origin: self.name, thumbnail: thumbnail)
-                if large { self.say(tr("Added “%@”. Other Macs fetch it when it is needed.", item.name), for: 3.5, mark: .done) }
-                self.keep(item)
-            } catch { self.say(error.localizedDescription, for: 4, mark: .problem) }
+        Task {
+            do { _ = try await importFile(url, panelNotice: true) }
+            catch { say(error.localizedDescription, for: 4, mark: .problem) }
         }
+    }
+
+    /// True for a new item, false if already on the Shelf. The notch supplies its own feedback.
+    func importFile(_ url: URL, panelNotice: Bool = false) async throws -> Bool {
+        guard let store else { throw VoiceError(tr("Could not open the Shelf folder. Check disk space and access permissions.")) }
+        let home = store.directory
+        guard let file = try await Task.detached(operation: { try Self.copied(url, home: home, automatic: false) }).value else {
+            if panelNotice || items.contains(where: { store.isPresent($0.id) && store.url($0).standardizedFileURL == url.standardizedFileURL }) { return false }
+            throw VoiceError(tr("Cannot read this file."))
+        }
+        let large = panelNotice && file.size > ShelfStore.eagerBytes
+        if large { say(tr("Adding “%@”…", file.name), for: 60) }
+        let added = try await shelve(file, in: store, keep: true)
+        if large { say(added ? tr("Added “%@”. Other Macs fetch it when it is needed.", file.name) : tr("Already on the Shelf"), for: 3.5, mark: .done) }
+        return added
     }
 
     /// The thumbnail the other Macs' card shows, and the picture that floats out of a tile: large
@@ -368,7 +385,11 @@ final class ShelfModel: ObservableObject {
     }
 
     private func addImage(_ data: Data) {
-        guard let store else { return }
+        do { try importImage(data) } catch { say(error.localizedDescription, for: 4, mark: .problem) }
+    }
+
+    func importImage(_ data: Data) throws {
+        guard let store else { throw VoiceError(tr("Could not open the Shelf folder. Check disk space and access permissions.")) }
         let stamp = Date().formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).second(.twoDigits))
             .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: ".").replacingOccurrences(of: ",", with: "")
         var payload = data, kind = "png"
@@ -377,20 +398,25 @@ final class ShelfModel: ObservableObject {
         else if head.starts(with: [0xff, 0xd8, 0xff]) { kind = "jpg" }
         else if head.starts(with: [0x47, 0x49, 0x46]) { kind = "gif" }
         else if let bitmap = NSBitmapImageRep(data: data), let png = bitmap.representation(using: .png, properties: [:]) { payload = png }
-        else { say(tr("This image format is not supported, so it was not put on the Shelf."), for: 4, mark: .problem); return }
+        else { throw VoiceError(tr("This image format is not supported, so it was not put on the Shelf.")) }
         // The name is for people to read (it becomes the file's name when dragged out); nothing matches on it.
-        do {
-            let item = try store.add(payload, kind: .image, name: tr("Image %@.%@", stamp, kind), origin: name,
-                                     thumbnail: NSImage(data: payload).flatMap(Self.jpeg))
-            keep(item)
-        } catch { say(error.localizedDescription, for: 4, mark: .problem) }
+        let item = try store.add(payload, kind: .image, name: tr("Image %@.%@", stamp, kind), origin: name,
+                                 thumbnail: NSImage(data: payload).flatMap(Self.jpeg))
+        keep(item)
     }
 
     private func addText(_ text: String) {
-        guard let store, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard !items.contains(where: { $0.kind == .text && store.text($0) == text }) else { return }
-        do { try store.add(Data(text.utf8), kind: .text, name: tr("Text.txt"), origin: name) }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        do { _ = try importText(text) }
         catch { say(error.localizedDescription, for: 4, mark: .problem) }
+    }
+
+    func importText(_ text: String) throws -> Bool {
+        guard let store else { throw VoiceError(tr("Could not open the Shelf folder. Check disk space and access permissions.")) }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VoiceError(tr("The content is empty and was not added to the Shelf.")) }
+        guard !items.contains(where: { $0.kind == .text && store.text($0) == text }) else { return false }
+        try store.add(Data(text.utf8), kind: .text, name: tr("Text.txt"), origin: name)
+        return true
     }
 
     // MARK: Taking things off

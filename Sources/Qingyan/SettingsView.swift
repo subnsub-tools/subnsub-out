@@ -617,7 +617,7 @@ private struct DashboardGroup: View {
     }
 }
 
-private struct GeneralGroup: View {
+struct GeneralGroup: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var controller: DictationController
     @ObservedObject var updater: Updater
@@ -652,6 +652,12 @@ private struct GeneralGroup: View {
                 )).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }
             if !settings.loginMessage.isEmpty { hint(settings.loginMessage, warning: true) }
+            if settings.hasCameraHousing {
+                Toggle(isOn: $settings.preferences.shelfAtCamera) {
+                    Text(tr("Show the Shelf at the camera cutout")).font(.system(size: 12))
+                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                }.toggleStyle(.switch).controlSize(.mini)
+            }
             Row(tr("Install updates automatically"), info: tr("Checks for new versions in the background. Once an update's hash and digital signature are verified, out replaces itself and restarts while idle.")) {
                 Toggle(tr("Install updates automatically"), isOn: $settings.preferences.autoUpdate).toggleStyle(.switch).labelsHidden().controlSize(.mini)
             }

@@ -80,6 +80,8 @@ final class PointerExitView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var settings: SettingsStore!
     private var controller: DictationController!
+    private var notchShelves: [NotchShelf] = []
+    private var notchPreference: AnyCancellable?
     private var historyKeys: Any?
     private var window: NSWindow?
     private var overlay: NSPanel?
@@ -148,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         settings = SettingsStore()
         if !loginItemRenewed { settings.loginMessage = tr("Open at login could not be set up again after the app moved to out.app. Turn it on again here.") }
         controller = DictationController(settings: settings)
+        observeNotchShelf(settings: settings, shelf: controller.shelf)
         settings.openPanel = { [weak self] in self?.showWindow() }
         settings.setCompact = { [weak self] on in self?.setCompact(on) }
         installMainMenu()
@@ -211,8 +214,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func observeNotchShelf(settings: SettingsStore, shelf: ShelfModel) {
+        let changed = NSApplication.didChangeScreenParametersNotification
+        let displays = NotificationCenter.default.publisher(for: changed).prepend(Notification(name: changed))
+            .map { _ in NSScreen.screens.compactMap(NotchShelf.housing(on:)) }
+        notchPreference = settings.$preferences.map(\.shelfAtCamera).removeDuplicates().combineLatest(displays)
+            .sink { [weak self] enabled, housings in
+                guard let self else { return }
+                let available = !housings.isEmpty
+                if settings.hasCameraHousing != available { settings.hasCameraHousing = available }
+                let active = enabled && shelf.store != nil ? housings : []
+                notchShelves.removeAll { panel in
+                    guard !active.contains(panel.housing) else { return false }
+                    panel.stop(); return true
+                }
+                for housing in active where !notchShelves.contains(where: { $0.housing == housing }) {
+                    notchShelves.append(NotchShelf(housing: housing, shelf: shelf))
+                }
+            }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        notchPreference?.cancel()
+        notchShelves.forEach { $0.stop() }
         settings?.flushPersistence()
         controller?.suspend(); controller?.shortcut.stop(); controller?.screen.stop()
         // The input out Mic took goes back; a microphone lent stays lent for the next launch.

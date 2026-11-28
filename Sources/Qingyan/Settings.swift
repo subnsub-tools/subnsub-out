@@ -92,6 +92,7 @@ struct Preferences: Codable, Equatable {
     /// after the user asked for this (user 2026-11-27). Under a name of its own: shelveScreenshots,
     /// which an earlier version kept as on without anyone turning it on, is not read.
     var screenshotsToShelf = false
+    var shelfAtCamera = false
 
     init() {}
 
@@ -130,6 +131,7 @@ struct Preferences: Codable, Equatable {
         clipIgnored = try values.decodeIfPresent([IgnoredApp].self, forKey: .clipIgnored) ?? clipIgnored
         showOnDashboard = try values.decodeIfPresent(Bool.self, forKey: .showOnDashboard) ?? showOnDashboard
         screenshotsToShelf = try values.decodeIfPresent(Bool.self, forKey: .screenshotsToShelf) ?? screenshotsToShelf
+        shelfAtCamera = try values.decodeIfPresent(Bool.self, forKey: .shelfAtCamera) ?? shelfAtCamera
         // Settings saved before the app had English were made in Chinese: they keep it.
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? Localization.Language.simplifiedChinese.rawValue
         if remotePeers.isEmpty && remoteRole == "send" && !remoteHost.isEmpty {
@@ -340,6 +342,7 @@ final class SettingsStore: ObservableObject {
     }
     @Published var history: [HistoryEntry]
     @Published var section: PanelSection?
+    @Published var hasCameraHousing = false
     /// A detail opened by hand on the panel (a paired Mac's, the microphone list): like a block
     /// unfolded, it lets a panel that was dragged shorter grow to fit again.
     let detailOpened = PassthroughSubject<Void, Never>()
