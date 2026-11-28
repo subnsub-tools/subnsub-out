@@ -28,9 +28,25 @@ struct Microphone: Identifiable, Equatable, Sendable {
         var bytes: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(device, &input, 0, nil, &bytes) == noErr, bytes > 0,
               let uid = Self.text(device, kAudioDevicePropertyDeviceUID), let name = Self.text(device, kAudioObjectPropertyName),
-              // The private pairing of devices the system makes for its own use is not a microphone to choose.
-              !uid.hasPrefix("CADefaultDeviceAggregate") else { return nil }
+              // The private pairings of devices the system makes for its own use (also the one voice
+              // processing makes while recording) are not microphones to choose.
+              !uid.hasPrefix("CADefaultDeviceAggregate"), !uid.hasPrefix("VPAUAggregateAudioDevice"),
+              !Self.privateAggregate(device) else { return nil }
         self.id = device; self.uid = uid; self.name = name
+    }
+
+    /// Whether `device` is an aggregate that its maker keeps private. One made by the user in Audio
+    /// MIDI Setup is not.
+    private static func privateAggregate(_ device: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioAggregateDevicePropertyComposition,
+                                                mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectHasProperty(device, &address) else { return false }
+        var value: Unmanaged<CFDictionary>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFDictionary>?>.size)
+        let status = withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(device, &address, 0, nil, &size, $0) }
+        guard status == noErr, let value else { return false }
+        let composition = value.takeRetainedValue() as NSDictionary
+        return (composition[kAudioAggregateDeviceIsPrivateKey] as? NSNumber)?.boolValue == true
     }
 
     /// Every device with an input, in the system's order.
@@ -162,6 +178,9 @@ final class AudioRecorder {
     /// later unit made at the same address, with the microphone connected (2026-11-20). While a
     /// refused engine lives, no new engine is made at its address. Touched only on `audio`.
     private nonisolated(unsafe) static var refused: [AVAudioEngine] = []
+    /// The same for voice-processing engines, apart, so they never use up the plain path's room.
+    /// When it is full, a locked microphone is recorded plainly. Touched only on `audio`.
+    private nonisolated(unsafe) static var refusedProcessed: [AVAudioEngine] = []
 
     private var capture: Capture?
     private var continuation: AsyncThrowingStream<Data, Error>.Continuation?
@@ -192,8 +211,9 @@ final class AudioRecorder {
         }
         let opened: Capture
         do {
-            opened = try await Self.withinLimit {
-                try Self.open(microphone: microphone, microphoneName: microphoneName, sink: sink, onLevel: onLevel, report: report)
+            opened = try await Self.withinLimit { expired in
+                try Self.open(microphone: microphone, microphoneName: microphoneName, sink: sink, onLevel: onLevel,
+                              report: report, expired: expired)
             }
         } catch {
             sink.finish()
@@ -207,7 +227,32 @@ final class AudioRecorder {
             throw failure ?? CancellationError()
         }
         capture = opened
+        if opened.processed { offerMicrophoneModes(session: session) }
         return stream
+    }
+
+    /// Set once the system's Mic Mode panel has been offered on this Mac.
+    private static let modesOfferedKey = "microphoneModesOffered"
+
+    /// Once, during the first recording through voice processing, opens the system's Mic Mode panel
+    /// so Voice Isolation can be chosen for out; the system keeps that choice for out from then on.
+    /// Skipped when it is chosen already.
+    private func offerMicrophoneModes(session: UUID) {
+        guard !UserDefaults.standard.bool(forKey: Self.modesOfferedKey) else { return }
+        Task { @MainActor [weak self] in
+            // The panel lists out only while its processed input is running.
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, self.session == session else { return }
+            UserDefaults.standard.set(true, forKey: Self.modesOfferedKey)
+            // The system's media service answers this, so it is asked off the main thread.
+            let isolated = await withCheckedContinuation { done in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    done.resume(returning: AVCaptureDevice.preferredMicrophoneMode == .voiceIsolation)
+                }
+            }
+            guard !isolated, self.session == session else { return }
+            AVCaptureDevice.showSystemUserInterface(.microphoneModes)
+        }
     }
 
     func stop() {
@@ -226,14 +271,14 @@ final class AudioRecorder {
     }
 
     /// Runs `work` on `audio` and waits for it for at most `startLimit` seconds. A capture that
-    /// opens after the limit is closed at once.
-    private nonisolated static func withinLimit(_ work: @escaping @Sendable () throws -> Capture) async throws -> Capture {
+    /// opens after the limit is closed at once; `work` is told whether the limit has passed.
+    private nonisolated static func withinLimit(_ work: @escaping @Sendable (_ expired: @Sendable () -> Bool) throws -> Capture) async throws -> Capture {
         try await withCheckedThrowingContinuation { continuation in
             let answer = FirstAnswer(continuation)
             audio.async {
                 // A start that has run out of time does not open the microphone any more.
                 guard !answer.given else { return }
-                let result = Result { try work() }
+                let result = Result { try work { answer.given } }
                 if !answer.give(result), case .success(let late) = result { late.close() }
             }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + startLimit) {
@@ -242,11 +287,13 @@ final class AudioRecorder {
         }
     }
 
-    /// Opens the microphone for one recording. Runs on `audio`.
+    /// Opens the microphone for one recording, through the system's voice processing when the Mac
+    /// and the device take it. Runs on `audio`.
     private nonisolated static func open(microphone: String, microphoneName: String,
                                          sink: AsyncThrowingStream<Data, Error>.Continuation,
                                          onLevel: @escaping @MainActor (Float) -> Void,
-                                         report: @escaping @Sendable (Error) -> Void) throws -> Capture {
+                                         report: @escaping @Sendable (Error) -> Void,
+                                         expired: @Sendable () -> Bool) throws -> Capture {
         let available = Microphone.available()
         let currentDefault = Microphone.systemDefault()
         let resolution = MicrophoneBinding.resolve(
@@ -265,52 +312,27 @@ final class AudioRecorder {
         // input is switched to; one that is needs no switch, and the system's input is watched instead.
         let switched = locked.flatMap { $0.uid == currentDefault?.uid ? nil : $0 }
         let throughSystem = !microphone.isEmpty && switched == nil
-        let engine = try switched.map(lockedEngine) ?? AVAudioEngine()
-        let input = engine.inputNode
-        // A device switch can leave the output bus at the previous device's rate. The input
-        // scope describes the hardware; an input node cannot resample it when installing a tap.
-        let format = input.inputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0,
-              let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true),
-              let converter = AVAudioConverter(from: format, to: outputFormat) else {
-            throw VoiceError(tr("The microphone offers no usable audio format. Check the sound input in System Settings."))
+        // The system's voice processing is tried first: echo cancellation, noise suppression, the
+        // Mic Mode chosen for out (Voice Isolation keeps only the nearest voice), and other sound
+        // turned down while recording. A Mac or device that does not take it records the plain input.
+        let engine: AVAudioEngine
+        let processed: Bool
+        if let voiced = processedEngine(switched),
+           (try? startTap(voiced.engine, format: voiced.format, sink: sink, onLevel: onLevel)) == true {
+            engine = voiced.engine
+            processed = true
+        } else {
+            // A start that ran out of time while trying does not open the microphone any more.
+            guard !expired() else { throw CancellationError() }
+            engine = try switched.map(lockedEngine) ?? AVAudioEngine()
+            processed = false
+            // A device switch can leave the output bus at the previous device's rate. The input
+            // scope describes the hardware; an input node cannot resample it when installing a tap.
+            guard try startTap(engine, format: engine.inputNode.inputFormat(forBus: 0), sink: sink, onLevel: onLevel) else {
+                throw VoiceError(tr("Could not start the microphone. Check the permission, the input device and other apps that record."))
+            }
         }
-        final class MeterGate: @unchecked Sendable { var lastReport: CFAbsoluteTime = 0 }
-        let gate = MeterGate()
-        // A route can change between reading the format and starting. Swift do/catch cannot
-        // catch AVFAudio's NSException, so installation and startup stay in Objective-C.
-        let started = QYStartAudioCapture(engine, format, { buffer, _ in
-            guard buffer.format == format else {
-                sink.finish(throwing: VoiceError(tr("The audio format changed. Start recording again."))); return
-            }
-            let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * 24000 / format.sampleRate)) + 64
-            guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
-            var supplied = false
-            var error: NSError?
-            let status = converter.convert(to: converted, error: &error) { _, state in
-                if supplied { state.pointee = .noDataNow; return nil }
-                supplied = true
-                state.pointee = .haveData
-                return buffer
-            }
-            guard status != .error, error == nil else { sink.finish(throwing: VoiceError(tr("The audio could not be converted. Choose the input device again."))); return }
-            guard let samples = converted.int16ChannelData?[0], converted.frameLength > 0 else { return }
-            let count = Int(converted.frameLength)
-            let data = Data(bytes: samples, count: count * MemoryLayout<Int16>.size)
-            let now = CFAbsoluteTimeGetCurrent()
-            if now - gate.lastReport >= 0.045 {
-                gate.lastReport = now
-                var squares: Double = 0
-                for i in 0..<count { let value = Double(samples[i]) / 32768; squares += value * value }
-                let level = Float(sqrt(squares / Double(count)))
-                Task { @MainActor in onLevel(level) }
-            }
-            if case .dropped = sink.yield(data) { sink.finish(throwing: VoiceError(tr("Audio was written too slowly on this Mac. Recording stopped; what was recorded is kept in History."))) }
-        }, nil)
-        guard started else {
-            throw VoiceError(tr("Could not start the microphone. Check the permission, the input device and other apps that record."))
-        }
-        let capture = Capture(engine: engine)
+        let capture = Capture(engine: engine, processed: processed)
         // The stream ends here at once, so no more audio is taken while the main thread catches up.
         let fail: @Sendable (Error) -> Void = { error in
             sink.finish(throwing: error)
@@ -351,6 +373,87 @@ final class AudioRecorder {
             throw lost == .gone ? VoiceError(tr("The locked microphone “%@” is disconnected, so there is no input.", label)) : lost.error(label)
         }
         return capture
+    }
+
+    /// An engine with the system's voice processing on its input, switched to `device` when one is
+    /// given, and the format its processed input is tapped in; nil when this Mac or the device does
+    /// not take it. Not started. Runs on `audio`.
+    private nonisolated static func processedEngine(_ device: Microphone?) -> (engine: AVAudioEngine, format: AVAudioFormat)? {
+        if device != nil, refusedProcessed.count >= 12 { return nil }
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        // AVFAudio can raise here as well as fail; both are kept in Objective-C.
+        guard QYEnableVoiceProcessing(input) else { return nil }
+        if let device {
+            guard let unit = input.audioUnit else { return nil }
+            // The voice-processing unit takes its input device on the input element.
+            var selected = device.id
+            var actual = AudioDeviceID(0)
+            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 1,
+                                              &selected, UInt32(MemoryLayout<AudioDeviceID>.size))
+            guard status == noErr,
+                  AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 1, &actual, &size) == noErr,
+                  actual == device.id else {
+                // A refused switch marks the address, as in lockedEngine.
+                if status == kAudioHardwareIllegalOperationError { refusedProcessed.append(engine) }
+                return nil
+            }
+        }
+        // Other apps are turned down as far as the system goes, for the whole recording.
+        input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+            enableAdvancedDucking: false, duckingLevel: .max)
+        // The processed input is one voice, at the device's rate: after a device switch the output
+        // bus can still describe the previous device, the input scope describes the hardware.
+        let rate = input.inputFormat(forBus: 0).sampleRate
+        guard rate > 0, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false) else {
+            return nil
+        }
+        return (engine, format)
+    }
+
+    /// Starts `engine` with a tap that turns its input, in `format`, into the 24 kHz mono stream.
+    /// False when the engine did not start; it is stopped again then. Runs on `audio`.
+    private nonisolated static func startTap(_ engine: AVAudioEngine, format: AVAudioFormat,
+                                             sink: AsyncThrowingStream<Data, Error>.Continuation,
+                                             onLevel: @escaping @MainActor (Float) -> Void) throws -> Bool {
+        guard format.sampleRate > 0, format.channelCount > 0,
+              let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: format, to: outputFormat) else {
+            throw VoiceError(tr("The microphone offers no usable audio format. Check the sound input in System Settings."))
+        }
+        final class MeterGate: @unchecked Sendable { var lastReport: CFAbsoluteTime = 0 }
+        let gate = MeterGate()
+        // A route can change between reading the format and starting. Swift do/catch cannot
+        // catch AVFAudio's NSException, so installation and startup stay in Objective-C.
+        return QYStartAudioCapture(engine, format, { buffer, _ in
+            guard buffer.format == format else {
+                sink.finish(throwing: VoiceError(tr("The audio format changed. Start recording again."))); return
+            }
+            let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * 24000 / format.sampleRate)) + 64
+            guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
+            var supplied = false
+            var error: NSError?
+            let status = converter.convert(to: converted, error: &error) { _, state in
+                if supplied { state.pointee = .noDataNow; return nil }
+                supplied = true
+                state.pointee = .haveData
+                return buffer
+            }
+            guard status != .error, error == nil else { sink.finish(throwing: VoiceError(tr("The audio could not be converted. Choose the input device again."))); return }
+            guard let samples = converted.int16ChannelData?[0], converted.frameLength > 0 else { return }
+            let count = Int(converted.frameLength)
+            let data = Data(bytes: samples, count: count * MemoryLayout<Int16>.size)
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - gate.lastReport >= 0.045 {
+                gate.lastReport = now
+                var squares: Double = 0
+                for i in 0..<count { let value = Double(samples[i]) / 32768; squares += value * value }
+                let level = Float(sqrt(squares / Double(count)))
+                Task { @MainActor in onLevel(level) }
+            }
+            if case .dropped = sink.yield(data) { sink.finish(throwing: VoiceError(tr("Audio was written too slowly on this Mac. Recording stopped; what was recorded is kept in History."))) }
+        }, nil)
     }
 
     /// An engine whose input is switched to `device`. A refused switch is tried again with a new
@@ -408,11 +511,13 @@ final class AudioRecorder {
 private final class Capture: @unchecked Sendable {
     static let monitor = DispatchQueue(label: "local.hopo.qingyan.recorder-guard", qos: .userInteractive)
     let engine: AVAudioEngine
+    /// Whether the input comes through the system's voice processing.
+    let processed: Bool
     var listener: AudioObjectPropertyListenerBlock?
     var watched: [AudioObjectPropertySelector] = []
     var observer: NSObjectProtocol?
 
-    init(engine: AVAudioEngine) { self.engine = engine }
+    init(engine: AVAudioEngine, processed: Bool) { self.engine = engine; self.processed = processed }
 
     func close() {
         if let listener {

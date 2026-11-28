@@ -20,3 +20,11 @@ BOOL QYStartAudioCapture(AVAudioEngine *engine, AVAudioFormat *format,
     if (installed) [engine.inputNode removeTapOnBus:0];
     return NO;
 }
+
+BOOL QYEnableVoiceProcessing(AVAudioInputNode *input) {
+    @try {
+        return [input setVoiceProcessingEnabled:YES error:nil];
+    } @catch (NSException *exception) {
+        return NO;
+    }
+}
