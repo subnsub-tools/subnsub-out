@@ -1028,7 +1028,8 @@ final class DictationController: ObservableObject {
         case blind
     }
 
-    private func revise(_ transcript: String, request: SavedDictation, at found: Destination) async -> Revision {
+    /// `service` and `model` are those that wrote the text; nil when nothing wrote it.
+    private func revise(_ transcript: String, at found: Destination, service: Service?, model: String) async -> Revision {
         var context: (before: String, after: String)?
         var plan = Plan.insert
         var peer: String?
@@ -1042,9 +1043,9 @@ final class DictationController: ObservableObject {
         if context == nil, let previous { context = (previous, ""); plan = .previous(previous) }
         guard let context else { return .blind }
         guard !(context.before + context.after).isEmpty else { return .content }
-        guard let service = try? settings.service(request.textPlatform),
+        guard let service,
               let output = try? await TextClient(service: service).revise(transcript: transcript, before: context.before,
-                  after: context.after, previous: previous ?? "", model: request.textModel) else { return .content }
+                  after: context.after, previous: previous ?? "", model: model) else { return .content }
         let answer = OpenAIWire.splitMarker(output)
         guard answer.marker == "@@EDIT" else { return .content }
         if case .field(let old) = plan { return .edit(text: OpenAIWire.keepingEdges(of: old, answer.text), plan: plan) }
@@ -1502,12 +1503,22 @@ final class DictationController: ObservableObject {
                 do {
                     try Task.checkCancellation()
                     guard self.networkAvailable || Platform.named(request.speechPlatform).wire == .onDevice else { throw VoiceError(tr("The network is unavailable"), retryable: true) }
-                    let client = try await self.transcriber(for: request)
-                    self.client = client
-                    // One that takes the finished file connects to nothing while the recording is
-                    // made: there is nothing to wait for, so the recording is not offline.
-                    if !client.live, self.sessionID == id { self.connected = true }
-                    let transcript = try await client.run(audio: savedAudio.stream(), model: request.speechModel, dictionary: request.dictionary,
+                    let recognized = try await self.recognize(request, audio: { try savedAudio.stream() },
+                        using: { [weak self] client in
+                            guard let self, self.sessionID == id else { return }
+                            self.client = client
+                            // One that takes the finished file connects to nothing while the recording is
+                            // made: there is nothing to wait for, so the recording is not offline.
+                            self.connected = !client.live
+                            // Taken over after Stop: its answer is due within the same bounded time.
+                            if self.phase != .recording { client.finishDeadline() }
+                        },
+                        switching: { [weak self] failed, next in
+                            guard let self, self.sessionID == id else { return }
+                            // The words the failed key heard go; the next one hears the recording from its start.
+                            self.partial = ""; self.entry?.text = ""
+                            self.message = tr("%@ failed. Trying %@…", self.settings.label(failed), self.settings.label(next))
+                        },
                         onReady: { [weak self] in
                             guard let self, self.sessionID == id else { return }
                             self.connected = true
@@ -1517,6 +1528,7 @@ final class DictationController: ObservableObject {
                             if self.partial != text { self.partial = text }
                             self.entry?.text = text
                         })
+                    let transcript = recognized.text
                     try Task.checkCancellation()
                     guard self.sessionID == id else { return }
                     guard !transcript.isEmpty else { throw VoiceError(tr("No speech was recognized. Check the microphone input.")) }
@@ -1535,19 +1547,28 @@ final class DictationController: ObservableObject {
                         && request.mode == .dictate && request.writing != .raw
                         ? String((TextTarget.field()?.before ?? "").suffix(1000)) : ""
                     let screened = try await self.edit(transcript, request: request, context: context,
-                                                       screening: request.mode == .dictate && request.writing == .polish)
+                                                       screening: request.mode == .dictate && request.writing == .polish,
+                                                       switching: { [weak self] failed, next in
+                                                           guard let self, self.sessionID == id else { return }
+                                                           self.message = tr("%@ failed. Trying %@…", self.settings.label(failed), self.settings.label(next))
+                                                       })
                     try Task.checkCancellation()
                     guard self.sessionID == id else { return }
                     var final = screened.text
                     var plan = Plan.insert
                     var resolved: Destination?
                     var notes: [String] = screened.asSaid ? [tr("Polish changed the meaning; the original transcript was kept")] : []
+                    // A fallback key did the job: said with the result, so a failing key is noticed.
+                    if recognized.fellBack { notes.append(tr("Recognized with %@", self.settings.label(recognized.route))) }
+                    if let route = screened.route, screened.fellBack {
+                        notes.append(polishing ? tr("Polished with %@", self.settings.label(route)) : tr("Written with %@", self.settings.label(route)))
+                    }
                     if screened.maybe {
                         self.capsuleStep = .editing
                         self.message = tr("Checking the edit to the text field…")
                         let found = await self.destination()
                         resolved = found
-                        switch await self.revise(transcript, request: request, at: found) {
+                        switch await self.revise(transcript, at: found, service: screened.service, model: screened.model) {
                         case .edit(let text, let chosen): final = text; plan = chosen
                         case .content: break
                         case .blind: notes.append(tr("Text field not read; inserted as plain text"))
@@ -1632,45 +1653,107 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func transcriber(for request: SavedDictation) async throws -> any Transcriber {
-        if Platform.named(request.speechPlatform).wire == .onDevice {
+    private func transcriber(for route: SettingsStore.Route) async throws -> any Transcriber {
+        if route.platform.wire == .onDevice {
             guard #available(macOS 26, *) else {
                 throw VoiceError(tr("This Mac cannot recognize this language on the device. Choose another in Settings."))
             }
-            return OnDeviceTranscriber(locale: request.speechModel)
+            return OnDeviceTranscriber(locale: route.model)
         }
-        let service = try await settings.serviceAsync(request.speechPlatform)
-        guard !request.speechModel.isEmpty else { throw VoiceError(tr("The recognition model name is empty. Enter it in Settings.")) }
+        let service = try await settings.serviceAsync(route.platform, key: route.key)
+        guard !route.model.isEmpty else { throw VoiceError(tr("The recognition model name is empty. Enter it in Settings.")) }
         // A service spoken to in its own way: its live socket, or the finished recording in its own request.
-        if let wire = service.platform.liveWire(model: request.speechModel, base: service.base) {
+        if let wire = service.platform.liveWire(model: route.model, base: service.base) {
             return LiveSocketTranscriber(wire: wire, key: service.key, name: service.platform.name)
         }
-        if let wire = service.platform.fileWire(model: request.speechModel) {
+        if let wire = service.platform.fileWire(model: route.model) {
             return FileTranscriber(wire: wire, key: service.key, name: service.platform.name)
         }
         if service.platform.wire == .alibaba {
             return QwenRealtimeTranscriber(key: service.key,
-                endpoint: Platform.realtimeURL(base: service.base, model: request.speechModel))
+                endpoint: Platform.realtimeURL(base: service.base, model: route.model))
         }
-        return service.platform.streams(model: request.speechModel) ? RealtimeTranscriber(key: service.key) : UploadTranscriber(service: service)
+        return service.platform.streams(model: route.model) ? RealtimeTranscriber(key: service.key) : UploadTranscriber(service: service)
     }
 
-    private func edit(_ transcript: String, request: SavedDictation, context: String = "",
-                      screening: Bool = false) async throws -> (text: String, maybe: Bool, asSaid: Bool) {
-        if request.mode == .dictate && request.writing == .raw { return (transcript, false, false) }
-        let service = try await settings.serviceAsync(request.textPlatform)
-        guard !request.textModel.isEmpty else { throw VoiceError(tr("The text polishing model name is empty. Enter it in Settings.")) }
-        let output = try await TextClient(service: service).edit(transcript: transcript, mode: request.mode,
-            targetLanguage: request.targetLanguage, selection: request.selection, model: request.textModel,
-            style: request.writing, screening: screening, context: context)
-        guard request.mode == .dictate else { return (output, false, false) }
+    /// Recognizes the recording with the job's first key and, each time one fails for its key, its
+    /// quota or its service, with the next fallback key, from the start of the recording (which is
+    /// still being made when that happens while recording). `using` is told each transcriber as it
+    /// starts, `switching` the route that failed and the one tried next.
+    private func recognize(_ request: SavedDictation, audio: () throws -> AsyncThrowingStream<Data, Error>,
+                           using: (any Transcriber) -> Void,
+                           switching: (SettingsStore.Route, SettingsStore.Route) -> Void = { _, _ in },
+                           onReady: @escaping () -> Void, onPartial: @escaping (String) -> Void) async throws
+        -> (text: String, route: SettingsStore.Route, fellBack: Bool) {
+        let routes = settings.routes(speech: true, platform: request.speechPlatform, model: request.speechModel)
+        for (index, route) in routes.enumerated() {
+            var client: (any Transcriber)?
+            do {
+                let made = try await transcriber(for: route)
+                client = made
+                using(made)
+                let text = try await made.run(audio: try audio(), model: route.model, dictionary: request.dictionary,
+                                              onReady: onReady, onPartial: onPartial)
+                return (text, route, index > 0)
+            } catch {
+                guard index + 1 < routes.count, (error as? VoiceError)?.fallback == true, !Task.isCancelled else { throw error }
+                client?.cancel()
+                Trace.note("recognition: \(route.platform.id) failed for its key, quota or service; the next key is tried")
+                switching(route, routes[index + 1])
+            }
+        }
+        throw CancellationError()
+    }
+
+    /// The text as polishing or a style wrote it, and what wrote it: nil and empty for Raw.
+    private struct Written {
+        let text: String
+        let maybe: Bool
+        let asSaid: Bool
+        let service: Service?
+        let model: String
+        let route: SettingsStore.Route?
+        let fellBack: Bool
+    }
+
+    /// Writes the transcript with the job's first key and, each time one fails for its key, its
+    /// quota or its service, with the next fallback key. `switching` as for `recognize`.
+    private func edit(_ transcript: String, request: SavedDictation, context: String = "", screening: Bool = false,
+                      switching: (SettingsStore.Route, SettingsStore.Route) -> Void = { _, _ in }) async throws -> Written {
+        if request.mode == .dictate && request.writing == .raw {
+            return Written(text: transcript, maybe: false, asSaid: false, service: nil, model: "", route: nil, fellBack: false)
+        }
+        let routes = settings.routes(speech: false, platform: request.textPlatform, model: request.textModel)
+        var answered: (output: String, service: Service, route: SettingsStore.Route, fellBack: Bool)?
+        for (index, route) in routes.enumerated() {
+            do {
+                let service = try await settings.serviceAsync(route.platform, key: route.key)
+                guard !route.model.isEmpty else { throw VoiceError(tr("The text polishing model name is empty. Enter it in Settings.")) }
+                let output = try await TextClient(service: service).edit(transcript: transcript, mode: request.mode,
+                    targetLanguage: request.targetLanguage, selection: request.selection, model: route.model,
+                    style: request.writing, screening: screening, context: context)
+                answered = (output, service, route, index > 0)
+                break
+            } catch {
+                guard index + 1 < routes.count, (error as? VoiceError)?.fallback == true, !Task.isCancelled else { throw error }
+                Trace.note("polishing: \(route.platform.id) failed for its key, quota or service; the next key is tried")
+                switching(route, routes[index + 1])
+            }
+        }
+        guard let answered else { throw CancellationError() }
+        let output = answered.output
+        func written(_ text: String, maybe: Bool = false, asSaid: Bool = false) -> Written {
+            Written(text: text, maybe: maybe, asSaid: asSaid, service: answered.service, model: answered.route.model,
+                    route: answered.route, fellBack: answered.fellBack)
+        }
+        guard request.mode == .dictate else { return written(output) }
         // The rewriting styles are used as returned; only Polish is held to the words that were said.
-        guard request.writing == .polish else { return (output, false, false) }
+        guard request.writing == .polish else { return written(output) }
         let answer = screening ? OpenAIWire.splitMarker(output) : (marker: nil, text: output)
         guard !answer.text.isEmpty else { throw VoiceError(tr("The model returned no usable text. The original transcript was kept.")) }
         let text = answer.text
         let faithful = await Task.detached(priority: .userInitiated) { OpenAIWire.keepsWording(of: transcript, in: text) }.value
-        return (faithful ? text : transcript, answer.marker == "@@MAYBE", !faithful)
+        return written(faithful ? text : transcript, maybe: answer.marker == "@@MAYBE", asSaid: !faithful)
     }
 
     private func saveActive() throws {
@@ -1992,12 +2075,13 @@ final class DictationController: ObservableObject {
         return !(Platform.named(r.speechPlatform).wire == .onDevice && textSkipped)
     }
 
-    /// Whether this recorded request could run right now: each platform usable for
-    /// its step, and the network unless the request needs none.
-    func canRun(_ r: SavedDictation) -> Bool {
+    /// Whether this recorded request could run right now: each step still to do possible with its
+    /// first key or a fallback (recognition is not, once `transcribed`), and the network unless the
+    /// request needs none.
+    func canRun(_ r: SavedDictation, transcribed: Bool = false) -> Bool {
         let textSkipped = r.mode == .dictate && r.writing == .raw
-        return settings.usable(r.speechPlatform ?? Platform.openAI.id)
-            && (textSkipped || settings.usable(r.textPlatform ?? Platform.openAI.id))
+        return (transcribed || settings.usable(speech: true, platform: r.speechPlatform))
+            && (textSkipped || settings.usable(speech: false, platform: r.textPlatform))
             && (networkAvailable || !needsNetwork(r))
     }
 
@@ -2027,10 +2111,10 @@ final class DictationController: ObservableObject {
 
     private func retryQueued(preferred: UUID? = nil) {
         guard !settings.preview, !busy, !starting, retryingID == nil,
-              var record = settings.history.reversed().first(where: {
-                  $0.state == .pending && (preferred == nil || preferred == $0.id) &&
-                  (retryAfter[$0.id] ?? .distantPast) <= Date() &&
-                  ($0.request.map { canRun($0) } ?? false)
+              var record = settings.history.reversed().first(where: { candidate in
+                  candidate.state == .pending && (preferred == nil || preferred == candidate.id) &&
+                  (retryAfter[candidate.id] ?? .distantPast) <= Date() &&
+                  (candidate.request.map { canRun($0, transcribed: candidate.transcript != nil) } ?? false)
               }), let request = record.request, let archive = settings.archive else { return }
         let id = record.id
         record.status = .processing; record.problem = nil
@@ -2046,10 +2130,8 @@ final class DictationController: ObservableObject {
                 if let saved = record.transcript { transcript = saved }
                 else {
                     let audio = try RecordedAudio(url: archive.audioURL(id), create: false)
-                    let client = try await self.transcriber(for: request)
-                    self.retryClient = client
-                    transcript = try await client.run(audio: audio.stream(), model: request.speechModel, dictionary: request.dictionary,
-                        onReady: {}, onPartial: { _ in })
+                    transcript = try await self.recognize(request, audio: { try audio.stream() },
+                        using: { [weak self] in self?.retryClient = $0 }, onReady: {}, onPartial: { _ in }).text
                 }
                 try Task.checkCancellation()
                 guard self.retryingID == id else { return }

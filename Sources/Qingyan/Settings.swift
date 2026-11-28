@@ -46,6 +46,17 @@ struct Preferences: Codable, Equatable {
     var alibabaHost = ""
     /// The model last used on each platform, so that switching back restores it: "speech.groq" → model.
     var modelChoices: [String: String] = [:]
+    /// The saved API keys, in the order they were added (see `APIKey`).
+    var keys: [APIKey] = []
+    /// The key each job uses first (`APIKey.id`). One of another service, or none, stands for the
+    /// first key of the job's service.
+    var speechKey = ""
+    var textKey = ""
+    /// The keys each job tries in turn when the one before fails for its key, its quota or its service.
+    var speechFallbacks: [String] = []
+    var textFallbacks: [String] = []
+    /// The one key per service of earlier versions is in `keys`.
+    var keysMigrated = false
     var shortcut = "fn"
     /// The microphone to record from, by the system's lasting name for it; empty follows the system.
     var microphone = ""
@@ -111,6 +122,12 @@ struct Preferences: Codable, Equatable {
         customBase = try values.decodeIfPresent(String.self, forKey: .customBase) ?? customBase
         alibabaHost = try values.decodeIfPresent(String.self, forKey: .alibabaHost) ?? alibabaHost
         modelChoices = try values.decodeIfPresent([String: String].self, forKey: .modelChoices) ?? modelChoices
+        keys = try values.decodeIfPresent([APIKey].self, forKey: .keys) ?? keys
+        speechKey = try values.decodeIfPresent(String.self, forKey: .speechKey) ?? speechKey
+        textKey = try values.decodeIfPresent(String.self, forKey: .textKey) ?? textKey
+        speechFallbacks = try values.decodeIfPresent([String].self, forKey: .speechFallbacks) ?? speechFallbacks
+        textFallbacks = try values.decodeIfPresent([String].self, forKey: .textFallbacks) ?? textFallbacks
+        keysMigrated = try values.decodeIfPresent(Bool.self, forKey: .keysMigrated) ?? keysMigrated
         shortcut = try values.decodeIfPresent(String.self, forKey: .shortcut) ?? shortcut
         microphone = try values.decodeIfPresent(String.self, forKey: .microphone) ?? microphone
         microphoneName = try values.decodeIfPresent(String.self, forKey: .microphoneName) ?? microphoneName
@@ -161,6 +178,21 @@ struct Preferences: Codable, Equatable {
         ]
         return earlier[stored] ?? stored
     }
+}
+
+/// One saved API key: the service it is for, a name to tell it from the others there, and, for Model
+/// Studio and the user's own endpoint, the address it works with. The secret is in the keychain
+/// under `id`; the user's own endpoint may have none.
+struct APIKey: Codable, Equatable, Identifiable {
+    /// The keychain account of the secret, and what a choice of this key is remembered by.
+    var id: String
+    var platform: String
+    var name = ""
+    var address = ""
+    /// The secret's last four characters, to tell keys apart; empty until it has been read.
+    var tail = ""
+
+    static func tail(of secret: String) -> String { secret.count > 8 ? String(secret.suffix(4)) : "" }
 }
 
 /// The parts of the app that can be asked for by name. The history and the other Macs are on
@@ -295,17 +327,19 @@ enum DeviceKeychain {
     }
 }
 
-/// One API key per platform.
+/// The API keys' secrets, each under its own account. The first key of each service, from the
+/// versions that kept one per service, keeps the account it had then.
 enum Keychain {
-    private static func account(_ platform: String) -> String { platform == Platform.openAI.id ? "api-key" : "api-key.\(platform)" }
-    private static func earlier(_ platform: String) -> [String: Any] {
+    static func legacyAccount(_ platform: String) -> String { platform == Platform.openAI.id ? "api-key" : "api-key.\(platform)" }
+    static func newAccount() -> String { "key." + UUID().uuidString.lowercased() }
+    private static func earlier(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "local.hopo.qingyan.openai",
-         kSecAttrAccount as String: account(platform)]
+         kSecAttrAccount as String: account]
     }
 
-    static func read(_ platform: String) throws -> String {
-        if let saved = try Vault.read(account(platform)) { return String(decoding: saved, as: UTF8.self) }
-        var request = earlier(platform)
+    static func read(_ account: String) throws -> String {
+        if let saved = try Vault.read(account) { return String(decoding: saved, as: UTF8.self) }
+        var request = earlier(account)
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
@@ -314,18 +348,18 @@ enum Keychain {
         guard status == errSecSuccess, let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
             throw VoiceError(tr("Could not read the keychain. Unlock it, or update the API key in Settings."))
         }
-        if !value.isEmpty { try? Vault.save(data, account: account(platform)) }
+        if !value.isEmpty { try? Vault.save(data, account: account) }
         return value
     }
 
-    static func save(_ key: String, platform: String) throws {
-        try Vault.save(Data(key.utf8), account: account(platform))
-        SecItemDelete(earlier(platform) as CFDictionary)
+    static func save(_ key: String, account: String) throws {
+        try Vault.save(Data(key.utf8), account: account)
+        SecItemDelete(earlier(account) as CFDictionary)
     }
 
-    static func delete(_ platform: String) throws {
-        try Vault.delete(account(platform))
-        let status = SecItemDelete(earlier(platform) as CFDictionary)
+    static func delete(_ account: String) throws {
+        try Vault.delete(account)
+        let status = SecItemDelete(earlier(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw VoiceError(tr("Could not delete the keychain item.")) }
     }
 }
@@ -409,73 +443,120 @@ final class SettingsStore: ObservableObject {
         if page != .main { page = .main }
     }
 
-    /// The platforms whose API key is in the keychain.
-    @Published var savedKeys: Set<String> = []
     @Published var microphoneAllowed = false
     @Published var accessibilityAllowed = false
     /// Whether macOS lets out record the screen, which showing it on the Monitor page takes.
     /// Cached login-item state so opening or rendering Settings never blocks on XPC.
     @Published private(set) var loginItemEnabled = false
     @Published var loginMessage = ""
-    /// What the last save, removal or check of each platform's key said.
+    /// What the last check of each key said (by `APIKey.id`), and under `newKeyNote` what the
+    /// last save or removal said.
     @Published var keyMessages: [String: String] = [:]
-    @Published var savingPlatforms: Set<String> = []
+    static let newKeyNote = "new"
+    /// Keys being saved or removed (by id; `newKeyNote` while a new one is saved).
+    @Published var savingKeys: Set<String> = []
 
-    func usable(_ platform: String) -> Bool {
-        switch platform {
-        case Platform.custom.id: return Platform.normalized(base: preferences.customBase) != nil
-        case Platform.alibaba.id: return savedKeys.contains(platform) && Platform.alibabaBase(preferences.alibabaHost) != nil
-        case Platform.thisMac.id: return OnDeviceModels.available
-        default: return savedKeys.contains(platform)
+    /// The saved keys of one service, in the order they were added.
+    func keys(on platform: String) -> [APIKey] { preferences.keys.filter { $0.platform == platform } }
+
+    /// How menus and the list name a key: its name, else the address of the user's own endpoint,
+    /// else the end of the secret, else its place among the service's keys; with the service first.
+    func label(_ key: APIKey, service: Bool = true) -> String {
+        var short = key.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if short.isEmpty, key.platform == Platform.custom.id, let host = Platform.normalized(base: key.address)?.host { short = host }
+        if short.isEmpty, !key.tail.isEmpty { short = "…" + key.tail }
+        if short.isEmpty { short = tr("Key %ld", (keys(on: key.platform).firstIndex { $0.id == key.id } ?? 0) + 1) }
+        return service ? Platform.named(key.platform).name + " · " + short : short
+    }
+
+    /// How a way to do a job is named: by its key, or by its service when it has none.
+    func label(_ route: Route) -> String { route.key.map { label($0) } ?? route.platform.name }
+
+    /// The key a job uses first on `platform`: the one chosen for the job there, else that service's first.
+    func firstKey(speech: Bool, on platform: String) -> APIKey? {
+        let chosen = speech ? preferences.speechKey : preferences.textKey
+        let own = keys(on: platform)
+        return own.first { $0.id == chosen } ?? own.first
+    }
+
+    /// The keys a job falls back to, in order: saved ones that can do the job, each once, never its first.
+    func fallbackKeys(speech: Bool, after first: APIKey?) -> [APIKey] {
+        var seen: Set<String> = first.map { [$0.id] } ?? []
+        return (speech ? preferences.speechFallbacks : preferences.textFallbacks)
+            .compactMap { id in preferences.keys.first { $0.id == id } }
+            .filter { (speech || Platform.named($0.platform).writes) && seen.insert($0.id).inserted }
+    }
+
+    /// One way to do a job: a service, the key it is called with (none for this Mac), and the model.
+    struct Route {
+        let platform: Platform
+        let key: APIKey?
+        let model: String
+    }
+
+    /// The ways to do a job, in the order they are tried: the service and model it was asked for,
+    /// with its first key, then each fallback key. One on another service asks for the model last
+    /// chosen there, else that service's first.
+    func routes(speech: Bool, platform id: String?, model: String) -> [Route] {
+        let first = Platform.named(id)
+        let key = first.wire == .onDevice ? nil : firstKey(speech: speech, on: first.id)
+        var routes = [Route(platform: first, key: key, model: model)]
+        for other in fallbackKeys(speech: speech, after: key) {
+            let platform = Platform.named(other.platform)
+            let kept = preferences.modelChoices[(speech ? "speech." : "text.") + platform.id]
+            let preset = speech ? platform.speechModels.first : platform.textModels.first
+            // A fallback with no model to ask for (the user's own endpoint, never given one) is skipped.
+            let asked = platform == first ? model : kept ?? preset ?? ""
+            if !asked.isEmpty { routes.append(Route(platform: platform, key: other, model: asked)) }
+        }
+        return routes
+    }
+
+    /// Whether a key can be called as it is set up: Model Studio and the user's own endpoint need an address.
+    func usable(_ key: APIKey) -> Bool {
+        switch Platform.named(key.platform) {
+        case .alibaba: return Platform.alibabaBase(key.address) != nil
+        case .custom: return Platform.normalized(base: key.address) != nil
+        default: return true
         }
     }
 
-    /// Both platforms in use can be called. Setting it is for previews only.
+    /// Whether a job could be done now: with its first key, or with a fallback one.
+    func usable(speech: Bool, platform: String?) -> Bool {
+        routes(speech: speech, platform: platform, model: speech ? preferences.speechModel : preferences.textModel).contains { route in
+            route.platform.wire == .onDevice ? OnDeviceModels.available : route.key.map(usable) ?? false
+        }
+    }
+
+    /// Both jobs in use can be done. Setting it is for previews only: one made-up key per service, or none.
     var hasKey: Bool {
-        get { usable(preferences.speechPlatform) && (preferences.dictationStyle == .raw || usable(preferences.textPlatform)) }
-        set { savedKeys = newValue ? Set(Platform.all.map(\.id)) : [] }
+        get { usable(speech: true, platform: preferences.speechPlatform)
+              && (preferences.dictationStyle == .raw || usable(speech: false, platform: preferences.textPlatform)) }
+        set {
+            preferences.keys = newValue ? Platform.all.filter { $0.wire != .onDevice }.map {
+                APIKey(id: "preview.\($0.id)", platform: $0.id, address: $0 == .custom ? "http://100.64.0.7:11434/v1" : "", tail: "a8f2")
+            } : []
+        }
     }
 
-    /// Synchronous service lookup (uses Vault's pre-warmed memory cache).
-    func service(_ id: String?) throws -> Service {
-        let platform = Platform.named(id)
-        guard let base = platform.baseURL(custom: preferences.customBase, alibaba: preferences.alibabaHost) else {
+    /// What it takes to call `platform` with `key` now. The keychain is read off the main actor, so
+    /// that Settings and a dictation never wait on its tool. A key that is missing or cannot be
+    /// called as set up lets the job try its next key.
+    func serviceAsync(_ platform: Platform, key: APIKey?) async throws -> Service {
+        guard let key else {
+            throw VoiceError(tr("No %@ API key is set up. Save one in Settings and try again.", platform.name), fallback: true)
+        }
+        guard let base = platform.baseURL(custom: key.address, alibaba: key.address) else {
             throw platform.wire == .alibaba
-                ? VoiceError(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."))
-                : VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."))
+                ? VoiceError(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."), fallback: true)
+                : VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."), fallback: true)
         }
-        if platform.id == Platform.custom.id {
-            return Service(platform: platform, base: base, key: try Keychain.read(platform.id))
+        let account = key.id
+        let secret = try await Task.detached(priority: .userInitiated) { try Keychain.read(account) }.value
+        if platform.needsKey && secret.isEmpty {
+            throw VoiceError(tr("The %@ API key is not in the keychain. Save it again.", platform.name), fallback: true)
         }
-        guard savedKeys.contains(platform.id) else {
-            throw VoiceError(tr("No %@ API key is set up. Save one in Settings and try again.", platform.name))
-        }
-        let key = try Keychain.read(platform.id)
-        guard !key.isEmpty else { throw VoiceError(tr("The %@ API key is not in the keychain. Save it again.", platform.name)) }
-        return Service(platform: platform, base: base, key: key)
-    }
-
-    /// Off-main-actor service lookup so Settings validation never blocks UI frames on keychain subprocesses.
-    func serviceAsync(_ id: String?) async throws -> Service {
-        let platform = Platform.named(id)
-        let customBase = preferences.customBase
-        let alibabaHost = preferences.alibabaHost
-        let isSaved = savedKeys.contains(platform.id)
-        guard let base = platform.baseURL(custom: customBase, alibaba: alibabaHost) else {
-            throw platform.wire == .alibaba
-                ? VoiceError(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."))
-                : VoiceError(tr("No custom endpoint URL is set. Enter one in Settings."))
-        }
-        if platform.id == Platform.custom.id {
-            let key = try await Task.detached(priority: .userInitiated) { try Keychain.read(platform.id) }.value
-            return Service(platform: platform, base: base, key: key)
-        }
-        guard isSaved else {
-            throw VoiceError(tr("No %@ API key is set up. Save one in Settings and try again.", platform.name))
-        }
-        let key = try await Task.detached(priority: .userInitiated) { try Keychain.read(platform.id) }.value
-        guard !key.isEmpty else { throw VoiceError(tr("The %@ API key is not in the keychain. Save it again.", platform.name)) }
-        return Service(platform: platform, base: base, key: key)
+        return Service(platform: platform, base: base, key: secret)
     }
 
     /// Permanently locks input to a specific microphone UID (or clears binding when `uid` is empty).
@@ -521,8 +602,7 @@ final class SettingsStore: ObservableObject {
             try? JSONDecoder().decode([HistoryEntry].self, from: $0)
         } ?? []
         if !preview {
-            savedKeys = Set(defaults.stringArray(forKey: "savedKeys") ?? [])
-            if defaults.bool(forKey: "hasKey") { savedKeys.insert(Platform.openAI.id) }
+            if !preferences.keysMigrated { migrateKeys() }
             do {
                 let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                     appropriateFor: nil, create: true).appendingPathComponent("Qingyan/History", isDirectory: true)
@@ -532,12 +612,22 @@ final class SettingsStore: ObservableObject {
             } catch { historyMessage = tr("Could not read the local history folder. Check disk space and file access permissions.") }
 
             // Pre-warm login item status and saved API keys in the background so Settings opens in 0 ms.
-            let warmPlatforms = Array(savedKeys)
+            // A key kept from before it had a name gets the end of its secret, to be told apart by.
+            let warmAccounts = preferences.keys.map(\.id)
             Task.detached(priority: .utility) {
                 let enabled = SMAppService.mainApp.status == .enabled
-                for id in warmPlatforms { _ = try? Keychain.read(id) }
+                var tails: [String: String] = [:]
+                for account in warmAccounts {
+                    if let secret = try? Keychain.read(account) { tails[account] = APIKey.tail(of: secret) }
+                }
                 await MainActor.run { [weak self] in
-                    if self?.loginItemEnabled != enabled { self?.loginItemEnabled = enabled }
+                    guard let self else { return }
+                    if self.loginItemEnabled != enabled { self.loginItemEnabled = enabled }
+                    var next = self.preferences
+                    for index in next.keys.indices where next.keys[index].tail.isEmpty {
+                        next.keys[index].tail = tails[next.keys[index].id] ?? ""
+                    }
+                    if next != self.preferences { self.preferences = next }
                 }
             }
         }
@@ -605,66 +695,103 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    func saveKey(_ value: String, platform: String) {
-        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !key.contains(where: { $0.isWhitespace }) else {
-            keyMessages[platform] = tr("Enter the complete API key, without spaces."); return
+    /// The one key per service that versions before several keys kept, as the first key of each
+    /// service, with the address Model Studio and the user's own endpoint had then. Once.
+    private func migrateKeys() {
+        var saved = Set(defaults.stringArray(forKey: "savedKeys") ?? [])
+        if defaults.bool(forKey: "hasKey") { saved.insert(Platform.openAI.id) }
+        var next = preferences
+        for platform in Platform.all where platform.wire != .onDevice {
+            let custom = platform == .custom && !next.customBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let account = Keychain.legacyAccount(platform.id)
+            guard saved.contains(platform.id) || custom, !next.keys.contains(where: { $0.id == account }) else { continue }
+            next.keys.append(APIKey(id: account, platform: platform.id,
+                                    address: platform == .alibaba ? next.alibabaHost : platform == .custom ? next.customBase : ""))
         }
-        if preview {
-            savedKeys.insert(platform)
-            keyMessages[platform] = tr("Saved to the system keychain, encrypted.")
+        next.keysMigrated = true
+        preferences = next
+    }
+
+    /// Saves a new key for `platform`. `address` is Model Studio's host or the custom endpoint's
+    /// address, ignored for the others. The user's own endpoint may be saved with no secret.
+    func addKey(platform id: String, name: String, address: String, secret value: String) {
+        let platform = Platform.named(id)
+        let secret = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = Self.newKeyNote
+        if platform.needsKey, secret.isEmpty || secret.contains(where: { $0.isWhitespace }) {
+            keyMessages[note] = tr("Enter the complete API key, without spaces."); return
+        }
+        if secret.contains(where: { $0.isWhitespace }) { keyMessages[note] = tr("Enter the complete API key, without spaces."); return }
+        let place = platform == .alibaba || platform == .custom ? address.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        var key = APIKey(id: Keychain.newAccount(), platform: platform.id,
+                         name: String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40)),
+                         address: place, tail: APIKey.tail(of: secret))
+        if preview || secret.isEmpty {
+            if preview { key.id = "preview." + key.id }
+            preferences.keys.append(key)
+            keyMessages[note] = secret.isEmpty ? tr("Saved.") : tr("Saved to the system keychain, encrypted.")
+            rememberKeys()
             return
         }
-        savingPlatforms.insert(platform)
+        savingKeys.insert(note)
+        let account = key.id
         Task.detached(priority: .userInitiated) {
             let outcome: Result<Void, Error>
-            do { try Keychain.save(key, platform: platform); outcome = .success(()) }
+            do { try Keychain.save(secret, account: account); outcome = .success(()) }
             catch { outcome = .failure(error) }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.savingPlatforms.remove(platform)
+                self.savingKeys.remove(note)
                 switch outcome {
                 case .success:
-                    self.savedKeys.insert(platform)
+                    self.preferences.keys.append(key)
                     self.rememberKeys()
-                    self.keyMessages[platform] = tr("Saved to the system keychain, encrypted.")
+                    self.keyMessages[note] = tr("Saved to the system keychain, encrypted.")
                 case .failure(let error):
-                    self.keyMessages[platform] = error.localizedDescription
+                    self.keyMessages[note] = error.localizedDescription
                 }
             }
         }
     }
 
-    func deleteKey(platform: String) {
-        if preview {
-            savedKeys.remove(platform)
-            keyMessages[platform] = tr("Removed from the system keychain.")
-            return
+    /// Removes a key from the keychain and from every job that used it.
+    func removeKey(_ id: String) {
+        let forget = { [weak self] in
+            guard let self else { return }
+            var next = self.preferences
+            next.keys.removeAll { $0.id == id }
+            if next.speechKey == id { next.speechKey = "" }
+            if next.textKey == id { next.textKey = "" }
+            next.speechFallbacks.removeAll { $0 == id }
+            next.textFallbacks.removeAll { $0 == id }
+            self.preferences = next
+            self.keyMessages[id] = nil
+            self.rememberKeys()
+            self.keyMessages[Self.newKeyNote] = tr("Removed from the system keychain.")
         }
-        savingPlatforms.insert(platform)
+        if preview { forget(); return }
+        savingKeys.insert(id)
         Task.detached(priority: .userInitiated) {
             let outcome: Result<Void, Error>
-            do { try Keychain.delete(platform); outcome = .success(()) }
+            do { try Keychain.delete(id); outcome = .success(()) }
             catch { outcome = .failure(error) }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.savingPlatforms.remove(platform)
+                self.savingKeys.remove(id)
                 switch outcome {
-                case .success:
-                    self.savedKeys.remove(platform)
-                    self.rememberKeys()
-                    self.keyMessages[platform] = tr("Removed from the system keychain.")
-                case .failure(let error):
-                    self.keyMessages[platform] = error.localizedDescription
+                case .success: forget()
+                case .failure(let error): self.keyMessages[id] = error.localizedDescription
                 }
             }
         }
     }
 
+    /// For an earlier version opened again on this Mac: the services whose first key it would look for.
     private func rememberKeys() {
         guard !preview else { return }
-        defaults.set(savedKeys.sorted(), forKey: "savedKeys")
-        defaults.set(savedKeys.contains(Platform.openAI.id), forKey: "hasKey")
+        let legacy = preferences.keys.filter { $0.id == Keychain.legacyAccount($0.platform) }.map(\.platform)
+        defaults.set(legacy.sorted(), forKey: "savedKeys")
+        defaults.set(legacy.contains(Platform.openAI.id), forKey: "hasKey")
     }
 
     func beginHistory(_ request: SavedDictation) throws -> (HistoryEntry, RecordedAudio) {

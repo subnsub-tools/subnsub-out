@@ -54,7 +54,8 @@ public final class GladiaWire: LiveWire {
             if status == 401 || status == 403 { throw LiveWires.failure(.key) }
             // Invalid settings; the body is only looked at to tell a refused model from the rest.
             let model = (status == 400 || status == 422) && String(decoding: data, as: UTF8.self).contains("model")
-            throw LiveWires.failure(model ? .model : .other)
+            let service = status == 402 || status == 429 || status >= 500
+            throw LiveWires.failure(model ? .model : service ? .other : .refused)
         }
         guard let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let address = answer["url"] as? String, let url = URL(string: address) else {

@@ -220,7 +220,7 @@ struct HistoryPage: View {
     private var voiceLocked: Bool { controller.busy || controller.retryingID != nil }
 
     private func canRetry(_ entry: HistoryEntry) -> Bool {
-        entry.canRetry && !voiceLocked && (controller.retryRequest(entry).map { controller.canRun($0) } ?? false)
+        entry.canRetry && !voiceLocked && (controller.retryRequest(entry).map { controller.canRun($0, transcribed: entry.transcript != nil) } ?? false)
     }
 
     var body: some View {

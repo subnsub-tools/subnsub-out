@@ -119,12 +119,12 @@ public struct QwenTranscript {
     private static func error(code: String) -> VoiceError {
         let folded = code.lowercased().replacingOccurrences(of: "_", with: "")
         if folded.contains("apikey") || folded == "unauthorized" {
-            return VoiceError(tr("The API key is invalid. Update it in Settings."))
+            return VoiceError(tr("The API key is invalid. Update it in Settings."), fallback: true)
         }
         if folded.contains("modelnotfound") || folded.contains("accessdenied") {
             return VoiceError(tr("This account cannot use the selected recognition model. Choose another in Settings."))
         }
-        return VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."))
+        return VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."), fallback: true)
     }
 }
 

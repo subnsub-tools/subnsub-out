@@ -2775,6 +2775,11 @@ struct Checks {
                   && OpenAIWire.serviceError(status: 401, data: Data()).message.contains("OpenAI"), "the error names the platform that answered")
         try check(OpenAIWire.serviceError(status: 413, data: Data(), name: "Groq").message.contains("too large")
                   && OpenAIWire.serviceError(status: 404, data: Data(), name: "Custom").message.contains("cannot find"), "too large and not found say so")
+        try check([401, 402, 403, 429, 500, 503].allSatisfy { OpenAIWire.serviceError(status: $0, data: Data()).fallback }
+                  && [400, 404, 413].allSatisfy { !OpenAIWire.serviceError(status: $0, data: Data()).fallback }
+                  && LiveWires.failure(.key).fallback && LiveWires.failure(.other).fallback
+                  && !LiveWires.failure(.model).fallback && !LiveWires.failure(.refused).fallback,
+                  "a key, quota or service failure lets the next key try; a missing model or a recording too large does not")
         try check(!OpenAIWire.serviceError(status: 400, data: Data("{\"message\":\"secret-canary\"}".utf8), name: "SiliconFlow").message.contains("secret-canary"), "never echo another platform's reply either")
 
         let old = try JSONDecoder().decode(SavedDictation.self, from: Data("""

@@ -1270,17 +1270,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         controller.peerStatus = [:]; controller.peerReachable = [:]; controller.remoteListening = false; controller.remoteStatus = ""
         try await panel("connection", .connection)
         settings.choose(Platform.groq.id, speech: true); settings.choose(Platform.custom.id, speech: false)
-        settings.preferences.customBase = "http://100.64.0.7:11434/v1"; settings.preferences.textModel = "qwen3:14b"
-        settings.keyMessages[Platform.groq.id] = tr("The API key is valid, and the chosen models are available.")
+        settings.preferences.textModel = "qwen3:14b"
+        settings.keyMessages["preview.groq"] = tr("The API key is valid, and the chosen models are available.")
         // With Text polishing on, so the polishing rows and the second platform's key show.
         settings.preferences.style = "polish"
         try await panel("connection-mixed", .connection)
         settings.preferences.style = StyleChoice.standard
         settings.choose(Platform.siliconFlow.id, speech: true); settings.choose(Platform.siliconFlow.id, speech: false)
-        settings.savedKeys = []; settings.keyMessages = [:]
+        settings.hasKey = false; settings.keyMessages = [:]
         try await panel("connection-other-empty", .connection)
         settings.choose(Platform.openAI.id, speech: true); settings.choose(Platform.openAI.id, speech: false)
-        settings.preferences.customBase = ""; settings.hasKey = true
+        settings.hasKey = true
         try await panel("general", .general)
         settings.preferences.dictionary = ["OpenAI", "Tailscale", "SwiftUI", "Mixed-language input", "Jump Desktop", "Thursday stand-up", "An exceptionally long proper noun that checks how an entry is cut off in the narrow panel"]
         try await panel("dictionary-filled", .dictionary)

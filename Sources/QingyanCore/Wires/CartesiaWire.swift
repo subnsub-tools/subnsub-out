@@ -77,8 +77,9 @@ public final class CartesiaWire: LiveWire {
         case "error":
             let status = object["status_code"] as? Int ?? 0
             let code = object["error_code"] as? String ?? ""
-            if status == 401 { throw LiveWires.failure(.key) }
-            if status == 403 || status == 404 || code.contains("model") { throw LiveWires.failure(.model) }
+            // 403 is a key without access, as over HTTP: the next key may have it.
+            if status == 401 || status == 403 { throw LiveWires.failure(.key) }
+            if status == 404 || code.contains("model") { throw LiveWires.failure(.model) }
             throw LiveWires.failure(.other)
         default:
             // `flush_done` answers a `finalize`, which out does not send.

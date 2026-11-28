@@ -98,12 +98,16 @@ public enum LiveWires {
 
     /// The guidance for an error a service reports. Its own message is never shown: it can carry
     /// credentials or dictated text.
-    public enum Failure { case key, model, other }
+    /// `refused`: the service turned down the request itself (its settings, its size), so another
+    /// key would fare no better; it reads as `other`.
+    public enum Failure { case key, model, other, refused }
     public static func failure(_ kind: Failure) -> VoiceError {
         switch kind {
-        case .key: return VoiceError(tr("The API key is invalid. Update it in Settings."))
+        case .refused: return VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."))
+        case .key: return VoiceError(tr("The API key is invalid. Update it in Settings."), fallback: true)
         case .model: return VoiceError(tr("This account cannot use the selected recognition model. Choose another in Settings."))
-        case .other: return VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."))
+        // The service reported an error of its own (a dropped connection is not this one).
+        case .other: return VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."), fallback: true)
         }
     }
 

@@ -22,7 +22,12 @@ public enum WritingMode: String, Codable, CaseIterable, Identifiable {
 public struct VoiceError: LocalizedError, Equatable {
     public let message: String
     public let retryable: Bool
-    public init(_ message: String, retryable: Bool = false) { self.message = message; self.retryable = retryable }
+    /// The failure lies with the key, its quota or the service that answered: another key may
+    /// succeed where this one did not. A missing model, a recording too large, or the network is not.
+    public let fallback: Bool
+    public init(_ message: String, retryable: Bool = false, fallback: Bool = false) {
+        self.message = message; self.retryable = retryable; self.fallback = fallback
+    }
     public var errorDescription: String? { message }
 }
 
@@ -338,11 +343,13 @@ public enum OpenAIWire {
 
     /// `name` is the platform that answered, as the user knows it.
     public static func serviceError(status: Int, data: Data, name: String = "OpenAI") -> VoiceError {
+        // The key, its quota or balance, or the service itself: the next key may do better.
+        let fallback = [401, 402, 403, 429].contains(status) || (500...599).contains(status)
         switch status {
-        case 401: return VoiceError(tr("The %@ API key is invalid or has expired. Update it in Settings.", name))
-        case 403: return VoiceError(tr("This API key has no access. Check the project, model permissions and region restrictions on %@.", name))
+        case 401: return VoiceError(tr("The %@ API key is invalid or has expired. Update it in Settings.", name), fallback: true)
+        case 403: return VoiceError(tr("This API key has no access. Check the project, model permissions and region restrictions on %@.", name), fallback: true)
         case 413: return VoiceError(tr("The recording is too large for a single request to %@. The original recording is kept; switch the recognition service in Settings and try again.", name))
-        case 429: return VoiceError(tr("The %@ quota is used up or requests are too frequent. Check the account balance or try again later.", name))
+        case 429: return VoiceError(tr("The %@ quota is used up or requests are too frequent. Check the account balance or try again later.", name), fallback: true)
         default:
             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let code = (object?["error"] as? [String: Any])?["code"] as? String
@@ -350,7 +357,7 @@ public enum OpenAIWire {
             if code == "model_not_found" || status == 404 {
                 return VoiceError(tr("%@ cannot find the selected model or endpoint. Check the model name and endpoint URL in Settings.", name))
             }
-            return VoiceError(tr("The %@ request failed (HTTP %ld). Check the network connection and model permissions.", name, status))
+            return VoiceError(tr("The %@ request failed (HTTP %ld). Check the network connection and model permissions.", name, status), fallback: fallback)
         }
     }
 }
@@ -368,9 +375,9 @@ public struct TranscriptBuffer {
         let type = event["type"] as? String ?? ""
         if type == "error" || type == "conversation.item.input_audio_transcription.failed" {
             let code = (event["error"] as? [String: Any])?["code"] as? String ?? ""
-            if code == "invalid_api_key" { throw VoiceError(tr("The API key is invalid. Update it in Settings.")) }
+            if code == "invalid_api_key" { throw VoiceError(tr("The API key is invalid. Update it in Settings."), fallback: true) }
             if code == "model_not_found" { throw VoiceError(tr("This account cannot use the selected recognition model. Choose another in Settings.")) }
-            throw VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."))
+            throw VoiceError(tr("Live speech recognition was interrupted. Check the network, model permissions and account balance."), fallback: true)
         }
         guard let id = event["item_id"] as? String else { return }
         if !encounter.contains(id) { encounter.append(id) }

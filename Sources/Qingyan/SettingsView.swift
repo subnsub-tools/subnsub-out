@@ -11,7 +11,7 @@ struct SettingsPage: View {
 
     var body: some View {
         let prefs = settings.preferences
-        let speech = Platform.named(prefs.speechPlatform), text = Platform.named(prefs.textPlatform)
+        let speech = Platform.named(prefs.speechPlatform)
         // Everything about polishing shows only once Text polishing is turned on (user 2026-11-20).
         let polishing = prefs.style != StyleChoice.standard
         VStack(alignment: .leading, spacing: 11) {
@@ -29,13 +29,8 @@ struct SettingsPage: View {
                 }
             }
             if polishing { CustomStylesGroup(settings: settings) }
-            ForEach(Platform.all.filter { $0 == speech || (polishing && $0 == text) }) { platform in
-                if platform.wire == .onDevice {
-                    OnDeviceGroup(model: prefs.speechModel, models: OnDeviceModels.shared)
-                } else {
-                    KeyGroup(settings: settings, platform: platform)
-                }
-            }
+            if speech.wire == .onDevice { OnDeviceGroup(model: prefs.speechModel, models: OnDeviceModels.shared) }
+            KeysGroup(settings: settings)
             InputGroup(settings: settings, controller: controller, microphones: controller.microphones)
             DictionaryGroup(settings: settings, controller: controller)
             ClipboardGroup(settings: settings, history: controller.clipboard)
@@ -191,91 +186,192 @@ private struct ModelRows: View {
             TextField(speech ? tr("Recognition model name") : tr("Polishing model name"), text: model)
                 .glassField().autocorrectionDisabled()
         }
+        if !onMac { KeyChoice(settings: settings, speech: speech, platform: platform) }
     }
 }
 
-/// The API key of one platform in use; for the user's own platform, its address as well.
-private struct KeyGroup: View {
+/// Which saved key a job uses first, when its service has several, and the keys it tries in turn
+/// when the one before fails.
+private struct KeyChoice: View {
     @ObservedObject var settings: SettingsStore
+    let speech: Bool
     let platform: Platform
-    @State private var key = ""
-    @State private var checking = false
-    @State private var deleteConfirmation = false
+    /// At most this many keys are tried after the first.
+    private static let most = 3
 
     var body: some View {
-        let saved = settings.savedKeys.contains(platform.id)
-        let saving = settings.savingPlatforms.contains(platform.id)
-        let custom = platform.id == Platform.custom.id
-        SettingsGroup(custom ? tr("Custom endpoint · OpenAI-compatible") : tr("%@ API key", platform.name),
-                      detail: saved ? tr("Saved") : tr("Not set up")) {
-            if platform.wire == .alibaba {
-                TextField(tr("Address, such as dashscope-intl.aliyuncs.com"), text: $settings.preferences.alibabaHost)
-                    .glassField().autocorrectionDisabled()
-                hint(tr("Leave empty for the Singapore region. A key works only with the address of the region it was created in; for another region or a workspace's own domain, enter that address."))
-                if !settings.preferences.alibabaHost.trimmingCharacters(in: .whitespaces).isEmpty,
-                   Platform.alibabaBase(settings.preferences.alibabaHost) == nil {
-                    hint(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."), warning: true)
+        let own = settings.keys(on: platform.id)
+        let first = settings.firstKey(speech: speech, on: platform.id)
+        let chain = settings.fallbackKeys(speech: speech, after: first)
+        let able = settings.preferences.keys.filter { speech || Platform.named($0.platform).writes }
+        if own.isEmpty {
+            hint(platform == .custom ? tr("No endpoint is saved yet. Add one under API keys.")
+                                     : tr("No %@ key is saved yet. Add one under API keys.", platform.name), warning: true)
+        } else if own.count > 1 {
+            Row(tr("API key")) {
+                GlassMenu(label: tr("API key"), selection: Binding(get: { first?.id ?? "" }, set: { choose($0) }),
+                          options: own.map { ($0.id, settings.label($0, service: false)) })
+            }
+        }
+        ForEach(0..<min(chain.count + 1, Self.most), id: \.self) { index in
+            let others = able.filter { $0.id != first?.id && !chain.prefix(index).contains($0) }
+            if !others.isEmpty {
+                let label = index == 0 ? tr("If it fails") : tr("If that fails too")
+                Row(label, info: index == 0 ? tr("When the key before it fails (the key is invalid, its quota is used up or it is limited, or its service reports an error), the same request goes to this key. A key of another service uses the model last chosen for that service here, or its first one.") : nil) {
+                    GlassMenu(label: label, selection: Binding(get: { index < chain.count ? chain[index].id : "" },
+                                                               set: { place($0, at: index, in: chain) }),
+                              options: [("", tr("None"))] + others.map { ($0.id, settings.label($0)) })
                 }
             }
-            if custom {
-                TextField(tr("Endpoint URL, such as https://example.com/v1"), text: $settings.preferences.customBase)
-                    .glassField().autocorrectionDisabled()
-                if !settings.preferences.customBase.trimmingCharacters(in: .whitespaces).isEmpty,
-                   Platform.normalized(base: settings.preferences.customBase) == nil {
-                    hint(tr("Use an https:// address. http:// is accepted only for this Mac, a local network host name or an IP address."), warning: true)
-                }
-                if let base = Platform.normalized(base: settings.preferences.customBase), Platform.isPlain(base) {
-                    hint(tr("This connection is not encrypted: the key, audio and text cross the network in plain text."), warning: true)
-                }
+        }
+    }
+
+    private func choose(_ id: String) {
+        if speech { settings.preferences.speechKey = id } else { settings.preferences.textKey = id }
+    }
+
+    /// Puts `id` at `index` of the fallbacks; none there ends the list at that place. A key named
+    /// twice keeps its first place.
+    private func place(_ id: String, at index: Int, in chain: [APIKey]) {
+        var ids = chain.map(\.id)
+        if id.isEmpty { ids = Array(ids.prefix(index)) }
+        else if index < ids.count { ids[index] = id }
+        else { ids.append(id) }
+        var seen = Set<String>()
+        ids = ids.filter { seen.insert($0).inserted }
+        if speech { settings.preferences.speechFallbacks = ids } else { settings.preferences.textFallbacks = ids }
+    }
+}
+
+/// Every saved API key, each with its check and its removal, and the form that adds one for any
+/// service; for Model Studio and the user's own endpoint, the address it works with as well.
+private struct KeysGroup: View {
+    @ObservedObject var settings: SettingsStore
+    @State private var platform = Platform.openAI.id
+    @State private var name = ""
+    @State private var address = ""
+    @State private var secret = ""
+    @State private var checking: Set<String> = []
+    @State private var removing: APIKey?
+
+    var body: some View {
+        let chosen = Platform.named(platform)
+        let saving = settings.savingKeys.contains(SettingsStore.newKeyNote)
+        SettingsGroup(tr("API keys")) {
+            ForEach($settings.preferences.keys) { $key in
+                row($key)
+                Divider()
             }
-            SecureField(saved ? tr("Enter a new key to replace it") : tr("API key (%@)", tr(platform.keyHint)), text: $key)
+            GlassMenu(label: tr("Service"), selection: $platform,
+                      options: Platform.all.filter { $0.wire != .onDevice }.map { ($0.id, $0.name) })
+            if chosen == .alibaba || chosen == .custom { addressField($address, platform: chosen) }
+            TextField(tr("Name, to tell keys apart (optional)"), text: $name)
+                .glassField().autocorrectionDisabled()
+            SecureField(tr("API key (%@)", tr(chosen.keyHint)), text: $secret)
                 .glassField().onSubmit { save() }
-            HStack(spacing: 6) {
-                Button(saving ? tr("Saving…") : tr("Save")) { save() }
-                    .buttonStyle(SolidButton()).disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
-                Button(checking ? tr("Verifying…") : tr("Verify")) { check() }
-                    .buttonStyle(QuietButton()).disabled(!settings.usable(platform.id) || checking || saving)
-                Spacer()
-                if saved {
-                    Button(tr("Remove")) { deleteConfirmation = true }.buttonStyle(QuietButton()).disabled(saving)
-                }
-            }
-            if let message = settings.keyMessages[platform.id], !message.isEmpty {
+            Button(saving ? tr("Saving…") : tr("Save")) { save() }
+                .buttonStyle(SolidButton()).disabled(!ready || saving)
+            if let message = settings.keyMessages[SettingsStore.newKeyNote], !message.isEmpty {
                 words(message, color: Palette.ink)
             }
         }
-        .alert(tr("Remove the %@ API key from the system keychain?", platform.name), isPresented: $deleteConfirmation) {
-            Button(tr("Cancel"), role: .cancel) {}
-            Button(tr("Remove"), role: .destructive) { settings.deleteKey(platform: platform.id) }
+        // What was typed for one service never goes to another.
+        .onChange(of: platform) { address = ""; secret = "" }
+        .alert(tr("Remove the %@ API key from the system keychain?", removing.map { settings.label($0) } ?? ""),
+               isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+            Button(tr("Cancel"), role: .cancel) { removing = nil }
+            Button(tr("Remove"), role: .destructive) {
+                if let key = removing { settings.removeKey(key.id) }
+                removing = nil
+            }
+        }
+    }
+
+    /// Whether the form holds what a save takes: a secret, or for the user's own endpoint an address.
+    private var ready: Bool {
+        let chosen = Platform.named(platform)
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if chosen == .custom { return Platform.normalized(base: address) != nil }
+        if chosen == .alibaba, Platform.alibabaBase(address) == nil { return false }
+        return !trimmed.isEmpty
+    }
+
+    private func row(_ key: Binding<APIKey>) -> some View {
+        let value = key.wrappedValue
+        let service = Platform.named(value.platform)
+        let busy = settings.savingKeys.contains(value.id)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text(settings.label(value)).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button(checking.contains(value.id) ? tr("Verifying…") : tr("Verify")) { check(value) }
+                    .buttonStyle(QuietButton()).disabled(!settings.usable(value) || checking.contains(value.id) || busy)
+                Button(tr("Remove")) { removing = value }.buttonStyle(QuietButton()).disabled(busy)
+            }
+            if service == .alibaba || service == .custom { addressField(key.address, platform: service) }
+            if let message = settings.keyMessages[value.id], !message.isEmpty {
+                words(message, color: Palette.ink)
+            }
+        }
+    }
+
+    /// Model Studio's host, or the user's own endpoint's address, with what is wrong with it.
+    @ViewBuilder
+    private func addressField(_ text: Binding<String>, platform: Platform) -> some View {
+        let value = text.wrappedValue.trimmingCharacters(in: .whitespaces)
+        if platform == .alibaba {
+            TextField(tr("Address, such as dashscope-intl.aliyuncs.com"), text: text)
+                .glassField().autocorrectionDisabled()
+            hint(tr("Leave empty for the Singapore region. A key works only with the address of the region it was created in; for another region or a workspace's own domain, enter that address."))
+            if !value.isEmpty, Platform.alibabaBase(value) == nil {
+                hint(tr("Enter a host name, such as dashscope-intl.aliyuncs.com, or an https:// address."), warning: true)
+            }
+        } else {
+            TextField(tr("Endpoint URL, such as https://example.com/v1"), text: text)
+                .glassField().autocorrectionDisabled()
+            if !value.isEmpty, Platform.normalized(base: value) == nil {
+                hint(tr("Use an https:// address. http:// is accepted only for this Mac, a local network host name or an IP address."), warning: true)
+            }
+            if let base = Platform.normalized(base: value), Platform.isPlain(base) {
+                hint(tr("This connection is not encrypted: the key, audio and text cross the network in plain text."), warning: true)
+            }
         }
     }
 
     private func save() {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        settings.saveKey(trimmed, platform: platform.id)
-        if !trimmed.contains(where: { $0.isWhitespace }) { key = "" }
+        guard ready else { return }
+        settings.addKey(platform: platform, name: name, address: address, secret: secret)
+        secret = ""; name = ""; address = ""
     }
 
-    private func check() {
-        checking = true
-        let id = platform.id
+    /// Tries the key with the models it would be asked for now: where it is a job's first key or one
+    /// of its fallbacks, that job's model there; a key no job uses, its service's model list alone.
+    private func check(_ key: APIKey) {
+        checking.insert(key.id)
+        let id = key.id
+        let platform = Platform.named(key.platform)
         Task { @MainActor in
-            defer { checking = false }
+            defer { checking.remove(id) }
             do {
-                let service = try await settings.serviceAsync(id)
+                let service = try await settings.serviceAsync(platform, key: key)
                 let prefs = settings.preferences
-                // With Raw nothing is polished, so the polishing model is not looked for in the list.
-                let speechHere = prefs.speechPlatform == id
-                let textHere = prefs.textPlatform == id && prefs.dictationStyle != .raw
+                let polishing = prefs.dictationStyle != .raw
+                let routedSpeech = settings.routes(speech: true, platform: prefs.speechPlatform, model: prefs.speechModel)
+                    .first { $0.key?.id == id }?.model
+                let textModel = polishing ? settings.routes(speech: false, platform: prefs.textPlatform, model: prefs.textModel)
+                    .first { $0.key?.id == id }?.model : nil
+                // A key no job uses yet, of a service spoken to in its own way, is checked as for its
+                // first speech model: its secret never goes out as a bearer token to a model list.
+                let unused = routedSpeech == nil && textModel == nil && (platform.wire == .own || platform.wire == .alibaba)
+                let speechModel = unused ? platform.speechModels.first : routedSpeech
                 // A service spoken to in its own way proves the key over its live socket; one that
                 // takes the finished recording is proven by a recording. Neither lists its speech models.
-                let own = speechHere ? platform.own(model: prefs.speechModel) : nil
-                if own == .live, let wire = platform.liveWire(model: prefs.speechModel, base: service.base) {
-                    try await LiveSocketTranscriber.probe(wire: wire, key: service.key, model: prefs.speechModel, name: platform.name)
+                let own = speechModel.flatMap { platform.own(model: $0) }
+                if own == .live, let model = speechModel, let wire = platform.liveWire(model: model, base: service.base) {
+                    try await LiveSocketTranscriber.probe(wire: wire, key: service.key, model: model, name: platform.name)
                 }
-                if own != nil && !textHere {
-                    let proven: Bool = own == .live && (platform.liveWire(model: prefs.speechModel, base: service.base)?.provesKey(model: prefs.speechModel) ?? false)
+                if own != nil && textModel == nil {
+                    let proven: Bool = own == .live && (speechModel.flatMap { platform.liveWire(model: $0, base: service.base)?.provesKey(model: $0) } ?? false)
                     let valid: String = tr("The API key is valid, and the chosen models are available.")
                     let untested: String = tr("This service does not list its models. Make a recording to test the connection.")
                     settings.keyMessages[id] = proven ? valid : untested
@@ -283,27 +379,29 @@ private struct KeyGroup: View {
                 }
                 // Model Studio proves the key and the speech model over its realtime socket;
                 // the speech model's name is not looked up in the model list.
-                if platform.wire == .alibaba && speechHere && own == nil {
+                if platform.wire == .alibaba, let model = speechModel, own == nil {
                     try await QwenRealtimeTranscriber.probe(key: service.key,
-                        endpoint: Platform.realtimeURL(base: service.base, model: prefs.speechModel))
+                        endpoint: Platform.realtimeURL(base: service.base, model: model))
                 }
                 // Proven by the socket and nothing else wanted; a key kept only for polishing is
                 // still checked against the model list below.
-                if platform.wire == .alibaba && speechHere && !textHere {
+                if platform.wire == .alibaba && speechModel != nil && textModel == nil {
                     settings.keyMessages[id] = tr("The API key is valid, and the chosen models are available."); return
                 }
                 guard let models = try await service.models() else {
                     settings.keyMessages[id] = tr("This service does not list its models. Make a recording to test the connection."); return
                 }
                 var wanted: [String] = []
-                if speechHere && platform.wire != .alibaba && own == nil { wanted.append(prefs.speechModel) }
-                if textHere { wanted.append(prefs.textModel) }
+                if let model = speechModel, platform.wire != .alibaba, own == nil { wanted.append(model) }
+                if let model = textModel { wanted.append(model) }
                 let missing = wanted.filter { !models.contains($0) }
-                let custom = id == Platform.custom.id
+                let custom = platform == .custom
                 // The list is joined the way each language writes one: ", ", or an ideographic comma in Chinese and Japanese.
                 let separator = Localization.current.listSeparator
                 let absent = missing.map { $0.isEmpty ? tr("(blank)") : $0 }.joined(separator: separator)
-                settings.keyMessages[id] = missing.isEmpty
+                settings.keyMessages[id] = wanted.isEmpty
+                    ? (custom ? tr("The endpoint answers.") : tr("The API key is valid."))
+                    : missing.isEmpty
                     ? (custom ? tr("The endpoint answers, and the chosen models are available.")
                               : tr("The API key is valid, and the chosen models are available."))
                     : (custom ? tr("The endpoint answers, but its model list does not include %@.", absent)
