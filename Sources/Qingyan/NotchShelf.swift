@@ -71,16 +71,21 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
         }
     }
 
-    private func belowCamera(height: CGFloat) -> NSRect {
-        let width = max(284, housing.width + 24)
-        return NSRect(x: housing.midX - width / 2, y: housing.minY - height, width: width, height: height)
+    private func belowCamera(width: CGFloat, height: CGFloat) -> NSRect {
+        NSRect(x: housing.midX - width / 2, y: housing.minY - height, width: width, height: height)
+    }
+
+    private var dropFrame: NSRect {
+        belowCamera(width: max(284, housing.width + 24), height: 56)
     }
 
     private func hover(at point: NSPoint) {
         let atCamera = housing.insetBy(dx: 0, dy: -1).contains(point)
         if phase == .idle && atCamera {
+            guard let display = NSScreen.screens.first(where: { $0.frame.contains(housing) }) else { return }
+            let halfWidth = min(housing.midX - display.frame.minX, display.frame.maxX - housing.midX) - 8
             phase = .browsing; face.rootView = NotchFace(shelf: shelf, browsing: true)
-            setFrame(belowCamera(height: 100), display: true)
+            setFrame(belowCamera(width: min(460, 2 * halfWidth), height: 100), display: true)
             ignoresMouseEvents = false; orderFrontRegardless()
         } else if phase == .browsing && !atCamera && !frame.contains(point) { collapse() }
     }
@@ -99,7 +104,7 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
     func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         let point = convertPoint(toScreen: sender.draggingLocation)
         let inside = housing.insetBy(dx: 0, dy: -2).contains(point) ||
-            (phase == .ready && belowCamera(height: 56).contains(point)) || (phase == .browsing && frame.contains(point))
+            (phase == .ready && dropFrame.contains(point)) || (phase == .browsing && frame.contains(point))
         guard inside, phase == .armed || phase == .ready || phase == .browsing, sender.draggingSourceOperationMask.contains(.copy),
               (sender.draggingSource as? NSView)?.window !== self,
               sender.draggingPasteboard.availableType(from: Self.types) != nil else {
@@ -107,8 +112,7 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
         }
         if phase != .ready {
             phase = .ready
-            let below = belowCamera(height: 56)
-            setFrame(below.union(housing), display: true)
+            setFrame(dropFrame.union(housing), display: true)
             show("tray", tr("Release to add to the Shelf"), tr("Move away to cancel"))
         }
         return .copy
