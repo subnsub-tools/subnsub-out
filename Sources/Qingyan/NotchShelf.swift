@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 import UniformTypeIdentifiers
 import QingyanCore
@@ -16,24 +17,46 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
 
     let housing: NSRect
     private let shelf: ShelfModel
-    private let face: NSHostingView<NotchFace>
+    private let browseFace: NSHostingView<NotchFace>, messageFace: NSHostingView<NotchFace>
+    private let plate = NSView(), aperture = CALayer()
+    private let cameraTarget = CALayer(), bodyTarget = CALayer()
+    private var landing = NSRect.null
+    private var shown: NSSize, goal = NSSize.zero, velocity = NSSize.zero
+    private var browseMix: CGFloat = 1, wantedMix: CGFloat = 1
+    private var frames: CADisplayLink?, lastFrame: CFTimeInterval = 0
     private enum Phase { case idle, browsing, armed, ready, feedback, stopped }
     private var phase = Phase.idle
     private var turn = 0
     private var pointerWatch: Timer?
     private var releasedAt: TimeInterval?
+    private var hoverSince: TimeInterval?, hoverMoved = false
+    private var lastPointer = NSEvent.mouseLocation
     private static let images = NSImage.imageTypes.filter { UTType($0)?.conforms(to: .image) == true }.map { NSPasteboard.PasteboardType($0) }
     private static let types = [.fileURL, .png, .tiff, .URL, .string] + images
 
     init(housing: NSRect, shelf: ShelfModel) {
         self.housing = housing; self.shelf = shelf
-        face = NSHostingView(rootView: NotchFace(shelf: shelf))
+        shown = NSSize(width: housing.width, height: 0)
+        browseFace = NSHostingView(rootView: NotchFace(shelf: shelf, browsing: true))
+        messageFace = NSHostingView(rootView: NotchFace(shelf: shelf))
         super.init(contentRect: housing, styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
         level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         isOpaque = false; hasShadow = false; hidesOnDeactivate = false; ignoresMouseEvents = true
         backgroundColor = .clear; animationBehavior = .none
-        face.sizingOptions = []; face.safeAreaRegions = []; contentView = face
+        let root = NSView(); root.wantsLayer = true; contentView = root
+        // Only these nearly transparent pixels catch native drags before the face is revealed.
+        for target in [cameraTarget, bodyTarget] {
+            target.backgroundColor = NSColor.black.withAlphaComponent(0.01).cgColor
+            root.layer?.addSublayer(target)
+        }
+        plate.wantsLayer = true; plate.layer?.backgroundColor = NSColor.black.cgColor
+        aperture.backgroundColor = NSColor.black.cgColor; aperture.cornerCurve = .continuous
+        aperture.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        plate.layer?.mask = aperture; root.addSubview(plate)
+        for face in [messageFace, browseFace] {
+            face.sizingOptions = []; face.safeAreaRegions = []; face.isHidden = true; plate.addSubview(face)
+        }
         registerForDraggedTypes(Self.types)
         // Window drag sessions can consume their source's mouse events. Read only the pointer
         // position and buttons, without installing an event tap or asking for Input Monitoring.
@@ -49,22 +72,38 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
 
     func stop() {
         pointerWatch?.invalidate(); pointerWatch = nil
-        unregisterDraggedTypes(); collapse(); phase = .stopped
+        frames?.invalidate(); frames = nil
+        turn += 1; phase = .stopped; unregisterDraggedTypes(); orderOut(nil)
     }
 
     private func trackPointer() {
         let point = NSEvent.mouseLocation, buttons = NSEvent.pressedMouseButtons
+        let moved = point != lastPointer; lastPointer = point
+        let now = ProcessInfo.processInfo.systemUptime
         if buttons == 0 {
             if phase == .armed || phase == .ready {
                 // Give AppKit the drop even if mouse-up precedes performDragOperation.
-                let now = ProcessInfo.processInfo.systemUptime
                 if let releasedAt, now - releasedAt > 0.18 { collapse() }
                 else if releasedAt == nil { releasedAt = now }
             }
-            hover(at: point)
-        } else if buttons & 1 != 0 {
+            let inside = housing.insetBy(dx: 0, dy: -1).contains(point) ||
+                (wantedMix == 1 && visibleBody.contains(point))
+            if phase == .idle && inside {
+                hoverMoved = hoverMoved || moved
+                if let hoverSince, now - hoverSince >= 0.095 {
+                    let cue = hoverMoved
+                    phase = .browsing; presentFace()
+                    if cue { NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .drawCompleted) }
+                } else if hoverSince == nil { hoverSince = now }
+            } else if phase == .browsing && !inside {
+                if let hoverSince, now - hoverSince >= 0.165 { collapse() }
+                else if hoverSince == nil { hoverSince = now }
+            } else { hoverSince = nil; hoverMoved = false }
+        } else {
+            hoverSince = nil; hoverMoved = false
+            guard buttons & 1 != 0 else { return }
             releasedAt = nil
-            if phase == .browsing && !frame.contains(point) { collapse() }
+            if phase == .browsing && !visibleBody.contains(point) { collapse() }
             let near = housing.insetBy(dx: -100, dy: -100).contains(point)
             if near && (phase == .idle || phase == .feedback) { arm() }
             if !near && phase == .armed { collapse() }
@@ -75,28 +114,80 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
         NSRect(x: housing.midX - width / 2, y: housing.minY - height, width: width, height: height)
     }
 
-    private var dropFrame: NSRect {
-        belowCamera(width: max(284, housing.width + 24), height: 56)
+    private var visibleBody: NSRect { belowCamera(width: shown.width, height: shown.height) }
+
+    // The window and the SwiftUI tiles stay still. Animate just the mask below the camera.
+    private func presentFace(keeping accepted: NSRect = .null) {
+        hoverSince = nil; hoverMoved = false
+        guard let display = NSScreen.screens.first(where: { $0.frame.contains(housing) }) else { return }
+        let halfWidth = min(housing.midX - display.frame.minX, display.frame.maxX - housing.midX) - 8
+        let browse = belowCamera(width: min(460, 2 * halfWidth), height: 100)
+        let message = belowCamera(width: min(max(284, housing.width + 24), 2 * halfWidth), height: 56)
+        let canvas = browse.union(message)
+        let dragging = phase == .armed || phase == .ready
+        let band = housing.insetBy(dx: 0, dy: -2)
+        let windowRect = dragging ? canvas.union(band) : canvas
+        let body = phase == .browsing ? browse : message
+        goal = (phase == .idle || phase == .armed) ? NSSize(width: housing.width, height: 0) : body.size
+        if goal.height > 0 { wantedMix = phase == .browsing ? 1 : 0 }
+        if shown.height == 0 { browseMix = wantedMix }
+        // A drag accepted on a wide tile remains droppable there as the message narrows.
+        landing = phase == .ready ? message.union(accepted) : .null
+        ignoresMouseEvents = phase == .idle || phase == .feedback
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if frame != windowRect { setFrame(windowRect, display: false) }
+        func local(_ rect: NSRect) -> NSRect { rect.offsetBy(dx: -windowRect.minX, dy: -windowRect.minY) }
+        cameraTarget.frame = dragging ? local(band) : .zero
+        bodyTarget.frame = landing.isNull ? .zero : local(landing)
+        plate.frame = local(canvas)
+        browseFace.frame = browse.offsetBy(dx: -canvas.minX, dy: -canvas.minY)
+        messageFace.frame = message.offsetBy(dx: -canvas.minX, dy: -canvas.minY)
+        drawReveal()
+        CATransaction.commit()
+        if phase != .idle && !isVisible { orderFrontRegardless() }
+        if Motion.reduced || (shown == goal && velocity == .zero && browseMix == wantedMix) { settle(); return }
+        if frames == nil {
+            lastFrame = CACurrentMediaTime()
+            let link = display.displayLink(target: self, selector: #selector(advanceReveal(_:)))
+            frames = link; link.add(to: .main, forMode: .common)
+        }
     }
 
-    private func hover(at point: NSPoint) {
-        let atCamera = housing.insetBy(dx: 0, dy: -1).contains(point)
-        if phase == .idle && atCamera {
-            guard let display = NSScreen.screens.first(where: { $0.frame.contains(housing) }) else { return }
-            let halfWidth = min(housing.midX - display.frame.minX, display.frame.maxX - housing.midX) - 8
-            phase = .browsing; face.rootView = NotchFace(shelf: shelf, browsing: true)
-            setFrame(belowCamera(width: min(460, 2 * halfWidth), height: 100), display: true)
-            ignoresMouseEvents = false; orderFrontRegardless()
-        } else if phase == .browsing && !atCamera && !frame.contains(point) { collapse() }
+    @objc private func advanceReveal(_ link: CADisplayLink) {
+        if Motion.reduced { settle(); return }
+        let dt = CGFloat(min(0.05, max(0, link.targetTimestamp - lastFrame))); lastFrame = link.targetTimestamp
+        // Exact critically damped step; a reversal keeps both position and velocity.
+        func step(_ x: CGFloat, _ v: CGFloat, _ to: CGFloat, _ rate: CGFloat) -> (CGFloat, CGFloat) {
+            let d = x - to, c = v + rate * d, decay = exp(-rate * dt)
+            return (to + (d + c * dt) * decay, (v - rate * c * dt) * decay)
+        }
+        let closing = goal.height == 0
+        (shown.width, velocity.width) = step(shown.width, velocity.width, goal.width, closing ? 25 : 29)
+        (shown.height, velocity.height) = step(shown.height, velocity.height, goal.height, closing ? 31 : 19)
+        browseMix += (wantedMix - browseMix) * (1 - exp(-24 * dt))
+        if abs(shown.width - goal.width) < 0.14 && abs(shown.height - goal.height) < 0.14 &&
+            abs(velocity.width) < 3 && abs(velocity.height) < 3 && abs(browseMix - wantedMix) < 0.003 { settle(); return }
+        drawReveal()
+    }
+
+    private func drawReveal() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        aperture.frame = NSRect(x: (plate.bounds.width - shown.width) / 2, y: plate.bounds.height - shown.height,
+                                width: shown.width, height: shown.height)
+        aperture.cornerRadius = min(16, shown.height / 2)
+        let reveal = min(1, max(0, (shown.height - 4) / 38))
+        browseFace.alphaValue = reveal * browseMix; browseFace.isHidden = browseFace.alphaValue == 0
+        messageFace.alphaValue = reveal * (1 - browseMix); messageFace.isHidden = messageFace.alphaValue == 0
+        CATransaction.commit()
+    }
+
+    private func settle() {
+        frames?.invalidate(); frames = nil; shown = goal; velocity = .zero; browseMix = wantedMix; drawReveal()
+        if phase == .idle { orderOut(nil) }
     }
 
     private func arm() {
-        turn += 1; phase = .armed
-        face.rootView = NotchFace(shelf: shelf)
-        // The nearly transparent pixels receive native dragging sessions, even from a source
-        // that does not publish anything to the named drag pasteboard until the actual drop.
-        backgroundColor = NSColor.black.withAlphaComponent(0.01); ignoresMouseEvents = false
-        setFrame(housing.insetBy(dx: 0, dy: -2), display: true); orderFrontRegardless()
+        turn += 1; phase = .armed; presentFace()
     }
 
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
@@ -104,16 +195,18 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
     func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         let point = convertPoint(toScreen: sender.draggingLocation)
         let inside = housing.insetBy(dx: 0, dy: -2).contains(point) ||
-            (phase == .ready && dropFrame.contains(point)) || (phase == .browsing && frame.contains(point))
+            (phase == .ready && landing.contains(point)) || (phase == .browsing && visibleBody.contains(point))
         guard inside, phase == .armed || phase == .ready || phase == .browsing, sender.draggingSourceOperationMask.contains(.copy),
               (sender.draggingSource as? NSView)?.window !== self,
               sender.draggingPasteboard.availableType(from: Self.types) != nil else {
             if phase == .ready { arm() }; return []
         }
         if phase != .ready {
+            let accepted = phase == .browsing ? visibleBody : .null
             phase = .ready
-            setFrame(dropFrame.union(housing), display: true)
             show("tray", tr("Release to add to the Shelf"), tr("Move away to cancel"))
+            presentFace(keeping: accepted)
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .drawCompleted)
         }
         return .copy
     }
@@ -142,7 +235,7 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
     func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard prepareForDragOperation(sender), let items = sender.draggingPasteboard.pasteboardItems?.map(Item.init), !items.isEmpty else { return false }
         turn += 1; let drop = turn
-        phase = .feedback; ignoresMouseEvents = true; backgroundColor = .clear
+        phase = .feedback; presentFace()
         let detail: String
         if items.count == 1, case let .file(url) = items[0] { detail = url.lastPathComponent }
         else { detail = tr("%ld items", items.count) }
@@ -168,18 +261,17 @@ final class NotchShelf: NSPanel, NSDraggingDestination {
             show(failed > 0 ? "exclamationmark.circle" : "checkmark.circle.fill", title, subtitle)
             AccessibilityNotification.Announcement(title + ". " + subtitle).post()
             try? await Task.sleep(for: .seconds(failed > 0 ? 3.5 : 1.35))
-            if turn == drop { collapse(); if NSEvent.pressedMouseButtons == 0 { hover(at: NSEvent.mouseLocation) } }
+            if turn == drop { collapse() }
         }
         return true
     }
 
     private func show(_ icon: String, _ title: String, _ detail: String) {
-        face.rootView = NotchFace(shelf: shelf, icon: icon, title: title, detail: detail)
+        messageFace.rootView = NotchFace(shelf: shelf, icon: icon, title: title, detail: detail)
     }
 
     private func collapse() {
-        turn += 1; phase = .idle; ignoresMouseEvents = true; backgroundColor = .clear
-        orderOut(nil)
+        turn += 1; phase = .idle; lastPointer = NSEvent.mouseLocation; presentFace()
     }
 }
 
@@ -207,7 +299,6 @@ private struct NotchFace: View {
                         }.frame(height: ShelfRows.cell)
                     }
                 }.padding(.horizontal, 12).frame(height: 100)
-                    .background(Color.black, in: shape)
             } else if !title.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: icon).font(.system(size: 21)).accessibilityHidden(true)
@@ -216,10 +307,7 @@ private struct NotchFace: View {
                         Text(verbatim: detail).font(.caption).foregroundStyle(.secondary)
                     }.lineLimit(2)
                 }.padding(.horizontal, 12).frame(maxWidth: .infinity).frame(height: 56)
-                    .background(Color.black, in: shape)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).environment(\.colorScheme, .dark)
     }
-
-    private var shape: UnevenRoundedRectangle { UnevenRoundedRectangle(bottomLeadingRadius: 16, bottomTrailingRadius: 16, style: .continuous) }
 }
