@@ -791,5 +791,8 @@
  "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "out ne peut pas consulter le dossier où les captures d’écran sont enregistrées. Autorisez out dans les Réglages Système.",
  "Each new screenshot goes on the Shelf. Click to turn this off.": "Chaque nouvelle capture d’écran va sur l’Étagère. Cliquez pour désactiver.",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "Récupération de « %@ » depuis %@ pour son lien. Le lien est copié dès qu’il est prêt.",
- "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "Aucun Mac qui détient « %@ » n’est en ligne, et le helper principal ne l’a pas encore : il n’a donc pas de lien. Réessayez quand %@ sera allumé."
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "Aucun Mac qui détient « %@ » n’est en ligne, et le helper principal ne l’a pas encore : il n’a donc pas de lien. Réessayez quand %@ sera allumé.",
+ "Keep and Clear": "Conserver et effacer",
+ "Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.": "Cliquez d’abord à l’endroit où le texte doit aller, puis sur ce bouton.\nLe bouton remet le focus à l’endroit où vous avez cliqué en dernier et y tape le contenu du presse-papiers, touche par touche.\nAssurez-vous que le presse-papiers ne contient que des caractères anglais : lettres, chiffres et symboles d’un clavier anglais.",
+ "In a remote desktop, switch the remote computer to an English (US) keyboard layout first.": "Dans un bureau à distance, passez d’abord l’ordinateur distant à la disposition de clavier anglais (États-Unis)."
 }

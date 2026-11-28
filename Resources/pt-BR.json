@@ -791,5 +791,8 @@
  "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "O out não pode olhar na pasta onde as capturas de tela são salvas. Permita o out em Ajustes do Sistema.",
  "Each new screenshot goes on the Shelf. Click to turn this off.": "Cada nova captura de tela vai para a Estante. Clique para desativar.",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "Buscando “%@” em %@ para o link. O link é copiado quando estiver pronto.",
- "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "Nenhum Mac com “%@” está on-line, e o helper principal ainda não o tem, então ele não tem link. Tente de novo quando %@ estiver ligado."
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "Nenhum Mac com “%@” está on-line, e o helper principal ainda não o tem, então ele não tem link. Tente de novo quando %@ estiver ligado.",
+ "Keep and Clear": "Guardar e limpar",
+ "Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.": "Primeiro clique onde o texto deve entrar e depois neste botão.\nO botão devolve o foco ao último lugar em que você clicou e digita ali o conteúdo da área de transferência, tecla por tecla.\nVerifique se a área de transferência contém apenas caracteres em inglês: letras, números e os símbolos de um teclado inglês.",
+ "In a remote desktop, switch the remote computer to an English (US) keyboard layout first.": "Em uma área de trabalho remota, mude antes o computador remoto para o layout de teclado inglês (EUA)."
 }

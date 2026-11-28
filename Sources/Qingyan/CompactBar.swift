@@ -290,8 +290,7 @@ struct CompactBar: View {
 
     private func copy(_ text: String) {
         guard !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        ClipboardCopy.copy(text)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
     }

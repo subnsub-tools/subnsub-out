@@ -2108,7 +2108,8 @@ final class DictationController: ObservableObject {
 
     func copyResult() {
         guard !result.isEmpty else { return }
-        PasteboardLease.general.keep(result)
+        // What out copies itself stays out of the clipboard history; the text is in History already.
+        PasteboardLease.general.keep(result, unrecorded: true)
         capsuleResult = .inserted
         message = tr("Text copied")
     }

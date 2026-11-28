@@ -79,6 +79,8 @@ final class HistoryPageModel: ObservableObject {
     /// Whether the search field has the keyboard: the keys that choose and paste are read then.
     var searchFocused = false
     @Published var clearing: Clearing?
+    /// Keep and Clear, under the title row: opened and closed by the hourglass there.
+    @Published var keepShown = false
     /// The row whose item was just copied, which says so for a moment.
     @Published private(set) var copied: UUID?
     private var copiedToken = UUID()
@@ -86,6 +88,8 @@ final class HistoryPageModel: ObservableObject {
     let player = RecordingPlayer()
     private var icons: [String: NSImage] = [:]
     private var thumbnails: [UUID: NSImage] = [:]
+    private var peeks: [UUID: NSImage] = [:]
+    private var peekReads: [UUID: Task<NSImage?, Never>] = [:]
     private var fileIcons: [String: NSImage] = [:]
 
     init(clipboard: ClipboardHistory) { self.clipboard = clipboard }
@@ -140,6 +144,26 @@ final class HistoryPageModel: ObservableObject {
             thumbnails = thumbnails.filter { kept.contains($0.key) }
         }
         thumbnails[entry.id] = image
+        return image
+    }
+
+    /// A picture's large version, floating out of its row while the pointer rests on it (user
+    /// 2026-11-28: as on the Shelf, twice as large as it was there), read off the main thread.
+    func peek(_ entry: ClipEntry) async -> NSImage? {
+        if let known = peeks[entry.id] { return known }
+        // The pointer back on a picture still being read waits for that reading.
+        if let reading = peekReads[entry.id] { return await reading.value ?? thumbnail(entry) }
+        let reading = Task { @MainActor [clipboard] () -> NSImage? in
+            guard let data = await clipboard.imageBytesLater(entry),
+                  let picture = await Task.detached(priority: .userInitiated, operation: { Peek.picture(in: data) }).value else { return nil }
+            return Peek.image(picture)
+        }
+        peekReads[entry.id] = reading
+        let image = await reading.value
+        peekReads[entry.id] = nil
+        guard let image else { return thumbnail(entry) }
+        if peeks.count >= 8 { peeks.removeAll() }
+        peeks[entry.id] = image
         return image
     }
 
@@ -211,20 +235,17 @@ struct HistoryPage: View {
     private var page: some View {
         let shown = model.shown(voice: settings.history)
         return VStack(alignment: .leading, spacing: 7) {
+            if model.keepShown { keepAndClear.transition(Motion.reduced ? .identity : .opacity.combined(with: .move(edge: .top))) }
             HStack(spacing: 6) {
                 TextField(tr("Search History…"), text: $model.query).glassField()
                     .focused($searchFocus)
                     .onChange(of: searchFocus) { _, focused in model.searchFocused = focused }
                     .onDisappear { model.searchFocused = false }
-                Menu {
-                    Button(tr("Copied Items…")) { model.clearing = .copied }
-                        .disabled(clipboard.entries.allSatisfy(\.pinned))
-                    Button(tr("Voice Records…")) { model.clearing = .voice }
-                        .disabled(settings.history.isEmpty || voiceLocked)
-                } label: {
-                    Text(tr("Clear"))
-                }
-                .menuStyle(.button).buttonStyle(QuietButton()).menuIndicator(.hidden).fixedSize()
+                // Clears the search; History itself is cleared in Keep and Clear (user, 2026-11-28: the
+                // Clear beside the search bar empties the search bar, not the history).
+                Button(tr("Clear")) { model.query = "" }
+                    .buttonStyle(QuietButton()).fixedSize()
+                    .disabled(model.query.isEmpty)
             }
             GlassSegments(label: tr("Kind"), selection: $model.kind, options: [
                 (value: HistoryPageModel.Kind.all, title: tr("All")), (value: .voice, title: tr("Voice")),
@@ -271,6 +292,46 @@ struct HistoryPage: View {
                 if voiceLocked { NSSound.beep() } else { settings.clearHistory() }
             }
         }
+    }
+
+    /// Under the title row while the hourglass there is on (user, 2026-11-28: put clearing History in the
+    /// hourglass; a click opens a small settings section, another click closes it): how long what is copied is
+    /// kept, the setting Keep for in Settings, and clearing either list. What is said keeps its own rule,
+    /// the 100 latest.
+    private var keepAndClear: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if settings.preferences.clipHistory {
+                HStack(spacing: 6) {
+                    Text(tr("Keep what is copied")).font(.system(size: 12)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    GlassMenu(label: tr("Keep for"), selection: $settings.preferences.clipDays,
+                              options: ClipboardHistory.dayChoices.map { ($0, ClipboardHistory.keptFor($0)) })
+                }
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Text(tr("Clear")).font(.system(size: 12)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    clearButtons
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(tr("Clear")).font(.system(size: 12))
+                    HStack(spacing: 6) { clearButtons }
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 9)
+        .background(Palette.fill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Palette.line, lineWidth: 1))
+    }
+
+    @ViewBuilder private var clearButtons: some View {
+        Button(tr("Copied Items…")) { model.clearing = .copied }
+            .buttonStyle(QuietButton()).fixedSize()
+            .disabled(clipboard.entries.allSatisfy(\.pinned))
+        Button(tr("Voice Records…")) { model.clearing = .voice }
+            .buttonStyle(QuietButton()).fixedSize()
+            .disabled(settings.history.isEmpty || voiceLocked)
     }
 
     private func clearing(_ which: HistoryPageModel.Clearing) -> Binding<Bool> {
@@ -334,7 +395,7 @@ struct HistoryPage: View {
     private func copy(_ entry: HistoryEntry) {
         guard !entry.text.isEmpty else { NSSound.beep(); return }
         // Not kept as a new copy, whenever it reaches the clipboard: the list stays as it is.
-        ClipboardCopy.copy(entry.text, unrecorded: true)
+        ClipboardCopy.copy(entry.text)
         model.showCopied(entry.id)
     }
 
@@ -384,6 +445,16 @@ struct HistoryPage: View {
                     caption(tr("Copied on %@. Only the file names are here.", controller.sourceLabel(entry.origin, entry.originName) ?? tr("Unnamed Mac")))
                 }
                 HStack(spacing: 6) {
+                    // A picture or files on the Shelf, where they get a link (user, 2026-11-28: pictures and
+                    // files in History can have a button that moves them to the Shelf, so they get a link).
+                    if entry.kind != .text && !entry.namesOnly {
+                        Button { shelve(entry) } label: {
+                            Image(systemName: "tray.and.arrow.down").font(.system(size: 11, weight: .medium)).frame(width: 14)
+                        }
+                        .buttonStyle(QuietButton())
+                        .help(tr("Put on the Shelf"))
+                        .accessibilityLabel(tr("Put on the Shelf"))
+                    }
                     Spacer(minLength: 0)
                     Button(entry.pinned ? tr("Unpin") : tr("Pin")) { clipboard.pin(entry.id, !entry.pinned) }.buttonStyle(QuietButton())
                     Button(tr("Remove")) { clipboard.remove(entry.id) }.buttonStyle(QuietButton())
@@ -509,6 +580,10 @@ struct HistoryPage: View {
                     .frame(width: height * ratio, height: height)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Palette.line, lineWidth: 1))
+                    .background(PeekArea(id: entry.id) { [weak model] in
+                        guard let model, let picture = await model.peek(entry) else { return nil }
+                        return ShelfPeekView(name: ClipWords.title(entry), isImage: true, image: picture, text: nil, icon: nil, size: ShelfModel.size(entry.bytes))
+                    })
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Text(tr("Image")).font(.system(size: 12)).foregroundStyle(Palette.ink)
@@ -560,6 +635,17 @@ struct HistoryBarCount: View {
         if count > 0 {
             Text(count == 1 ? tr("1 item") : tr("%ld items", count))
                 .font(.system(size: 11)).foregroundStyle(Palette.muted)
+        }
+    }
+}
+
+/// The hourglass left of the pause button: opens and closes Keep and Clear under the title row
+/// (user 2026-11-28; first a menu of how long what is copied is kept).
+struct HistoryKeepButton: View {
+    @ObservedObject var model: HistoryPageModel
+    var body: some View {
+        HeaderIconButton(symbol: "hourglass", active: model.keepShown, helpText: tr("Keep and Clear"), accessibility: tr("Keep and Clear")) {
+            withAnimation(Motion.standard) { model.keepShown.toggle() }
         }
     }
 }

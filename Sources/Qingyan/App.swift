@@ -1177,9 +1177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             NSGradient(starting: NSColor(hue: 0.58, saturation: 0.5, brightness: 0.9, alpha: 1), ending: NSColor(hue: 0.68, saturation: 0.7, brightness: 0.6, alpha: 1))?.draw(in: rect, angle: 60)
             return true
         }
-        let peeks = [("shelf-peek-image", ShelfPeekView(item: ShelfItem(kind: .image, name: "Screenshot 2026-11-22 at 10.41.03.png", size: 482_000, origin: "Study"),
+        let peeks = [("shelf-peek-image", ShelfPeekView(name: "Screenshot 2026-11-22 at 10.41.03.png", isImage: true,
                                                         image: wide, text: nil, icon: nil, size: ShelfModel.size(482_000))),
-                     ("shelf-peek-text", ShelfPeekView(item: ShelfItem(kind: .text, name: "Text.txt", size: 120, origin: "Study"), image: nil,
+                     ("shelf-peek-text", ShelfPeekView(name: "Text.txt", isImage: false, image: nil,
                                                        text: "Plan review on Thursday at 3 p.m., third-floor meeting room. Bring the quote and last week's numbers.",
                                                        icon: nil, size: ShelfModel.size(120)))]
         for (name, peek) in peeks {

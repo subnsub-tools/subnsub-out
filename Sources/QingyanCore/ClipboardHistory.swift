@@ -312,7 +312,7 @@ public final class ClipboardHistory: ObservableObject {
         }.filter(\.isFileURL)
     }
 
-    static func imageData(_ payload: [[String: Data]]) -> Data? {
+    nonisolated static func imageData(_ payload: [[String: Data]]) -> Data? {
         for type in [NSPasteboard.PasteboardType.png.rawValue, "public.jpeg", NSPasteboard.PasteboardType.tiff.rawValue] {
             if let data = payload.first?[type], !data.isEmpty { return data }
         }
@@ -386,6 +386,16 @@ public final class ClipboardHistory: ObservableObject {
     public func imageBytes(_ entry: ClipEntry) -> Data? {
         guard entry.kind == .image else { return nil }
         return payload(entry.id).flatMap(Self.imageData)
+    }
+
+    /// The same, read and unpacked on the I/O queue, for what can wait for it (History's floating
+    /// picture): a copy is up to 32 MB.
+    public func imageBytesLater(_ entry: ClipEntry) async -> Data? {
+        guard entry.kind == .image else { return nil }
+        let url = payloadURL(entry.id)
+        return await withCheckedContinuation { done in
+            io.async { done.resume(returning: (try? Data(contentsOf: url)).flatMap(Self.decode).flatMap(Self.imageData)) }
+        }
     }
 
     public func files(_ entry: ClipEntry) -> [URL] {
@@ -610,7 +620,7 @@ public final class ClipboardHistory: ObservableObject {
         return Self.decode(data)
     }
 
-    private static func decode(_ data: Data) -> [[String: Data]]? {
+    private nonisolated static func decode(_ data: Data) -> [[String: Data]]? {
         (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [[String: Data]]
     }
 

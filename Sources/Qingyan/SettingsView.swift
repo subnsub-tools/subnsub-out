@@ -509,6 +509,17 @@ private struct DictionaryGroup: View {
     }
 }
 
+extension ClipboardHistory {
+    /// One of `dayChoices` by name: here and in History's Keep and Clear.
+    static func keptFor(_ days: Int) -> String {
+        switch days {
+        case 0: return tr("No time limit")
+        case 1: return tr("1 day")
+        default: return tr("%ld days", days)
+        }
+    }
+}
+
 /// What is copied on this Mac, kept for Control + Option + C (ClipboardHistory).
 private struct ClipboardGroup: View {
     @ObservedObject var settings: SettingsStore
@@ -568,13 +579,7 @@ private struct ClipboardGroup: View {
         }
     }
 
-    static func days(_ days: Int) -> String {
-        switch days {
-        case 0: return tr("No time limit")
-        case 1: return tr("1 day")
-        default: return tr("%ld days", days)
-        }
-    }
+    static func days(_ days: Int) -> String { ClipboardHistory.keptFor(days) }
 
     /// An app chosen in the Applications folder, by its bundle identifier.
     private func addApp() {

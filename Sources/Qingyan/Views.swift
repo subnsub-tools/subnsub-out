@@ -66,10 +66,11 @@ enum Motion {
 /// Shared clipboard helper for instant click-to-copy across all text surfaces.
 @MainActor
 enum ClipboardCopy {
-    /// `unrecorded`: not kept by out's clipboard history (copied from History itself).
-    static func copy(_ text: String, unrecorded: Bool = false) {
+    /// Not kept by out's clipboard history: what out copies itself is no copy of the user's (user,
+    /// 2026-11-28: nothing out copies itself should go into History).
+    static func copy(_ text: String) {
         guard !text.isEmpty else { return }
-        PasteboardLease.general.keep(text, unrecorded: unrecorded)
+        PasteboardLease.general.keep(text, unrecorded: true)
     }
 }
 
@@ -760,6 +761,7 @@ struct SideDrawer: View {
                 .font(.system(size: 13, weight: .bold))
             if !showingSettings { HistoryBarCount(clipboard: controller.clipboard, settings: settings) }
             Spacer()
+            if !showingSettings { HistoryKeepButton(model: controller.historyPage) }
             if !showingSettings && settings.preferences.clipHistory { ClipboardPauseButton(clipboard: controller.clipboard) }
             HeaderIconButton(
                 symbol: "xmark",
@@ -964,7 +966,12 @@ struct MainView: View {
             HeaderIconButton(
                 symbol: "keyboard",
                 active: controller.phase == .processing && controller.capsuleStep == .typing,
-                helpText: tr("Type the Clipboard (⌃⌥V)"),
+                // How to use it, under the name and a blank line (user, 2026-11-28: click the place to type
+                // into first, then this button; the clipboard should hold English characters only).
+                helpText: tr("Type the Clipboard (⌃⌥V)") + "\n\n" + tr("Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.")
+                    // The other end's input method would take the keys in (user, 2026-11-28: switch to half-width
+                    // input first when using this with a remote service).
+                    + "\n" + tr("In a remote desktop, switch the remote computer to an English (US) keyboard layout first."),
                 accessibility: tr("Type the clipboard into the field in front, key by key")
             ) {
                 controller.typeClipboard(from: .panel)

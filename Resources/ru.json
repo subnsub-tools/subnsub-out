@@ -791,5 +791,8 @@
  "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "out не может обращаться к папке, в которую сохраняются снимки экрана. Разрешите out в Системных настройках.",
  "Each new screenshot goes on the Shelf. Click to turn this off.": "Каждый новый снимок экрана попадает на полку. Нажмите, чтобы отключить.",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "«%@» загружается с %@ для ссылки. Ссылка будет скопирована, когда всё будет готово.",
- "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "Ни один Mac с «%@» не в сети, а у основного хелпера его пока нет, поэтому ссылки нет. Повторите попытку, когда %@ будет включён."
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "Ни один Mac с «%@» не в сети, а у основного хелпера его пока нет, поэтому ссылки нет. Повторите попытку, когда %@ будет включён.",
+ "Keep and Clear": "Хранение и очистка",
+ "Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.": "Сначала щёлкните там, куда нужно ввести текст, затем нажмите эту кнопку.\nКнопка вернёт фокус туда, где вы щёлкнули в последний раз, и введёт там содержимое буфера обмена, клавиша за клавишей.\nУбедитесь, что в буфере обмена только английские символы: буквы, цифры и знаки английской клавиатуры.",
+ "In a remote desktop, switch the remote computer to an English (US) keyboard layout first.": "При работе через удалённый рабочий стол сначала переключите удалённый компьютер на английскую раскладку (США)."
 }

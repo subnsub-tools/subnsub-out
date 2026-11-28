@@ -75,6 +75,7 @@ final class ShelfModel: ObservableObject {
     private var revealWhenHere: Set<UUID> = []
     private var expiryChecked = Date.distantPast
     private var peeks: [UUID: NSImage] = [:]
+    private var peekReads: [UUID: Task<NSImage?, Never>] = [:]
     /// Clicked while its link was still being made for it, as it was put on the Shelf: copied when it comes.
     private var copyWhenLinked: [UUID: Int] = [:]
     /// This Mac's own images and files not yet kept on the primary helper, and when to try again.
@@ -223,7 +224,14 @@ final class ShelfModel: ObservableObject {
     func put(_ entry: ClipEntry, from history: ClipboardHistory) {
         guard store != nil else { return }
         switch entry.kind {
-        case .files: history.files(entry).forEach(addFile)
+        case .files:
+            // A file copied on this Mac is on the Shelf already, or on its way there, put there quietly:
+            // kept on the primary helper now, for its link, rather than put there twice. A folder, an
+            // empty file and a large one from another disk go the usual way.
+            let home = store?.directory ?? URL(fileURLWithPath: "/")
+            for url in history.files(entry) {
+                if let file = Self.copied(url, home: home) { addQuietly(file, keep: true) } else { addFile(url) }
+            }
         case .image: if let data = history.imageBytes(entry) { addImage(data) }
         case .text: if let text = history.text(entry) { addText(text) }
         }
@@ -667,21 +675,37 @@ final class ShelfModel: ObservableObject {
     }
 
     /// The picture that floats out of a tile: the image itself where it is here, else the card's thumbnail.
-    func peek(_ item: ShelfItem) -> NSImage? {
+    /// The picture that floats out of a tile: an image that is here read from its file at the peek's
+    /// size, off the main thread (user 2026-11-28: twice as large; the card's picture is half that);
+    /// anything else, and an image on another Mac, the card's picture.
+    func peek(_ item: ShelfItem) async -> NSImage? {
         if let known = peeks[item.id] { return known }
         guard let store, item.kind != .text else { return nil }
-        // The card's picture is made for this size; an image put on the Shelf before it had one is
-        // read at that size from the file, never whole.
-        var image = store.thumbnail(item).flatMap(NSImage.init(data:))
-        if image == nil, item.kind == .image, store.isPresent(item.id),
-           let source = CGImageSourceCreateWithURL(store.url(item) as CFURL, nil),
-           let small = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                                                        kCGImageSourceThumbnailMaxPixelSize: Int(Self.thumbnailSide * 2),
-                                                                        kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
-            image = NSImage(cgImage: small, size: NSSize(width: small.width / 2, height: small.height / 2))
+        if item.kind == .image, store.isPresent(item.id) {
+            // The pointer back on a picture still being read waits for that reading.
+            let reading: Task<NSImage?, Never>
+            if let known = peekReads[item.id] { reading = known } else {
+                let url = store.url(item)
+                reading = Task { @MainActor in await Task.detached(priority: .userInitiated) { Peek.picture(at: url) }.value.map(Peek.image) }
+                peekReads[item.id] = reading
+            }
+            let image = await reading.value
+            peekReads[item.id] = nil
+            if let image {
+                // The large pictures of a few tiles only.
+                if peeks.count >= 12 { peeks.removeAll() }
+                peeks[item.id] = image
+                return image
+            }
         }
-        if let image { peeks[item.id] = image }
-        return image
+        // The card's picture, read each time: once the file is here, its own picture is read instead.
+        return store.thumbnail(item).flatMap(NSImage.init(data:))
+    }
+
+    func peekView(_ item: ShelfItem) async -> ShelfPeekView {
+        ShelfPeekView(name: item.name, isImage: item.kind == .image, image: await peek(item),
+                      text: item.kind == .text ? String(fullText(item).prefix(600)) : nil,
+                      icon: item.kind == .file ? icon(item) : nil, size: Self.size(item.size))
     }
     func release(_ item: ShelfItem) { store?.release(item.id) }
     func canRelease(_ item: ShelfItem) -> Bool { store.map { item.isLarge && $0.isPresent(item.id) && !$0.isOwn(item.id) } ?? false }
@@ -743,7 +767,7 @@ final class ShelfModel: ObservableObject {
         clipboardTurn += 1
         guard let store else {
             if item.kind == .text {
-                PasteboardLease.general.keep(snippet(item))
+                PasteboardLease.general.keep(snippet(item), unrecorded: true)
                 say(tr("Copied “%@”, ready to paste.", String(snippet(item).prefix(12))), mark: .done)
             }
             return
@@ -760,17 +784,25 @@ final class ShelfModel: ObservableObject {
         store.touch(item.id)
         let board = NSPasteboard.general
         board.clearContents()
+        // Copied from the Shelf, not by the user in another app: out's clipboard history does not keep
+        // it, and a file does not come back to the Shelf from there (user, 2026-11-28: a file copied on
+        // the Shelf went straight into History's files, which should be blocked).
         switch item.kind {
         case .text:
-            PasteboardLease.general.keep(store.text(item) ?? "")
+            PasteboardLease.general.keep(store.text(item) ?? "", unrecorded: true)
         case .image:
             let entry = NSPasteboardItem()
             entry.setString(store.url(item).absoluteString, forType: .fileURL)
             // Pixels too for a small image, whether or not it travels as a card.
             if item.size <= ShelfStore.eagerBytes, let tiff = NSImage(contentsOf: store.url(item))?.tiffRepresentation { entry.setData(tiff, forType: .tiff) }
+            entry.setData(Data(), forType: PasteboardLease.unrecordedType)
             board.writeObjects([entry])
         case .file:
-            board.writeObjects([store.url(item) as NSURL])
+            // What an NSURL writes (the file URL alone), and the marker.
+            let entry = NSPasteboardItem()
+            entry.setString(store.url(item).absoluteString, forType: .fileURL)
+            entry.setData(Data(), forType: PasteboardLease.unrecordedType)
+            board.writeObjects([entry])
         }
         say(tr("Copied “%@”, ready to paste.", item.kind == .text ? String(snippet(item).prefix(12)) : item.name), mark: .done)
     }
@@ -871,7 +903,7 @@ final class ShelfModel: ObservableObject {
     private func title(_ item: ShelfItem) -> String { item.kind == .text ? String(snippet(item).prefix(12)) : item.name }
 
     private func place(_ link: String, for item: ShelfItem) {
-        PasteboardLease.general.keep(link)
+        PasteboardLease.general.keep(link, unrecorded: true)
         say(tr("Link to “%@” copied. It opens on devices on your tailnet.", title(item)), for: 4, mark: .done)
     }
 
@@ -954,7 +986,7 @@ final class ShelfModel: ObservableObject {
             if changed || maybeLinked.contains(id) { links[id] = made; maybeLinked.remove(id); saveLinks() }
             linkWithoutFetch.remove(id)
             if known == nil, copying || wanted, latest { place(made, for: item) }
-            else if changed, let known, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(made) }
+            else if changed, let known, NSPasteboard.general.string(forType: .string) == known { PasteboardLease.general.keep(made, unrecorded: true) }
         } else if let failure, known == nil, !copying, !wanted, !(failure is CancellationError) {
             // Kept on the primary helper as it was put on the Shelf, and that did not go: tried again later.
             let wait = min((hostAgain[id]?.wait ?? 30) * 2, 3600)
@@ -1088,7 +1120,7 @@ final class ShelfModel: ObservableObject {
         items = tiles.enumerated().map { index, tile in
             ShelfItem(kind: tile.0, name: tile.1, size: sizes[index], date: Date().addingTimeInterval(Double(-index)), origin: index % 2 == 0 ? "Study Mac mini" : name)
         }
-        previewStages = [items[6].id: .elsewhere, items[7].id: .fetching(0.42), items[8].id: .unreachable, items[9].id: .failed(tr("Connection lost"))]
+        previewStages = [items[0].id: .elsewhere, items[6].id: .elsewhere, items[7].id: .fetching(0.42), items[8].id: .unreachable, items[9].id: .failed(tr("Connection lost"))]
         for (item, tile) in zip(items, tiles) {
             snippets[item.id] = tile.2
             if tile.0 == .image || item.name.hasSuffix("mov") || item.name.hasSuffix("mp4") {
@@ -1391,7 +1423,7 @@ struct ShelfTile: View {
             if shelf.mostCells(item) > 1 { edge.opacity(hovered || sizing ? 1 : 0) }
         }
         .overlay(alignment: .topLeading) { linkControl }
-        .background(ShelfPeekSource(item: item, shelf: shelf))
+        .background(PeekArea(id: item.id) { [weak shelf] in await shelf?.peekView(item) })
         .onHover { hovered = $0 }
         .animation(Motion.quick, value: hovered)
         .help(shelf.hint(item, stage))
@@ -1423,12 +1455,26 @@ struct ShelfTile: View {
                             if stage == .here { Text(item.name).font(.system(size: 9)).lineLimit(1).truncationMode(.middle) }
                         }.padding(.horizontal, 4)
                     }
-                }.opacity(stage == .here ? 1 : 0.35)
-                if stage != .here {
+                }.opacity(stage == .here || waitsInCorner(stage) ? 1 : 0.35)
+                if stage != .here && !waitsInCorner(stage) {
                     badge(stage, size: item.size).transition(Motion.pop)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if waitsInCorner(stage) {
+                    DownloadMark().opacity(stage == .unreachable ? 0.45 : 1).padding(4).transition(Motion.pop)
+                }
+            }
         }
+    }
+
+    /// A picture that is not on this Mac shows itself as it is, with a small download mark in its
+    /// corner, faint while no Mac that holds it is online; a click downloads it and copies it. A file
+    /// keeps its down arrow in the middle (user, 2026-11-28: no arrow on a picture, only a file has the
+    /// download arrow; then, of Tailscale's mark in the corner: not that, a download mark saying it has
+    /// to be downloaded).
+    private func waitsInCorner(_ stage: ShelfModel.Stage) -> Bool {
+        item.kind == .image && (stage == .elsewhere || stage == .unreachable)
     }
 
     private func wideFile(_ stage: ShelfModel.Stage) -> some View {
@@ -1556,6 +1602,17 @@ struct ShelfTile: View {
 
 }
 
+/// On a picture that is not on this Mac: a down arrow, on the ground of the × and link buttons.
+struct DownloadMark: View {
+    var body: some View {
+        Image(systemName: "arrow.down").font(.system(size: 7.5, weight: .bold)).foregroundStyle(Palette.ink)
+            .frame(width: 16, height: 16)
+            .background(.regularMaterial, in: Circle())
+            .overlay(Circle().stroke(Palette.line, lineWidth: 0.5))
+            .accessibilityHidden(true)
+    }
+}
+
 /// What a right-click on a tile offers, the same on the panel and on the bar kept on top (user
 /// 2026-11-22: a right-click downloads it to this Mac, or shows it in the Finder when it is here
 /// already; 2026-11-25: a click copies the item, downloading it first where it is not here, and its
@@ -1602,39 +1659,61 @@ final class ShelfPeek {
     private var host: NSHostingView<ShelfPeekView>?
     private var shown: UUID?
     private var pending: DispatchWorkItem?
+    private var loading: Task<Void, Never>?
+    /// The tile or row whose preview is on its way.
+    private var waiting: UUID?
     /// While shown: the tile's place and window. The peek goes when the pointer is no longer over
     /// the tile or the window is put away, whatever events did or did not come.
     private var watch: Timer?
     private var tile = NSRect.zero
     private weak var source: NSWindow?
 
-    /// The pointer came over a tile (`rect`, in screen coordinates) or left it.
-    func hover(_ item: ShelfItem, shelf: ShelfModel, rect: NSRect, inside: Bool, window: NSWindow? = nil) {
-        pending?.cancel()
+    /// The pointer came over a tile or a picture in History (`rect`, in screen coordinates) or left
+    /// it; `make` gives what floats out, once the pointer has rested there.
+    func hover(_ id: UUID, rect: NSRect, inside: Bool, window: NSWindow? = nil, make: @escaping @MainActor () async -> ShelfPeekView?) {
         guard inside else {
-            if shown == item.id { hide() }
+            // Another tile's or row's preview, asked for before this one's leaving came, stays.
+            if waiting == id { pending?.cancel(); loading?.cancel(); loading = nil; waiting = nil }
+            if shown == id { hidePanel() }
             return
         }
-        let work = DispatchWorkItem { [weak self, weak shelf, weak window] in
-            guard let self, let shelf, window?.isVisible != false, rect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) else { return }
-            self.source = window
-            self.show(item, shelf: shelf, rect: rect)
+        pending?.cancel(); loading?.cancel(); loading = nil
+        waiting = id
+        let still = { [weak window] in window?.isVisible != false && rect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) }
+        let work = DispatchWorkItem { [weak self, weak window] in
+            guard let self, still() else { return }
+            self.loading = Task { @MainActor [weak self] in
+                // A large picture is read meanwhile: shown only if the pointer is still there.
+                guard let view = await make(), !Task.isCancelled, let self, self.waiting == id, still() else { return }
+                self.waiting = nil
+                self.source = window
+                self.show(view, id: id, rect: rect)
+            }
         }
         pending = work
         // A pointer passing over the Shelf on its way elsewhere brings nothing up.
         DispatchQueue.main.asyncAfter(deadline: .now() + (shown == nil ? 0.3 : 0.05), execute: work)
     }
 
+    /// A tile or row taken away: its own preview goes, another one's stays.
+    func leave(_ id: UUID) {
+        if waiting == id { pending?.cancel(); loading?.cancel(); loading = nil; waiting = nil }
+        if shown == id { hidePanel() }
+    }
+
     func hide() {
-        pending?.cancel()
+        pending?.cancel(); loading?.cancel(); loading = nil; waiting = nil
+        hidePanel()
+    }
+
+    /// The preview shown goes; one on its way for another tile or row still comes.
+    private func hidePanel() {
         watch?.invalidate(); watch = nil
         shown = nil
         panel?.orderOut(nil)
     }
 
-    private func show(_ item: ShelfItem, shelf: ShelfModel, rect: NSRect) {
-        let view = ShelfPeekView(item: item, image: shelf.peek(item), text: item.kind == .text ? String(shelf.fullText(item).prefix(600)) : nil,
-                                 icon: item.kind == .file ? shelf.icon(item) : nil, size: ShelfModel.size(item.size))
+    private func show(_ view: ShelfPeekView, id: UUID, rect: NSRect) {
         let content = view.fitted
         let size = NSSize(width: content.width + 24, height: content.height + 24)
         if panel == nil {
@@ -1663,13 +1742,13 @@ final class ShelfPeek {
         origin.x = min(max(origin.x, screen.minX + 4), screen.maxX - size.width - 4)
         origin.y = min(max(origin.y, screen.minY + 4), screen.maxY - size.height - 4)
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        shown = item.id
+        shown = id
         tile = rect
         watch?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.source?.isVisible == false || !self.tile.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) { self.hide() }
+                if self.source?.isVisible == false || !self.tile.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) { self.hidePanel() }
             }
         }
         watch = timer
@@ -1684,20 +1763,46 @@ final class ShelfPeek {
     }
 }
 
-/// The floating picture: as large as fits 280 points, its name and size under it.
+/// How large a picture floats out, and its reading: off the main thread, at twice the points for
+/// a display of two pixels a point.
+enum Peek {
+    /// User 2026-11-28: at least twice as large as the 280 points it was.
+    static let side: CGFloat = 560
+    static let textWidth: CGFloat = 280
+
+    static func picture(at url: URL) -> CGImage? {
+        CGImageSourceCreateWithURL(url as CFURL, nil).flatMap(picture)
+    }
+
+    static func picture(in data: Data) -> CGImage? {
+        CGImageSourceCreateWithData(data as CFData, nil).flatMap(picture)
+    }
+
+    private static func picture(_ source: CGImageSource) -> CGImage? {
+        CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                                        kCGImageSourceThumbnailMaxPixelSize: Int(side * 2),
+                                                        kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+    }
+
+    @MainActor static func image(_ picture: CGImage) -> NSImage {
+        NSImage(cgImage: picture, size: NSSize(width: CGFloat(picture.width) / 2, height: CGFloat(picture.height) / 2))
+    }
+}
+
+/// The floating picture: as large as fits `Peek.side` points, its name and size under it; text as
+/// wide as `Peek.textWidth`.
 struct ShelfPeekView: View {
-    let item: ShelfItem
+    let name: String
+    let isImage: Bool
     let image: NSImage?
     let text: String?
     let icon: NSImage?
     let size: String
 
-    static let side: CGFloat = 280
-
     /// The picture's size in points, in its own proportions.
     private var picture: CGSize {
         guard let image, image.size.width > 0, image.size.height > 0 else { return CGSize(width: 96, height: 96) }
-        let k = min(Self.side / image.size.width, Self.side / image.size.height, 2)
+        let k = min(Peek.side / image.size.width, Peek.side / image.size.height, 2)
         return CGSize(width: max(60, image.size.width * k), height: max(40, image.size.height * k))
     }
 
@@ -1705,10 +1810,10 @@ struct ShelfPeekView: View {
     var fitted: CGSize {
         if let text {
             // As tall as the text, up to a few lines more than a tile shows.
-            let laid = (text as NSString).boundingRect(with: NSSize(width: Self.side - 16, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading],
+            let laid = (text as NSString).boundingRect(with: NSSize(width: Peek.textWidth - 16, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading],
                                                        attributes: [.font: NSFont.systemFont(ofSize: 12)])
             let lines = (laid.height / 15).rounded(.up)
-            return CGSize(width: Self.side, height: min(220, max(44, laid.height + lines * 2 + 16)))
+            return CGSize(width: Peek.textWidth, height: min(220, max(44, laid.height + lines * 2 + 16)))
         }
         let p = picture
         return CGSize(width: max(p.width, 160), height: p.height + 34)
@@ -1727,11 +1832,11 @@ struct ShelfPeekView: View {
             } else if let icon {
                 Image(nsImage: icon).resizable().frame(width: 96, height: 96)
             } else {
-                Image(systemName: item.kind == .image ? "photo" : "doc").font(.system(size: 40)).foregroundStyle(Palette.muted).frame(width: 96, height: 96)
+                Image(systemName: isImage ? "photo" : "doc").font(.system(size: 40)).foregroundStyle(Palette.muted).frame(width: 96, height: 96)
             }
             if text == nil {
                 HStack(spacing: 4) {
-                    Text(item.name).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                    Text(name).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.middle)
                     Text("·").foregroundStyle(Palette.muted)
                     Text(size).font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize()
                 }
@@ -1748,32 +1853,32 @@ struct ShelfPeekView: View {
     }
 }
 
-/// Under a tile: tells ShelfPeek where the tile is on screen when the pointer comes over it and
-/// leaves, whichever app is in front.
-struct ShelfPeekSource: NSViewRepresentable {
-    let item: ShelfItem
-    let shelf: ShelfModel
+/// Under a tile, or a picture in History: tells ShelfPeek where it is on screen when the pointer
+/// comes over it and leaves, whichever app is in front, and what floats out of it.
+struct PeekArea: NSViewRepresentable {
+    let id: UUID
+    let make: @MainActor () async -> ShelfPeekView?
 
     final class Area: NSView {
-        var item: ShelfItem?
-        weak var shelf: ShelfModel?
+        var id = UUID()
+        var make: (@MainActor () async -> ShelfPeekView?)?
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             for area in trackingAreas { removeTrackingArea(area) }
             addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
         }
         private func tell(_ inside: Bool) {
-            guard let item, let shelf, let window else { return }
-            ShelfPeek.shared.hover(item, shelf: shelf, rect: window.convertToScreen(convert(bounds, to: nil)), inside: inside, window: window)
+            guard let make, let window else { return }
+            ShelfPeek.shared.hover(id, rect: window.convertToScreen(convert(bounds, to: nil)), inside: inside, window: window, make: make)
         }
         override func mouseEntered(with event: NSEvent) { tell(true) }
         override func mouseExited(with event: NSEvent) { tell(false) }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window == nil { ShelfPeek.shared.hide() }
+            if window == nil { ShelfPeek.shared.leave(id) }
         }
     }
 
-    func makeNSView(context: Context) -> Area { let area = Area(); area.item = item; area.shelf = shelf; return area }
-    func updateNSView(_ area: Area, context: Context) { area.item = item; area.shelf = shelf }
+    func makeNSView(context: Context) -> Area { let area = Area(); area.id = id; area.make = make; return area }
+    func updateNSView(_ area: Area, context: Context) { area.id = id; area.make = make }
 }

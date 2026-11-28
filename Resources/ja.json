@@ -791,5 +791,8 @@
  "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "outはスクリーンショットの保存先フォルダを見ることができません。システム設定でoutを許可してください。",
  "Each new screenshot goes on the Shelf. Click to turn this off.": "新しいスクリーンショットはシェルフに置かれます。クリックするとオフになります。",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "リンクを作るため、「%@」を%@から取得しています。準備ができるとリンクがコピーされます。",
- "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "「%@」を持つMacがオンラインになく、プライマリヘルパーにもまだないため、リンクはありません。%@がオンになってからもう一度お試しください。"
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "「%@」を持つMacがオンラインになく、プライマリヘルパーにもまだないため、リンクはありません。%@がオンになってからもう一度お試しください。",
+ "Keep and Clear": "保持と消去",
+ "Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.": "先に入力したい場所をクリックしてから、このボタンをクリックします。\n入力フォーカスを最後にクリックした場所に戻し、クリップボードの内容を1キーずつ入力します。\nクリップボードの内容は英語の文字（半角の英字、数字、英語キーボードの記号）だけにしてください。",
+ "In a remote desktop, switch the remote computer to an English (US) keyboard layout first.": "リモートデスクトップで使う場合は、先にリモート側のコンピュータを半角の英語入力（US キーボード配列）に切り替えてください。"
 }

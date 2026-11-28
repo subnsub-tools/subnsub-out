@@ -791,5 +791,8 @@
  "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "out 無法查看截圖儲存到的資料夾，請在「系統設定」中允許 out。",
  "Each new screenshot goes on the Shelf. Click to turn this off.": "每張新截圖都會自動放入暫存區。點按即可關閉。",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "正在取回「%@」（來自 %@）以產生連結，完成後會自動拷貝連結。",
- "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "存有「%@」的 Mac 都不在線上，主監控程式上也還沒有這個檔案，因此沒有連結。請在 %@ 開機後重試。"
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "存有「%@」的 Mac 都不在線上，主監控程式上也還沒有這個檔案，因此沒有連結。請在 %@ 開機後重試。",
+ "Keep and Clear": "保留與清除",
+ "Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.": "請先點按要輸入文字的位置，再點按此按鈕。\n它會將輸入焦點移回上次點按的位置，逐鍵輸入剪貼簿內容。\n請確認剪貼簿中只有英文字元：字母、數字和英文鍵盤上的半形符號。",
+ "In a remote desktop, switch the remote computer to an English (US) keyboard layout first.": "在遠端桌面中使用時，請先將遠端電腦切換到半形英文輸入法（美式鍵盤）。"
 }

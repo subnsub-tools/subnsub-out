@@ -791,5 +791,8 @@
  "out may not look in the folder screenshots are saved in. Allow out in System Settings.": "out उस फ़ोल्डर में नहीं देख सकता जहाँ स्क्रीनशॉट सहेजे जाते हैं। सिस्टम सेटिंग्स में out को अनुमति दें।",
  "Each new screenshot goes on the Shelf. Click to turn this off.": "हर नया स्क्रीनशॉट शेल्फ़ पर जाता है। बंद करने के लिए क्लिक करें।",
  "Getting “%@” from %@ for its link. The link is copied when it is ready.": "लिंक के लिए “%@” को %@ से लाया जा रहा है। तैयार होते ही लिंक कॉपी हो जाएगा।",
- "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "“%@” वाला कोई Mac ऑनलाइन नहीं है, और प्राइमरी हेल्पर के पास यह अभी नहीं है, इसलिए इसका कोई लिंक नहीं है। %@ चालू होने पर फिर से कोशिश करें।"
+ "No Mac that holds “%@” is online, and the primary helper does not keep it yet, so it has no link. Try again when %@ is on.": "“%@” वाला कोई Mac ऑनलाइन नहीं है, और प्राइमरी हेल्पर के पास यह अभी नहीं है, इसलिए इसका कोई लिंक नहीं है। %@ चालू होने पर फिर से कोशिश करें।",
+ "Keep and Clear": "रखें और साफ़ करें",
+ "Click where the text should go first, then click this button.\nIt puts the keyboard back where you last clicked and types the clipboard there, key by key.\nMake sure the clipboard holds only English characters: letters, digits and the symbols on an English keyboard.": "पहले वहाँ क्लिक करें जहाँ टेक्स्ट लिखना है, फिर इस बटन पर क्लिक करें।\nयह बटन फ़ोकस को वहीं वापस ले जाता है जहाँ आपने आख़िरी बार क्लिक किया था, और क्लिपबोर्ड की सामग्री वहाँ एक-एक कुंजी करके टाइप करता है।\nपक्का करें कि क्लिपबोर्ड में केवल अंग्रेज़ी वर्ण हों: अक्षर, अंक और अंग्रेज़ी कीबोर्ड के चिह्न।",
+ "In a remote desktop, switch the remote computer to an English (US) keyboard layout first.": "रिमोट डेस्कटॉप में इस्तेमाल करते समय, पहले रिमोट कंप्यूटर को अंग्रेज़ी (US) कीबोर्ड लेआउट पर स्विच करें।"
 }
